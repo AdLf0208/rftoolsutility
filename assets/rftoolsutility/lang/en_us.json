@@ -1,0 +1,7 @@
+{
+  "block.rftoolsutility.tank": "Tank",
+  "itemGroup.rftoolsutility": "RFTools Utility",
+  "message.rftoolsutility.shiftmessage": "<Press Shift>",
+  "message.rftoolsutility.tank.contents": "Contents: ",
+  "message.rftoolsutility.tank.header": "A tank for fluids with support for filtering"
+}

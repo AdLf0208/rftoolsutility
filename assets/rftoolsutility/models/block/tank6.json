@@ -1,0 +1,12 @@
+{
+  "parent": "block/cube",
+  "textures": {
+    "down": "rftoolsutility:block/base/machinebottom",
+    "east": "rftoolsutility:block/tank6",
+    "north": "rftoolsutility:block/tank6",
+    "particle": "rftoolsutility:block/tank6",
+    "south": "rftoolsutility:block/tank6",
+    "up": "rftoolsutility:block/base/machinetop",
+    "west": "rftoolsutility:block/tank6"
+  }
+}

@@ -1,0 +1,118 @@
+# Validation — RFTools Utility slice 1 (the tank)
+
+> **Current state (2026-11-18): the SDK package.** The table below is the retired
+> `.hnmod` bundle's ladder at pin `1d63e0a5`; the format's own ladder — `cargo test`,
+> `cargo fmt --check`, `cargo clippy -D warnings`, `cargo horizon-mod build`, `check`,
+> `fits` — is in the last section and in `notes.md` § "Migration to the SDK format".
+> What the in-game phases below prove is unchanged: the scenario is the same one
+> `tools/e2e.sh` runs today.
+
+Pin `1d63e0a5a37a7a708eb0b32b49bf0dfeb28ed8a9`, mixins
+`5a64af938ec86b00d53d16a408aabc0038fb3e57` (schema 6). Every build/test/e2e step
+ran inside `ports/tools/build-slot.sh` with `CARGO_INCREMENTAL=0`; no bare cargo,
+no `--target-dir`. Logs are in `ports/_shared/evidence/rftoolsutility/`.
+
+| # | Step | Command (inside the lease) | Evidence | Result |
+|---|---|---|---|---|
+| 1 | red | `tools/red-leg.sh`: every runtime body stubbed with `todo!()`, `cargo test --locked --offline` | `test-red.log` | `test result: FAILED. 0 passed; 18 failed`, `cargo_exit=101` |
+| 2 | green | `cargo test --locked --offline` (standalone crate) | `test-green.log` | `test result: ok. 18 passed; 0 failed` |
+| 3 | fmt | `cargo fmt --all -- --check` + `rustfmt --edition 2024 --check mixins/rftoolsutility/*.rs` | `fmt.log`, `fmt-helper.log` (first run), `fmt-clippy-final.log` (after the last edit) | exit 0, no diff |
+| 4 | clippy | `cargo clippy --all-targets --locked --offline -- -D warnings` | `clippy.log`, `fmt-clippy-final.log` (after the last edit) | exit 0, 0 warnings |
+| 5 | stage | `python3 tools/horizon.py stage` | `stage.log` | `stage_changed: true` (2 modules, 9 injections) |
+| 6 | check | `python3 tools/horizon.py check` | `horizon-check.log` | `cargo_exit: 0`, **0 warnings** |
+| 7 | embedded tests | `python3 tools/horizon.py test` | `horizon-test.log`, `horizon-test-cargo.log` | `18 passed; 0 failed; 1240 filtered out` |
+| 8 | fast build | `python3 tools/horizon.py build` | `horizon-build.log` | `cargo_exit: 0`, **0 warnings**, `Finished fast profile in 39m 59s`, binary 110,338,304 B sha256 `cb5a13464deac56b…` |
+| 9 | e2e | `build-slot.sh run --step e2e -- tools/evidence.sh` (build + all legs in one lease) | `e2e.log` | **PASS**, `EXIT:0` |
+| 10 | e2e selftest | `SELFTEST=1 tools/e2e.sh` | `e2e-selftest.log` | **FAIL: the tank holds 1000 mB, expected 0**, `EXIT:1` |
+| 11 | e2e, one file | `EMBEDDED=1 CONTROL=1 tools/e2e.sh` (no `--dev-mod`, unusable-`.horizon-cache` control) | `e2e-embedded.log` | **PASS**, `EXIT:0` |
+| 12 | `.hmod` load | `tools/hmod-load.sh` (the shared unmodded game, `--dev-mod <hmod>`, then the same ids without it) | `hmod-load.log` | **PASS**, `EXIT:0` |
+| 13 | packages | `tools/package.sh` | `package-hmod.log`, `package-hnmod.log` | see below |
+| 14 | log checker | `python3 ports/tools/check-e2e-logs.py rftoolsutility --strict` | — | `logs=3 ok=3 missing-exit=0 bad-exit=0`, exit 0 |
+| 15 | skills (notes) | `python3 ports/tools/check-skills.py --notes ports/rftoolsutility` | — | `Skills line present`, `SKILLS GATE: PASS` |
+| 16 | upstream gate | `python3 ports/tools/upstream_ready.py rftoolsutility` | — | **exit 1**: `status is pending` (the orchestrator records it) and `add-on whose required parent(s) rftoolsbase are not in the registry` — a publishing condition, not a port defect; the artifact-freshness and e2e-log reasons it reported earlier are cleared |
+
+## Red → green
+
+The red run's 18 failures are the runtime's own tests failing at `todo!()`
+(`not yet implemented`), one per behaviour: the level curve at
+0/1/3,999/4,000/8,000/12,000/31,999/32,000/64,000, the empty tank, one fluid at a
+time, a clamped fill, a zero/negative fill, a drain up to what is held, the
+emptied tank forgetting its fluid, a water and a lava bucket filling, an empty
+bucket draining water and lava, an empty tank with an empty bucket, less than a
+bucket, a bucket that does not fit, a bucket of another fluid, a full water tank,
+a non-container (stone, a milk bucket, another tank), and a fill-then-drain round
+trip. The green run is the same 18 passing.
+
+## In-game (The End arena, headless, one lease)
+
+`e2e.log` phases, each `PASS`-asserted on parsed JSON, not on the absence of an
+error:
+
+| Phase | What was asserted | Observed |
+|---|---|---|
+| A | a tank placed from its item is empty | `empty 0/32000 mB (level 0)`, block state `level=0` |
+| B | a water bucket fills exactly 1,000 mB | `minecraft:water 1000/32000 (level 1)`, hand `minecraft:bucket`, block `level=1`, **client hotbar** `[{count:1,item:minecraft:bucket,slot:0}]` |
+| C | an empty bucket drains exactly 1,000 mB | `empty 0/32000 (level 0)`, hand `minecraft:water_bucket`, block `level=0` |
+| D | 31,500 mB + one bucket does not fit | still `31500/32000 (level 8)`, the bucket stayed in the hand |
+| E | the capacity is 32,000 mB | `/rftoolsutility tank … water 40000` → `32000/32000`, a full tank takes no bucket |
+| F | a lava bucket into a water tank is refused | still `minecraft:water 1000/32000`, the lava bucket stayed |
+| G | an empty bucket on an empty tank does nothing | `empty 0/32000`, hand `minecraft:bucket` |
+| H | *the same click fills a vanilla cauldron* (differential) | `minecraft:water_cauldron`, hand `minecraft:bucket` |
+| I | the tank keeps its fluid across save + quit + relaunch | `minecraft:water 5000/32000 (level 2)` after the relaunch, block state `level=2` |
+
+`e2e-embedded.log` runs the same scenario with **no `--dev-mod`** (the content
+comes from inside the `.hnmod`): `PASS` + `EXIT:0`, and its control leg — the
+same binary with `.horizon-cache` made unusable — shows `no tank item, the block
+stayed minecraft:air` and the cache file untouched, so the leg is not vacuous.
+The helper wrote `.horizon-cache/rftoolsutility-embedded-content.hmod`
+(**17,525 B, identical to `content/rftoolsutility.hmod`**).
+
+`e2e-selftest.log` flips phase B's assertion (`expect_amount 0` after a real
+fill): `FAIL: the tank holds 1000 mB, expected 0` + `EXIT:1`.
+
+`hmod-load.log` loads `content/rftoolsutility.hmod` on the **shared unmodded
+1d63e0a5 game** with `--dev-mod`: the tank gives and places with `level=0`; the
+second launch without it refuses the item and leaves `minecraft:air`.
+
+## Packages
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `content/rftoolsutility.hmod` | 17,525 B | `42f6030b72bd591f7cc4b914a2b3942f90c4b3c46a527dd2fe05a9debe7e69a9` | 38 |
+| `rftoolsutility.hnmod` | 26,219 B | `98ad2799fc18a6288893be4274adacd227098fed3feb6b57923cd8026125b30d` | 16 |
+
+`cargo horizon-mod check` on the `.hmod`: `rftoolsutility 0.1.0 (mod, API 0.2,
+both) … no code: content only, nothing to run`. The `.hnmod` holds
+`horizon-native.json`, `mixins/rftoolsutility/` (8 helpers, `runtime.rs`,
+`support.rs`, the plan), `LICENSE`, `NOTICE.md` and the embedded
+`data/rftoolsutility-content.hmod` (byte-identical; `tools/package.py` refuses to
+pack a stale copy).
+
+The `.hmod` rebuilt byte-identically (`42f6030b…`, 17,525 B) in two separate
+`tools/package.sh` runs hours apart, and the in-game legs' comparison
+(`cmp` against `content/rftoolsutility.hmod`) is part of the embedded leg.
+
+## The SDK package (2026-11-18, `0b14f8a`)
+
+One lease per step, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`, no `--target-dir`, no bare cargo
+outside the registry. Logs: `../_shared/evidence/rftoolsutility/sdk-0b14f8a/`.
+
+| # | Step | Command (inside the lease) | Result |
+|---|---|---|---|
+| 1 | runtime only | `cargo test` with `src/runtime.rs` copied byte-identically and no glue | `18 passed; 0 failed`, `cmp` clean against the retired file |
+| 2 | red glue | the four pure helpers stubbed with `todo!()`, `cargo test` | `FAILED. 19 passed; 6 failed`, each at `not yet implemented` |
+| 3 | green | `cargo test` | `25 passed; 0 failed` (18 runtime + 7 glue) |
+| 4 | fmt | `cargo fmt --check` | clean |
+| 5 | clippy | `cargo clippy --all-targets --offline -- -D warnings` | `Finished` with 0 warnings, 0 errors |
+| 6 | package | `rm -f Cargo.lock && cargo horizon-mod build` | `Built ./target/horizon-mod/rftoolsutility.hmod` |
+| 7 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.0 (native-mod, format native-1/0b14f8ac…/e59da909…, for 26.3)`, **37,485 B**, SHA-256 `7121e48f…0a5a`, **EXIT 0** |
+| 8 | fits the pin | `cargo horizon-mod fits rftoolsutility.hmod --build nightly` | `RFTools Utility: / 0b14f8a  made for`, **EXIT 0** |
+| 9 | reproducible | `cargo horizon-mod build` twice from the final sources | same size, same SHA-256; no `Cargo.lock` in the archive |
+| 10 | runtime inside the package | `unzip -p rftoolsutility.hmod src/runtime.rs \| sha256sum` | `4350997c…755b` = the retired file, byte for byte |
+| 11 | surfaces used | `cargo horizon-mod check … --uses` (`uses.json`, 309 entries) | `hook:use_item_on`, `hook:block_entity_tick`, `hook:block_entity_ticks`, `hook:register_commands`, `hook:run_mod_command`, the `BlockEntityRef`/`Registrar`/`LevelRef` handles |
+| 12 | skills | `python3 ports/tools/check-skills.py --notes ports/rftoolsutility` | `Skills line present`, `SKILLS GATE: PASS` |
+
+**Not run here:** the in-game leg. It needs a launcher-built game with this package
+(`horizon-launcher native-build`), which is not installed; `tools/e2e.sh` keeps the 0.1.0
+scenario and now takes `GAME=`. The behaviour evidence is the 0.1.0 runs above plus the mapping
+proved in the migration.
