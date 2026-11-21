@@ -116,3 +116,33 @@ outside the registry. Logs: `../_shared/evidence/rftoolsutility/sdk-0b14f8a/`.
 (`horizon-launcher native-build`), which is not installed; `tools/e2e.sh` keeps the 0.1.0
 scenario and now takes `GAME=`. The behaviour evidence is the 0.1.0 runs above plus the mapping
 proved in the migration.
+
+## Slice 2 — contents on the item (2026-11-21, pin `0a875da`, package 0.2.1)
+
+One lease per step, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`, no `--target-dir`. Logs:
+`../_shared/evidence/rftoolsutility/{sdk-test,sdk-clippy,sdk-check,sdk-fits,sdk-fits-other}.log`
+(rows 2–8, each printing the `rftoolsutility.hmod` sha256 and size it ran against) and
+`../_shared/evidence/rftoolsutility-e2e/` (the game legs). The 0.2.0 and 0.1.0 logs are under
+`../_shared/evidence/rftoolsutility/retired-0.2.0/`.
+
+| # | Step | Command (inside the lease) | Result |
+|---|---|---|---|
+| 1 | red, unit | the three new `runtime` rules stubbed `todo!()`, `cargo test` | `FAILED. 25 passed; 3 failed`, each at `not yet implemented` |
+| 2 | green, unit | `cargo test` | `31 passed; 0 failed` (21 runtime + 10 glue) |
+| 3 | fmt | `cargo fmt --check` | clean |
+| 4 | clippy | `cargo clippy --all-targets --offline -- -D warnings` | `Finished`, 0 warnings |
+| 5 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; 43,884 B, SHA-256 `3e00917a…07e3f`, 43 entries, no `Cargo.lock` |
+| 6 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.1 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)` **EXIT 0** |
+| 7 | fits the pin | `cargo horizon-mod fits rftoolsutility.hmod --build 0a875da` | `0a875da  made for` **EXIT 0** (a tautology, reported as the brief asks) |
+| 8 | fits another build | `cargo horizon-mod fits rftoolsutility.hmod --build 0b14f8a` | `0b14f8a  fits` **EXIT 0** |
+| 9 | gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | **1/1** (`runtime byte-identical`, `no packed Cargo.lock`, 43 entries) |
+| 10 | in game, PASS | `launcher-game.sh build` then `build-slot.sh run --step e2e -- tools/e2e.sh` | **PASS**, `EXIT:0` (`e2e-slice2.log`) |
+| 11 | in game, c/f | `SELFTEST=1 SELFTEST_AT=restore` | **FAIL: the tank holds 5000 mB, expected 0**, `EXIT:1` |
+| 12 | in game, c/f | `SELFTEST=1` (fill flip) | **FAIL: the tank holds 1000 mB, expected 0**, `EXIT:1` |
+| 13 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: the tank item did not register**, `EXIT:1` |
+| 14 | log gate | `python3 ports/tools/check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=5 ok=5 missing-exit=0 bad-exit=0`, exit 0 |
+| 15 | skills | `python3 ports/tools/check-skills.py --notes ports/rftoolsutility` | `Skills line present`, `SKILLS GATE: PASS` |
+
+The in-game phases and what each asserts are the table in `notes.md` § "In game". The
+`fits --build 0a875da` run is the package's own pin (a tautology); `0b14f8a` is a different,
+earlier Nightly, where the package still fits — the two lines the brief asks for are both here.

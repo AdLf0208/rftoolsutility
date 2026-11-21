@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# In-game check for RFTools Utility slice 1: the tank fills and drains a whole
-# bucket at a time, holds 32,000 mB of one fluid, and shows its contents as the
-# jar's own fill level.
+# In-game check for RFTools Utility: the tank fills and drains a whole bucket at
+# a time, holds 32,000 mB of one fluid, shows its contents as the jar's own fill
+# level, and its contents travel on the block's item when it is broken (slice 2).
 #
 # Every mod command is typed with `ctl chat "/cmd"`: the chat path reaches the
 # command dispatcher the SDK's `register_commands`/`run_mod_command` register into
@@ -32,22 +32,39 @@
 #     works, so the tank's refusals above are the tank's)
 #  I  the tank keeps its fluid across save + quit + relaunch, and the tick puts
 #     the level back on the block
+#  J  a broken tank's item carries the tank's contents: a survival break of a
+#     tank holding 5,000 mB of water drops one tank whose Item tag has
+#     `minecraft:block_entity_data` with that fluid and amount
+#  K  that item, picked up and placed again, is a tank holding 5,000 mB of water
+#     at level 2 (the contents came back)
+#  L  an empty tank's item carries no block-entity data, and placing it gives an
+#     empty tank (the same three assertions, inverted)
+#  M  an item doctored to 99,999 mB places a tank clamped to the 32,000 mB
+#     capacity (upstream's `FluidTank.setFluid` clamp), level 8
 #
 # SELFTEST=1 flips B's assertion (the tank must still read 0 mB), proving the
 # scenario can fail: it prints FAIL and exits non-zero.
+# SELFTEST=1 SELFTEST_AT=restore flips K's assertion instead (the restored tank
+# must read 0 mB), which is slice 2's own fail-capable leg.
+#
+# CONTROL=1 runs the same scenario on the Nightly WITHOUT this package
+# (CONTROL_GAME, exported by launcher-game.sh): the tank item is not there, so A
+# fails and the log says what it proved.
 set -Eeuo pipefail
 export LC_ALL=C
 [ -z "${RFU_DEBUG:-}" ] || set -x
 
 CLONE=/home/adlf/Desktop/all_the_mods_10_rust_rewrite
 PORT=$CLONE/ports/rftoolsutility
-# Both binaries must come from the same build (0b14f8a): the campaign's shared pair is
-# 1d63e0a5 and is not proven against this pin.
+# Both binaries come from the campaign pin (0a875da): GAME from `launcher-game.sh build`,
+# CTL from the same export.
 CTL=${CTL:-}
 GAME=${GAME:-}   # a launcher-built game carrying this package (see the header)
 RES=${RES:-${HORIZON_RES:-/home/adlf/Desktop/horizon/.local/horizon-client/26.3}}
 SOCK=${SOCK:-/tmp/opencode/rftoolsutility-e2e.sock}
 SELFTEST=${SELFTEST:-0}
+SELFTEST_AT=${SELFTEST_AT:-fill}
+CONTROL=${CONTROL:-0}
 KEEP=${KEEP:-0}
 WORLD=RFToolsUtilityE2E
 X0=200
@@ -61,8 +78,12 @@ EMPTY_BUCKET=minecraft:bucket
 CAULDRON=minecraft:cauldron
 
 [ -x "$CTL" ] || { echo "missing horizon-ctl: $CTL" >&2; exit 1; }
-[ -n "$CTL" ] || { echo "set CTL= to a horizon-ctl built from 0b14f8a (the game's own pin)" >&2; exit 1; }
+[ -n "$CTL" ] || { echo "set CTL= to the horizon-ctl of this pin (launcher-game.sh env)" >&2; exit 1; }
 [ -n "$GAME" ] || { echo "set GAME= to a game built with this package: horizon-launcher native-build $PORT --instance <i> --trust-native-code" >&2; exit 1; }
+if [ "$CONTROL" = 1 ]; then
+    [ -n "${CONTROL_GAME:-}" ] || { echo "set CONTROL_GAME= to the unmodded Nightly game" >&2; exit 1; }
+    GAME=$CONTROL_GAME
+fi
 [ -x "$GAME" ] || { echo "missing horizon-client: $GAME" >&2; exit 1; }
 [ -d "$RES/assets" ] || { echo "missing prepared resources: $RES" >&2; exit 1; }
 
@@ -195,9 +216,71 @@ set_tank() { # set_tank X Y Z FLUID MB
     ctl messages 8 | jq -r '.chat[]' | grep -m1 'Tank at' >&2 || true
 }
 
+# A survival break: the drop path (block_drops) does not fire for a creative
+# break, so the contents-on-the-item phases switch the player to survival and
+# hold the tank's own tool.
+break_block() { # break_block X Y Z TOOL
+    local x=$1 y=$2 z=$3
+    ctl command "execute in minecraft:the_end run tp @s $((x - 2)).5 101 $z.5" >/dev/null
+    ctl wait 6 >/dev/null
+    hold "$4"
+    ctl break "$x" "$y" "$z" >/dev/null || fail "ctl break at $x,$y,$z failed"
+    ctl wait 10 >/dev/null
+    local got
+    got=$(block_name "$x" "$y" "$z")
+    [ "$got" = "minecraft:air" ] || fail "the block at $x,$y,$z is '$got' after the break, expected air"
+}
+
+# The chat line `/data get entity @s SelectedItem` replies for the tank in hand:
+# its own tag, components included. (A selector over dropped items would also
+# catch the arena's ambient ender pearls.)
+held_item_line() {
+    ctl select "$BLOCK" >/dev/null
+    ctl wait 4 >/dev/null
+    ctl command "data get entity @s SelectedItem" >/dev/null
+    ctl wait 6 >/dev/null
+    ctl messages 8 | jq -r '.chat[]' | grep -m1 'has the following entity data' || true
+}
+
+# Collect the drop (`ctl collect` walks to it), then stand on its block as a fallback.
+pick_up() { # pick_up X Y Z
+    ctl collect 8 >/dev/null 2>&1 || true
+    ctl wait 10 >/dev/null
+    if ! ctl inventory | jq -e "[.hotbar[], .main[] | select(.item == \"$BLOCK\")] | length >= 1" >/dev/null; then
+        ctl command "execute in minecraft:the_end run tp @s $1.5 $2 $3.5" >/dev/null
+        ctl wait 20 >/dev/null
+    fi
+    ctl inventory | jq -e "[.hotbar[], .main[] | select(.item == \"$BLOCK\")] | length >= 1" >/dev/null \
+        || fail "the broken tank's item was not picked up: $(ctl inventory | jq -c '{hotbar,main}')"
+}
+
+# Place the tank item the player already carries. Never `/item replace` here:
+# that hands a fresh, empty tank and proves nothing about the carried one.
+place_kept() { # place_kept X Y Z
+    local x=$1 y=$2 z=$3
+    ctl command "execute in minecraft:the_end run tp @s $((x - 2)).5 101 $z.5" >/dev/null
+    ctl wait 6 >/dev/null
+    ctl select "$BLOCK" >/dev/null
+    ctl wait 2 >/dev/null
+    ctl look-at-block "$x" $((y - 1)) "$z" up >/dev/null
+    ctl place "$x" "$y" "$z" --item "$BLOCK" >/dev/null \
+        || fail "ctl place at $x,$y,$z failed: $(ctl inventory | jq -c '{hotbar,main}')"
+    ctl wait 6 >/dev/null
+    [ "$(block_name "$x" "$y" "$z")" = "$BLOCK" ] || fail "the carried tank did not place at $x,$y,$z"
+}
+
 echo "== launch (The End arena, the package's own content and code) =="
 launch
 arena
+
+# Survival from here: the engine's own `FluidUtil` path (the SDK's
+# `fluid_util::interact_with_fluid_handler`) keeps a creative player's container
+# stack, so the bucket swap a survival player sees would never happen. Vanilla's
+# creative rule is the deviation recorded in notes.md; the mod's mechanic is the
+# survival one, and the drop phases need survival too (a creative break drops
+# nothing).
+ctl command "gamemode survival" >/dev/null
+ctl wait 4 >/dev/null
 
 ctl command "item replace entity @s hotbar.0 with $BLOCK 1" >/dev/null
 ctl wait 4 >/dev/null
@@ -218,7 +301,7 @@ echo "  block $(block_name "$SX" 101 0), $AMOUNT/$CAPACITY mB, level $LEVEL"
 echo "== B: a water bucket fills exactly 1,000 mB and the hand becomes an empty bucket =="
 click_with "$SX" 101 0 "$WATER_BUCKET"
 info "$SX" 101 0
-if [ "$SELFTEST" = 1 ]; then
+if [ "$SELFTEST" = 1 ] && [ "$SELFTEST_AT" = fill ]; then
     echo "(selftest: asserting the tank is still empty)"
     expect_amount 0
 else
@@ -316,4 +399,64 @@ expect_amount 5000
 expect_block_level "$SX" 101 0 2
 echo "  after save + relaunch: $AMOUNT mB of $FLUID, level $(block_level "$SX" 101 0)"
 
-echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); and 5,000 mB of water survive save + relaunch with the level re-mirrored to 2"
+echo "== J: a broken tank carries its contents on its item =="
+ctl command "gamemode survival" >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 6 >/dev/null
+place_tank "$SX" 101 -6
+set_tank "$SX" 101 -6 minecraft:water 5000
+info "$SX" 101 -6
+expect_amount 5000
+expect_block_level "$SX" 101 -6 2
+break_block "$SX" 101 -6 minecraft:iron_pickaxe
+pick_up "$SX" 101 -6
+DROP_LINE=$(held_item_line)
+[ -n "$DROP_LINE" ] || fail "no /data get reply for the picked-up tank: $(ctl messages 8 | jq -c '.chat')"
+echo "  $DROP_LINE" >&2
+eval "$(python3 "$PORT/tools/parse_drop.py" "$DROP_LINE" 5000)" \
+    || fail "the dropped tank does not carry 5,000 mB of water: $DROP_LINE"
+[ "${ok:-0}" = 1 ] || fail "the drop's block-entity data did not parse: $DROP_LINE"
+echo "  the picked-up tank carries $carried mB of $carried_fluid ($component)"
+
+echo "== K: the item puts the contents back when it is placed =="
+place_kept "$SX" 101 6
+info "$SX" 101 6
+if [ "$SELFTEST" = 1 ] && [ "$SELFTEST_AT" = restore ]; then
+    echo "(selftest: asserting the restored tank is empty)"
+    expect_amount 0
+fi
+expect_amount 5000
+[ "$FLUID" = "minecraft:water" ] || fail "the restored tank holds '$FLUID', expected minecraft:water"
+expect_level 2
+expect_block_level "$SX" 101 6 2
+echo "  placed from its own item: $AMOUNT mB of $FLUID, level $LEVEL"
+
+echo "== L: an empty tank's item carries nothing (the same check, inverted) =="
+place_tank "$SX" 101 -12
+info "$SX" 101 -12
+expect_amount 0
+break_block "$SX" 101 -12 minecraft:iron_pickaxe
+pick_up "$SX" 101 -12
+DROP_LINE=$(held_item_line)
+[ -n "$DROP_LINE" ] || fail "no /data get reply for the picked-up empty tank: $(ctl messages 8 | jq -c '.chat')"
+echo "  $DROP_LINE" >&2
+eval "$(python3 "$PORT/tools/parse_drop.py" "$DROP_LINE" none)" \
+    || fail "an empty tank's item carries block-entity data: $DROP_LINE"
+[ "${ok:-0}" = 1 ] || fail "the empty drop did not parse: $DROP_LINE"
+place_kept "$SX" 101 -12
+info "$SX" 101 -12
+expect_amount 0
+expect_level 0
+echo "  an empty tank's item: $component, placed back as $AMOUNT mB"
+
+echo "== M: a doctored item places a tank clamped to 32,000 mB =="
+ctl command "give @s rftoolsutility:tank[minecraft:block_entity_data={id:\"rftoolsutility:tank\",fluids:[{Fluid:\"minecraft:water\",Amount:99999}]}]" >/dev/null
+ctl wait 8 >/dev/null
+place_kept "$SX" 101 12
+info "$SX" 101 12
+expect_amount "$EXPECT_CAPACITY"
+expect_level 8
+expect_block_level "$SX" 101 12 8
+echo "  99,999 mB asked by the item, $AMOUNT mB in the placed tank (level $LEVEL)"
+
+echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; and an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity"

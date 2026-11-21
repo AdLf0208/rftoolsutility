@@ -2,33 +2,73 @@
 //!
 //! The carried content is this package's own `assets/` and `data/` (`rftoolsutility:tank`, its
 //! item, the nine fill models and the recipe); the behaviour is here: a [`BlockEntityPart`] on
-//! the tank declares its block entity, ticks on the server to mirror the tank's contents into
-//! the block's `level` state, answers a right click with a fluid container through
-//! [`fluid_util`], and offers `/rftoolsutility info|tank` for the harness.
+//! the tank declares its block entity and ticks on the server to mirror the tank's contents into
+//! the block's `level` state; `use_item_on_block` takes a bucket click (the port moves the bucket
+//! itself, and hands a container it does not model to the engine's [`fluid_util`]); `block_drops`
+//! puts the tank's contents on its own item, which `TankItemPart` clamps back when placed; and
+//! `/rftoolsutility info|tank` serves the harness.
 //!
 //! The numbers — the capacity, the fill level, one fluid at a time, what a bucket click does —
 //! are in [`runtime`], a plain module with no `mod_api` types, byte-identical to the retired
 //! `.hnmod` bundle's `runtime.rs`, so `cargo test` alone proves them.
 use mod_api::{
-    self, BlockEntityPart, BlockEntityRef, BlockEntityTickEvent, BlockEntityTickReply,
-    BlockEntityTicksEvent, BlockPart, Command, CommandArgumentValue, CommandSource, Compound,
-    Direction, Flow, Hand, Hooks, ITEM_FLUIDS, InteractionResult, ItemPlace, LevelRef,
-    ModFluidTanks, PlayerRef, RegisterCommandsEvent, Registrar, RegistrationContext,
-    RunModCommandEvent, ServerHost, Tag, Text, UseItemOnEvent, fluid_util,
+    self, BlockClick, BlockDropsEvent, BlockEntityPart, BlockEntityRef, BlockEntityTickEvent,
+    BlockEntityTickReply, BlockEntityTicksEvent, BlockPart, Command, CommandArgumentValue,
+    CommandSource, Compound, Direction, Flow, FluidResource, FluidStack, Hand, Hooks, HostSide,
+    ITEM_FLUIDS, Identifier, InteractionResult, ItemKey, ItemPart, ItemPlace, ItemStack, LevelHost,
+    LevelRef, ModFluidTanks, OnBlockPlacedByEvent, PlayerRef, RegisterCommandsEvent, Registrar,
+    RegistrationContext, RunModCommandEvent, ServerHost, ServerTickEvent, Tag, Text,
+    UseItemOnBlockEvent, UsePhase, fluid_util,
 };
+use std::sync::{Mutex, OnceLock};
 
 pub mod runtime;
 
-use runtime::{CAPACITY, Click, Tank, bucket_click, fill_level};
+use runtime::{BUCKET, CAPACITY, Click, Tank, bucket_click, carried, clamped, fill_level};
 
 /// The tank block and its item (`TankModule.TANK`).
 const TANK: &str = "rftoolsutility:tank";
 /// The block entity type the port declares for it (`EntityBlock.newBlockEntity`).
 const TANK_TYPE: &str = "tank";
+/// The block entity type's registry id, which `minecraft:block_entity_data` tags its payload with
+/// (`TypedEntityData.loadInto` only loads data whose `id` names the block entity it is placed as).
+const TANK_TYPE_ID: &str = "rftoolsutility:tank";
 /// The block's fill-level property (`TankTE.computeLevel` → `tank<level>`).
 const KEY_LEVEL: &str = "level";
 /// The tank's index in its fluid table (upstream has one tank).
 const TANK_INDEX: usize = 0;
+/// The vanilla component that moves a block entity's saved data on its item
+/// (`BlockEntity.applyComponentsFromItemStack`).
+const BLOCK_ENTITY_DATA: &str = "minecraft:block_entity_data";
+
+/// The tank's item, resolved once in `register`: `block_drops` runs with a read-only level host,
+/// which cannot name an item, and a drop is only given the tank's contents when it is the tank.
+static TANK_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+/// The hand swaps a bucket move still owes, one per hand. A player-inventory write made inside the
+/// click's own transaction is undone when that transaction ends (measured at this pin), so the
+/// swap waits for the next server tick; that is also when the client is sent the slot
+/// (`ContainerSetSlot`, vanilla's `broadcastChanges`) — the retired bundle's one-tick resend. An
+/// entry is dropped when the hand no longer holds the item the click was made with, so a newer
+/// click or a pick-up is never clobbered.
+static PENDING_SWAP: Mutex<std::collections::BTreeMap<(u128, u8), PendingSwap>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// A container swap the hand still owes, and the item it expects to find there: a swap whose item
+/// the player has already changed by hand is dropped rather than clobbering the newer item.
+struct PendingSwap {
+    player: u128,
+    hand: Hand,
+    expected: String,
+    result: &'static str,
+}
+
+fn hand_key(hand: Hand) -> u8 {
+    match hand {
+        Hand::Main => 0,
+        Hand::Off => 1,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The tank in the block entity's own compound
@@ -88,6 +128,27 @@ fn write_tank(nbt: &mut Compound, tank: &Tank) {
     put(nbt, "fluids", Tag::List(vec![Tag::Compound(entry)]));
 }
 
+/// The `minecraft:block_entity_data` payload a broken tank's item carries: the block entity's own
+/// saved data, tagged with its type id (`TypedEntityData.loadInto` loads a payload only when its
+/// `id` names the block entity it is placed as). This is upstream's
+/// `collectImplicitComponents` moving the fluid handler onto the item.
+fn carried_data(saved: &Compound) -> Compound {
+    let mut payload = saved.clone();
+    put(&mut payload, "id", Tag::String(TANK_TYPE_ID.into()));
+    payload
+}
+
+/// The component patch that puts `payload` on a dropped tank's item.
+fn carried_patch(saved: &Compound) -> Compound {
+    let mut patch = Compound::new();
+    put(
+        &mut patch,
+        BLOCK_ENTITY_DATA,
+        Tag::Compound(carried_data(saved)),
+    );
+    patch
+}
+
 /// What `/rftoolsutility info` prints. The shape is the harness's contract
 /// (`tools/parse_info.py`), so the end-to-end scenario can parse it.
 fn readout(
@@ -110,22 +171,19 @@ fn readout(
     )
 }
 
-/// What a bucket click answers (`TankTE.onBlockActivated`, measured against the engine).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Answer {
-    /// Not a fluid container: the click is not the tank's, so vanilla's own runs.
-    Pass,
-    /// A fluid container the tank refuses: the click ends here, so nothing pours beside it.
-    Refused,
-    /// A container to move fluid with; [`fluid_util`] performs it.
-    Move,
-}
-
-fn answer(click: Click) -> Answer {
+/// What a bucket move leaves behind, for the sound and game event: the fluid that moved and
+/// whether it came out of the tank (`FluidUtil.triggerSoundAndGameEvent`).
+fn moved_fluid(click: Click, tank: &Tank) -> (&'static str, bool) {
     match click {
-        Click::NotYours => Answer::Pass,
-        Click::Refused => Answer::Refused,
-        Click::Fill { .. } | Click::Drain { .. } => Answer::Move,
+        Click::Fill { fluid, .. } => (fluid, false),
+        Click::Drain { .. } => (
+            match tank.fluid.as_deref() {
+                Some("minecraft:lava") => "minecraft:lava",
+                _ => "minecraft:water",
+            },
+            true,
+        ),
+        Click::Refused | Click::NotYours => ("minecraft:water", false),
     }
 }
 
@@ -163,6 +221,126 @@ fn mirror_level(host: &mut dyn ServerHost, pos: [i32; 3], tank: &Tank) {
     host.set_block_property(pos, KEY_LEVEL, &fill_level(tank.amount).to_string());
 }
 
+/// Replace the tank's contents in its own saved compound (`FluidTank.fill`/`drain`'s write).
+fn store_tank(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], tank: &Tank) -> bool {
+    let Some(entity) = tank_entity(host, level, pos) else {
+        return false;
+    };
+    let Some(mut data) = entity.data(&*host) else {
+        return false;
+    };
+    write_tank(&mut data, tank);
+    if entity.replace_data(host, data).is_err() {
+        return false;
+    }
+    mirror_level(host, pos, tank);
+    true
+}
+
+/// Put `item` in the player's `hand`, as upstream's `player.setItemInHand` does after a
+/// container move. The write is the engine's own inventory write (`/item replace`'s), sent to the
+/// client with the tick's inventory sync. It runs from `server_tick`, not from the click: both
+/// `ItemPlace::PlayerHand.exchange` and this write are undone when the click's own transaction
+/// ends at this pin (measured in game).
+fn set_hand(host: &mut dyn ServerHost, player: PlayerRef, hand: Hand, item: &str) -> bool {
+    let Some(key) = Identifier::parse(item)
+        .ok()
+        .and_then(|id| host.item_key(&id))
+    else {
+        return false;
+    };
+    let slot = match hand {
+        Hand::Main => u32::try_from(player.selected_slot(&*host).unwrap_or(0)).ok(),
+        Hand::Off => Some(40),
+    };
+    let Some(slot) = slot else {
+        return false;
+    };
+    player
+        .set_inventory_slot(&mut *host, slot, Some(ItemStack::of(key)))
+        .is_ok()
+}
+
+/// The bucket's fill or empty sound and game event at the tank's centre (`FluidUtil` plays them
+/// for the move it makes; the port's own move plays the same ones).
+fn pour(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    player: PlayerRef,
+    fluid: &str,
+    pickup: bool,
+) {
+    let Some(key) = host.fluid_key(fluid) else {
+        return;
+    };
+    let moved = FluidStack::new(key, u32::try_from(BUCKET).unwrap_or(1_000));
+    let at = pos.map(|c| f64::from(c) + 0.5);
+    fluid_util::trigger_sound_and_game_event(
+        host,
+        &FluidResource::of(&moved),
+        level,
+        at,
+        Some(player),
+        pickup,
+    );
+}
+
+/// The tank's own bucket move: the tank takes or gives one whole bucket now, and the hand's new
+/// container is queued for the next server tick (`PENDING_SWAP`). A refused tank write leaves the
+/// hand untouched.
+fn bucket_move(
+    host: &mut dyn ServerHost,
+    click: &BlockClick<'_>,
+    decision: Click,
+    tank: &Tank,
+) -> bool {
+    let Some(player) = host.player(click.player) else {
+        return false;
+    };
+    let Some(level) = player.level(&*host) else {
+        return false;
+    };
+    let (next, result) = match decision {
+        // `bucket_click` only answers `Fill` when a whole bucket fits, so the fill takes all of it.
+        Click::Fill { fluid, result } => {
+            let mut next = tank.clone();
+            next.insert(fluid, BUCKET);
+            (next, result)
+        }
+        Click::Drain { result } => {
+            let mut next = tank.clone();
+            next.extract(BUCKET);
+            (next, result)
+        }
+        Click::Refused | Click::NotYours => return false,
+    };
+    if !store_tank(host, level, click.pos, &next) {
+        return false;
+    }
+    // The container the hand becomes is written on the next tick (see `PENDING_SWAP`).
+    let expected = click
+        .stack
+        .map(|stack| stack.item().id(&*host))
+        .unwrap_or_default();
+    // One swap per hand: a click delivered twice for one action must not stack two swaps.
+    PENDING_SWAP
+        .lock()
+        .expect("the swap queue is never poisoned")
+        .insert(
+            (player.uuid(), hand_key(click.hand)),
+            PendingSwap {
+                player: player.uuid(),
+                hand: click.hand,
+                expected,
+                result,
+            },
+        );
+    let (fluid, pickup) = moved_fluid(decision, tank);
+    pour(host, level, click.pos, player, fluid, pickup);
+    true
+}
+
 /// Whether the player's hand holds a fluid container the engine knows: vanilla's buckets and any
 /// a mod registered through the item-fluid capability (`FluidUtil`'s own test).
 fn is_fluid_container(host: &mut dyn ServerHost, player: PlayerRef, hand: Hand) -> bool {
@@ -182,51 +360,7 @@ fn is_fluid_container(host: &mut dyn ServerHost, player: PlayerRef, hand: Hand) 
 struct TankPart;
 
 #[mod_api::horizon_part]
-impl BlockPart for TankPart {
-    /// `TankTE.onBlockActivated`: a fluid container in the hand fills the tank, and a drained
-    /// tank fills the container. Upstream's `FluidUtil` accepts any container, so a container
-    /// the runtime does not model is still a move (the engine decides); the tank owns every
-    /// fluid-container click, so a tank that is full, holds another fluid or holds less than a
-    /// whole bucket ends the click instead of pouring the bucket on the ground beside it (a
-    /// recorded deviation: upstream answers `PASS`, which lets vanilla empty it there).
-    fn use_item_on(
-        &self,
-        host: &mut dyn ServerHost,
-        event: &mut UseItemOnEvent<'_>,
-    ) -> Option<InteractionResult> {
-        let click = event.click;
-        let stack = click.stack?;
-        let held = stack.item().id(&*host);
-        let player = host.player(click.player)?;
-        let level = player.level(&*host)?;
-        let tank = tank_at(host, level, click.pos)?;
-        let decision = match answer(bucket_click(&held, &tank)) {
-            // Not one of the runtime's two vanilla buckets: the engine still knows a mod's own
-            // fluid container, and upstream accepted those too.
-            Answer::Pass if is_fluid_container(host, player, click.hand) => Answer::Move,
-            other => other,
-        };
-        match decision {
-            Answer::Pass => None,
-            Answer::Refused => Some(InteractionResult::Fail),
-            Answer::Move => {
-                // `FluidUtil.interactWithFluidHandler`: the engine moves the container's own
-                // fluid, swaps the hand and plays the sound and game event.
-                let side = Direction::ALL
-                    .into_iter()
-                    .find(|direction| direction.normal() == click.hit.face);
-                let moved = fluid_util::interact_with_fluid_handler(
-                    host, player, click.hand, level, click.pos, side,
-                );
-                Some(if moved {
-                    InteractionResult::Success
-                } else {
-                    InteractionResult::Fail
-                })
-            }
-        }
-    }
-}
+impl BlockPart for TankPart {}
 
 #[mod_api::horizon_part]
 impl BlockEntityPart for TankPart {
@@ -249,12 +383,47 @@ impl BlockEntityPart for TankPart {
 #[derive(Default)]
 struct Mod;
 
+/// The tank's item: a placed tank takes the contents the item carries
+/// (`BlockItemExtension.onBlockPlacedBy`, after vanilla applied the item's
+/// `minecraft:block_entity_data`).
+struct TankItemPart;
+
+#[mod_api::horizon_part]
+impl ItemPart for TankItemPart {
+    /// Clamp a placed tank to its capacity, as `FluidTank.setFluid` clamps a loaded amount, and
+    /// put the fill level on the block at once. A plain tank item carries nothing and is left as
+    /// the game placed it.
+    fn on_block_placed_by(&self, host: &mut dyn ServerHost, event: &mut OnBlockPlacedByEvent<'_>) {
+        let Some(player) = event.placer else {
+            return;
+        };
+        let Some(level) = player.level(&*host) else {
+            return;
+        };
+        let Some(entity) = tank_entity(host, level, event.pos) else {
+            return;
+        };
+        let Some(data) = entity.data(&*host) else {
+            return;
+        };
+        let tank = tank_of(&data);
+        let restored = clamped(&tank);
+        if restored != tank {
+            store_tank(host, level, event.pos, &restored);
+        }
+    }
+}
+
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
     /// Declare the tank's block entity and its one tank (`EntityBlock.newBlockEntity`,
     /// `Capabilities.Fluid.BLOCK`).
     fn register(&self, r: &mut dyn Registrar, cx: &RegistrationContext) {
         let block = r.block_key(TANK);
+        let item = r.item_key(TANK);
+        // `block_drops` has no game host, so the one item it may write to is resolved here.
+        let _ = TANK_ITEM.set(item);
+        r.item_part(item, TankItemPart);
         let kind = r.block_entity_type(TANK_TYPE).blocks(&[TANK]).build();
         // Only our own duplicate declaration can refuse here, and without the part the block
         // would sit inert: refuse the mod's registration rather than load half a tank.
@@ -278,6 +447,129 @@ impl Hooks for Mod {
         tanks.inputs = vec![TANK_INDEX];
         tanks.outputs = vec![TANK_INDEX];
         r.block_fluids(&block, tanks);
+    }
+
+    /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
+    /// block's own use and before the item's `useOn`, so a water bucket does not also empty onto
+    /// the ground (the engine runs the item's `useOn` even when a block part answered, measured at
+    /// this pin). A click that is not a container is left to vanilla.
+    fn use_item_on_block(&self, host: HostSide<'_>, event: &mut UseItemOnBlockEvent<'_>) -> Flow {
+        if event.phase != UsePhase::Block {
+            return Flow::Continue;
+        }
+        let host = match host {
+            HostSide::Server(host) => host,
+            HostSide::Client(client) => {
+                // The client predicts nothing for a bucket on the tank: the tank write and the
+                // hand swap are the server's, and a prediction here empties the bucket locally
+                // (this client's copy of the tank's contents may be stale).
+                let Some(stack) = event.click.stack else {
+                    return Flow::Continue;
+                };
+                let held = stack.item().id(client);
+                if matches!(
+                    bucket_click(&held, &Tank::new()),
+                    Click::Fill { .. } | Click::Refused
+                ) {
+                    *event.cancellation_result = InteractionResult::Success;
+                    return Flow::Cancel;
+                }
+                return Flow::Continue;
+            }
+        };
+        let click = event.click;
+        let Some(player) = host.player(click.player) else {
+            return Flow::Continue;
+        };
+        let Some(level) = player.level(&*host) else {
+            return Flow::Continue;
+        };
+        let Some(stack) = click.stack else {
+            return Flow::Continue;
+        };
+        let held = stack.item().id(&*host);
+        let Some(tank) = tank_at(host, level, click.pos) else {
+            return Flow::Continue;
+        };
+        let decision = bucket_click(&held, &tank);
+        let accepted = match decision {
+            Click::NotYours => {
+                // A container the engine knows and the runtime does not (a mod's own): the
+                // engine's `FluidUtil` moves it, as upstream's `FluidUtil` did.
+                if !is_fluid_container(host, player, click.hand) {
+                    return Flow::Continue;
+                }
+                let side = Direction::ALL
+                    .into_iter()
+                    .find(|direction| direction.normal() == click.hit.face);
+                fluid_util::interact_with_fluid_handler(
+                    host, player, click.hand, level, click.pos, side,
+                )
+            }
+            // A refused container click is consumed and does nothing: upstream answers `PASS`,
+            // which empties the bucket beside the tank (the recorded deviation).
+            Click::Refused => true,
+            move_it => bucket_move(host, click, move_it, &tank),
+        };
+        *event.cancellation_result = if accepted {
+            InteractionResult::Success
+        } else {
+            InteractionResult::Fail
+        };
+        Flow::Cancel
+    }
+
+    /// Apply the hand swaps a bucket move queued (`PENDING_SWAP`).
+    fn server_tick(&self, host: &mut dyn ServerHost, _event: &mut ServerTickEvent<'_>) {
+        let swaps: Vec<PendingSwap> = std::mem::take(
+            &mut *PENDING_SWAP
+                .lock()
+                .expect("the swap queue is never poisoned"),
+        )
+        .into_values()
+        .collect();
+        for swap in swaps {
+            let Some(player) = host.player(swap.player) else {
+                continue;
+            };
+            let now = host
+                .living(player.entity())
+                .and_then(|living| living.hand_item(&*host, swap.hand))
+                .map(|stack| stack.item().id(&*host));
+            if now.as_deref() != Some(swap.expected.as_str()) {
+                continue;
+            }
+            set_hand(host, player, swap.hand, swap.result);
+        }
+    }
+
+    /// `BlockDropsEvent`: a broken tank's own item carries the tank's contents, so placing the
+    /// item puts them back (`TankTE`'s loot table copies `mcjtylib:item_fluids`; the port moves
+    /// the same data as the vanilla `minecraft:block_entity_data` component, which vanilla's
+    /// placement applies). An empty tank's item carries nothing.
+    fn block_drops(&self, level: &dyn LevelHost, event: &mut BlockDropsEvent<'_>) -> Flow {
+        if level.state_block(event.state) != Some(TANK) {
+            return Flow::Continue;
+        }
+        let Some(entity) = event.block_entity else {
+            return Flow::Continue;
+        };
+        let Some(saved) = level.block_entity_data(entity) else {
+            return Flow::Continue;
+        };
+        if carried(&tank_of(&saved)).is_none() {
+            return Flow::Continue;
+        }
+        let Some(item) = TANK_ITEM.get() else {
+            return Flow::Continue;
+        };
+        let patch = carried_patch(&saved);
+        for drop in event.drops.iter_mut() {
+            if drop.stack.item() == *item {
+                let _ = drop.stack.apply_components(&patch);
+            }
+        }
+        Flow::Continue
     }
 
     /// `/rftoolsutility info|tank` (upstream has no command: its controls are the GUI and the
@@ -338,11 +630,18 @@ impl Hooks for Mod {
                 feedback(host, &readout(pos, &tank, held, time, nonce));
             }
             ["rftoolsutility", "tank"] => {
-                let (
-                    Some(CommandArgumentValue::Id(fluid)),
-                    Some(CommandArgumentValue::Integer(mb)),
-                ) = (invocation.argument("fluid"), invocation.argument("mb"))
-                else {
+                // `<fluid:id>` is a free identifier, which the engine delivers as a `String`
+                // (`resource:<registry>` would deliver an `Id`); accept either so the usage and
+                // the dispatcher cannot disagree.
+                let fluid = match invocation.argument("fluid") {
+                    Some(CommandArgumentValue::String(fluid)) => fluid.clone(),
+                    Some(CommandArgumentValue::Id(fluid)) => fluid.to_string(),
+                    _ => {
+                        feedback(host, "Usage: /rftoolsutility tank <pos> <fluid> <mb>");
+                        return Flow::Cancel;
+                    }
+                };
+                let Some(CommandArgumentValue::Integer(mb)) = invocation.argument("mb") else {
                     feedback(host, "Usage: /rftoolsutility tank <pos> <fluid> <mb>");
                     return Flow::Cancel;
                 };
@@ -356,15 +655,7 @@ impl Hooks for Mod {
                 };
                 // A harness control, not a player action: it replaces the contents, clamped to
                 // the capacity, instead of merging with what the tank holds.
-                let amount = (*mb).clamp(0, CAPACITY);
-                let tank = if amount == 0 {
-                    Tank::new()
-                } else {
-                    Tank {
-                        fluid: Some(fluid.to_string()),
-                        amount,
-                    }
-                };
+                let tank = command_tank(&fluid, *mb);
                 write_tank(&mut data, &tank);
                 if entity.replace_data(host, data).is_err() {
                     feedback(host, "No tank there.");
@@ -374,14 +665,29 @@ impl Hooks for Mod {
                 feedback(
                     host,
                     &format!(
-                        "Tank at {pos:?}: {} {amount}/{CAPACITY} mB.",
-                        tank.fluid.as_deref().unwrap_or("empty")
+                        "Tank at {pos:?}: {} {}/{CAPACITY} mB.",
+                        tank.fluid.as_deref().unwrap_or("empty"),
+                        tank.amount
                     ),
                 );
             }
             _ => return Flow::Continue,
         }
         Flow::Cancel
+    }
+}
+
+/// `/rftoolsutility tank <pos> <fluid> <mb>`'s write: the tank it leaves, clamped to the capacity
+/// and empty for a non-positive amount (the command replaces, it does not merge).
+fn command_tank(fluid: &str, mb: i32) -> Tank {
+    let amount = mb.clamp(0, CAPACITY);
+    if amount == 0 {
+        Tank::new()
+    } else {
+        Tank {
+            fluid: Some(fluid.to_owned()),
+            amount,
+        }
     }
 }
 
@@ -480,29 +786,80 @@ mod tests {
     #[test]
     fn a_non_container_is_not_the_tank_s_click() {
         assert_eq!(
-            answer(bucket_click("minecraft:stone", &Tank::new())),
-            Answer::Pass
+            bucket_click("minecraft:stone", &Tank::new()),
+            Click::NotYours
         );
         assert_eq!(
-            answer(bucket_click("minecraft:water_bucket", &water(CAPACITY))),
-            Answer::Refused
+            bucket_click("minecraft:water_bucket", &water(CAPACITY)),
+            Click::Refused
         );
         assert_eq!(
-            answer(bucket_click("minecraft:bucket", &Tank::new())),
-            Answer::Refused
+            bucket_click("minecraft:bucket", &Tank::new()),
+            Click::Refused
         );
     }
 
     #[test]
-    fn a_bucket_that_moves_is_a_move() {
+    fn a_bucket_that_moves_names_the_container_the_hand_gets() {
         assert_eq!(
-            answer(bucket_click("minecraft:water_bucket", &Tank::new())),
-            Answer::Move
+            bucket_click("minecraft:water_bucket", &Tank::new()),
+            Click::Fill {
+                fluid: "minecraft:water",
+                result: "minecraft:bucket"
+            }
         );
         assert_eq!(
-            answer(bucket_click("minecraft:bucket", &water(runtime::BUCKET))),
-            Answer::Move
+            bucket_click("minecraft:bucket", &water(runtime::BUCKET)),
+            Click::Drain {
+                result: "minecraft:water_bucket"
+            }
         );
+    }
+
+    #[test]
+    fn the_carried_payload_is_the_vanilla_block_entity_data() {
+        let mut nbt = Compound::new();
+        write_tank(&mut nbt, &water(5_000));
+        let patch = carried_patch(&nbt);
+        let Some(Tag::Compound(payload)) = tag(&patch, BLOCK_ENTITY_DATA) else {
+            panic!("the patch has no {BLOCK_ENTITY_DATA}");
+        };
+        assert_eq!(
+            tag(payload, "id"),
+            Some(&Tag::String(TANK_TYPE_ID.into())),
+            "vanilla's TypedEntityData needs the type id"
+        );
+        assert_eq!(
+            tank_of(payload),
+            water(5_000),
+            "the tank's own saved shape travels unchanged"
+        );
+    }
+
+    #[test]
+    fn the_tank_command_replaces_and_clamps() {
+        assert_eq!(
+            command_tank("minecraft:water", 40_000),
+            water(CAPACITY),
+            "a request above the capacity is clamped, not refused"
+        );
+        assert_eq!(
+            command_tank("minecraft:lava", 1_000),
+            Tank {
+                fluid: Some("minecraft:lava".to_owned()),
+                amount: 1_000,
+            }
+        );
+        assert_eq!(command_tank("minecraft:water", 0), Tank::new());
+        assert_eq!(command_tank("minecraft:water", -5), Tank::new());
+    }
+
+    #[test]
+    fn an_empty_tank_has_nothing_to_carry() {
+        let mut nbt = Compound::new();
+        write_tank(&mut nbt, &Tank::new());
+        assert_eq!(carried(&tank_of(&nbt)), None);
+        assert_eq!(carried(&tank_of(&Compound::new())), None);
     }
 
     #[test]

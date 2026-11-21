@@ -1,4 +1,10 @@
-# RFTools Utility — port notes (slice 1: the tank)
+# RFTools Utility — port notes (slices 1–2: the tank)
+
+> **Current state (2026-11-21): slice 2, package 0.2.1 at pin
+> `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
+> **`## Slice 2 — the tank's contents travel with its item (2026-11-21)`** first; it is the
+> current behaviour, its evidence and the four engine traps it cost. The 2026-11-18 note below is
+> the format migration that produced 0.2.0, and everything after it describes the retired bundle.
 
 > **Format (2026-11-18): the port is a flat SDK `.hmod`.** Horizon's mod-API merge (#16941,
 > launcher ≥ 0.2.70) retired the `.hnmod` container; this port's submission (PR **#904**) was
@@ -31,8 +37,10 @@ Pin **`1d63e0a5a37a7a708eb0b32b49bf0dfeb28ed8a9`**, mixins
 **`5a64af938ec86b00d53d16a408aabc0038fb3e57`** (schema 6).
 
 Status: **ported-partial** — slice 1 (the tank: the block, the item, the fluid
-tank, the bucket loop, the fill level and the harness readout) is implemented and
-verified in-game. The gap list below is the rest of the mod.
+tank, the bucket loop, the fill level and the harness readout) and slice 2 (the
+tank's contents travel with its item, and a doctored item is clamped on placement)
+are implemented and verified in-game at the current pin; A–M of the e2e are green.
+The gap list below is the rest of the mod.
 
 ## Class + tier and the approach
 
@@ -172,8 +180,9 @@ this slice does not implement. Recorded so slice 2 does not carry it:
 ## Gaps (the rest of the mod)
 
 - **Tank:** the GUI (`GuiTank`), the filter slot and `isFluidValid`, the inner
-  fluid quad, the item's `Contents: …` tooltip and its carried fluid, the block's
-  `mcjtylib:item_fluids` loot copy.
+  fluid quad, and the item's `Contents: …` tooltip. ~~Its carried fluid and the
+  block's loot copy~~ — **done in slice 2**: the tank's saved data moves on the
+  item as vanilla's `minecraft:block_entity_data` and comes back on placement.
 - **Crafters** (`crafter1/2/3`, 2/4/8 recipes, chained crafting, the infusing
   power discount) and `creative_screen`.
 - **Teleporters:** `charged_porter`, `advanced_charged_porter` (9 animation
@@ -363,14 +372,18 @@ The byte-identical runtime's 18 tests were green **before any glue existed**.
 
 ### Gaps after the migration
 
-1. **No in-game run at `0b14f8a`.** `horizon-launcher` is not installed and there is no game build
+1. ~~**No in-game run at `0b14f8a`.**~~ **Closed 2026-11-21**: the launcher builds the mod at the
+   current pin `0a875da` and `tools/e2e.sh` ran in game (A–M green); see `## Slice 2` and
+   `../_shared/evidence/rftoolsutility-e2e/`. (History:) `horizon-launcher` was not installed and there was no game build
    at this pin (the shared binaries are at `1d63e0a5`/`41f822b6`), so the behaviour evidence is the
    0.1.0 e2e (`../_shared/evidence/rftoolsutility/e2e.log`, `e2e-selftest.log`,
    `check-e2e-logs.py --strict` 3/3) plus the *mapping* proved here: each retired hook to a typed
    Part/host call at the same vanilla site, the type-checked glue and the carried rules. The next
    slice is "build the game with the launcher and run `tools/e2e.sh` with `GAME=`".
-2. **The tank's contents are not on its item, and the block does not copy them out** (inherited):
-   `loot_drops` plus an item component would express it; slice-2 work, not an API gap.
+2. ~~**The tank's contents are not on its item, and the block does not copy them out**~~
+   **Closed 2026-11-21 by slice 2**: `block_drops` puts the tank's saved data on its own item as
+   `minecraft:block_entity_data`, and vanilla placement restores it (the item's tooltip is still
+   a gap — see `## Slice 2`).
 3. **The GUI, the filter slot and the inner fluid quad** (inherited): the filter needs an
    accepts-fluid decision on the tank; the quad is a renderer.
 4. **No config file** (upstream's `maxCapacity` is baked at 32,000), no comparator output, no
@@ -391,3 +404,149 @@ The byte-identical runtime's 18 tests were green **before any glue existed**.
 > a hand-rolled swap plus a one-tick resend; the content ships inside the package (`assets/`,
 > `data/`) so the embedded-content injection is gone; `src/runtime.rs` and its 18 tests are
 > unchanged. Version 0.2.0.
+
+## Slice 2 — the tank's contents travel with its item (2026-11-21)
+
+**Chosen from the port's own gap list** — `## Gaps after the migration` item 2, verbatim:
+
+> **The tank's contents are not on its item, and the block does not copy them out** (inherited):
+> `loot_drops` plus an item component would express it; slice-2 work, not an API gap.
+
+and `FINDINGS.md` §2.6 ("The item carries the contents … so a broken tank keeps its fluid"). It
+fits the **machines** tier: a block entity's saved data, an item component and the carried
+content — no renderer, no new family.
+
+**Pin:** Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, horizon-mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, mod API `0.2`, game 26.3. **Version 0.2.1.**
+
+**Read this slice** (analysis only; clone deleted after): `McJtyMods/RFToolsUtility` branch
+`1.21_neo`, commit `f799314007d68042df8504e83cd549360f2627c7` —
+`modules/tank/blocks/TankTE.java` (`collectImplicitComponents`/`applyImplicitComponents`,
+`getFluidString`'s tooltip, the filter), `modules/crafter/*` (checked for the next slice's shape,
+not ported) and `data/rftoolsutility/loot_table/blocks/tank.json`.
+
+### What it does
+
+- **Break:** `Hooks::block_drops` (server, `BlockDropsEvent`) reads the tank's own saved compound
+  (`level.block_entity_data(entity)` — the data a player's break keeps for the event) and, when
+  the tank holds anything (`runtime::carried`), puts it on the tank's own drop as
+  `minecraft:block_entity_data` tagged `id = "rftoolsutility:tank"` (`TypedEntityData`, which
+  vanilla's placement requires). This is upstream's `collectImplicitComponents` moving the fluid
+  handler onto the item, and its loot table's `copy_components`.
+- **Place:** vanilla's `BlockItem.updateCustomBlockEntityTag` applies that component to the new
+  block entity, so the contents come back with no code. `TankItemPart::on_block_placed_by`
+  (`ItemPart`) clamps the result to the capacity — upstream's `FluidTank.setFluid` clamp — and
+  mirrors the fill level at once, so a doctored item cannot place a 99,999 mB tank.
+- **An empty tank's item carries nothing** (`carried` is `None`), so a broken empty tank is a
+  plain tank item.
+
+`src/runtime.rs` gained `carried` and `clamped` (pure, tested) and its `insert`/`extract` are now
+the glue's writers as well as the engine model.
+
+### Red → green (unit, verbatim)
+
+The three new rules were stubbed `todo!()` behind their tests first:
+
+```
+test result: FAILED. 25 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out
+  a_broken_tank_carries_exactly_what_it_holds      panicked at src/runtime.rs:204:5: not yet implemented
+  an_empty_tank_carries_nothing_on_its_item        panicked at src/runtime.rs:204:5: not yet implemented
+  a_carried_tank_is_restored_at_most_the_capacity  panicked at src/runtime.rs:212:5: not yet implemented
+```
+
+Green: **31 passed; 0 failed** (21 runtime + 10 glue). The glue tests pin the payload
+(`the_carried_payload_is_the_vanilla_block_entity_data`: the component's `id` plus the tank's own
+`fluids` shape), the empty case, the container the click names, and the harness command's clamp.
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+The scenario is `tools/e2e.sh`; the four legs are one lease each, and every log ends with its exit.
+The package gates' logs are `../_shared/evidence/rftoolsutility/sdk-{test,clippy,check,fits,fits-other}.log`,
+each printing the `rftoolsutility.hmod` sha256 and size it ran against; the 0.2.0/0.1.0 logs were
+moved to `../_shared/evidence/rftoolsutility/retired-0.2.0/`.
+
+| log | verdict |
+|---|---|
+| `e2e-slice2.log` | **PASS**, `EXIT:0` — phases A–M |
+| `e2e-slice2-selftest-restore.log` | **FAIL: the tank holds 5000 mB, expected 0**, `EXIT:1` |
+| `e2e-slice2-selftest-fill.log` | **FAIL: the tank holds 1000 mB, expected 0**, `EXIT:1` |
+| `e2e-slice2-control.log` | **FAIL: the tank item did not register**, `EXIT:1` (the unmodded Nightly) |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=5 ok=5 missing-exit=0 bad-exit=0`.
+
+The new phases, each asserting a parsed value:
+
+| phase | what it asserts (observed) |
+|---|---|
+| **J** | a survival break of a 5,000 mB water tank drops a tank whose in-hand `SelectedItem` has `minecraft:block_entity_data` `{id: "rftoolsutility:tank", fluids: [{Amount: 5000, Fluid: "minecraft:water"}]}` |
+| **K** | that item, placed again, is `minecraft:water 5000/32000` at block `level=2` |
+| **L** | an **empty** tank's item carries **no** block-entity data (`component=absent`) and places back empty — the same three assertions inverted |
+| **M** | an item doctored to 99,999 mB (`give … [minecraft:block_entity_data={…Amount:99999}]`) places a tank clamped to `32000/32000`, level 8 |
+
+Counterfactual: `SELFTEST_AT=restore` inverts K's assertion and the leg fails as designed, so K
+can fail. J is the component read-back the parity rule asks for; L is its differential.
+
+### Four engine traps this slice cost (measured, not read)
+
+1. **The engine's own `FluidUtil` path at this pin does not fill a container.** A tank with
+   1,000 mB drains into an empty bucket (the tank empties) but the hand stays an empty bucket —
+   the fluid is lost; a water cauldron behaves the same way (`use_on_cauldron` is not wired into
+   the use path at 0b14f8a). The port therefore performs the bucket move itself from the
+   runtime's numbers (`bucket_click` + `insert`/`extract`) and keeps `fluid_util` only for a
+   container the runtime does not model.
+2. **`ItemPlace::PlayerHand.exchange` and `player.set_inventory_slot` are undone when the click's
+   own transaction ends** — the write reads back correctly inside the part and is gone two ticks
+   later. The hand swap is queued and applied in `server_tick` (the retired bundle's one-tick
+   resend), one entry per hand, dropped when the hand no longer holds the item the click was made
+   with.
+3. **The item's own `useOn` still runs after a block part answered**, so a refused click (or a
+   fill) would also empty the bucket on the ground beside the tank. The click is taken in
+   `Hooks::use_item_on_block` at `UsePhase::Block` (cancel + `Success`), and on the client the same
+   hook cancels a bucket click so the integrated client predicts nothing.
+4. **Creative keeps a container stack** (`ItemPlace`'s creative rule): the 0.1.0 e2e's bucket
+   phases only hold in survival, and a survival break is required for any drop at all — the e2e
+   switches to survival after the arena. The port's own hand write swaps in both modes, as
+   upstream's `setItemInHand` does.
+5. **`<fluid:id>` is delivered as `CommandArgumentValue::String`, not `Id`** (`id` is a free
+   identifier; `resource:<registry>` delivers `Id`) — the harness command's `tank` usage was
+   silently unparsable since 0.2.0. Fixed by accepting either, and pinned by
+   `the_tank_command_replaces_and_clamps`.
+
+### Upstream defects fixed / deviations
+
+- **No new upstream defect** is adopted: upstream's own `setItemInHand` swap is what the port now
+  does, so slice 1's creative-mode divergence is gone.
+- **Deviation kept:** a refused container click is *consumed and does nothing* (upstream answers
+  `PASS`, which empties the bucket beside the tank). A user notices: no water poured next to a
+  full tank.
+- **Deviation recorded, not ported:** the item's `Contents: <amount>mb <fluid> (32000 mb)`
+  **tooltip**. The component is carried and read back (J), but `horizon-ctl` has no tooltip
+  readout and a headless leg cannot assert a client-drawn line, so shipping a tooltip here would
+  be an unprovable claim. The tank's own `level` state is the visible half.
+
+### Coverage of the tank family (after slice 2)
+
+| family | state |
+|---|---|
+| block, item, creative tab, tags, recipe, advancement, loot table | tested (A: place/read-back; the recipe itself needs `rftoolsbase:machine_frame`, see below) |
+| the 32,000 mB one-fluid tank + fluid capability | tested (A–G, I) |
+| bucket click (fill/drain/refuse), capacity, levels | tested (B–G, I) |
+| save/load of the tank | tested (I, relaunch) |
+| contents on the item, loot copy, placement restore | tested (J, K, L) |
+| capacity clamp on a carried item | tested (M) |
+| item tooltip `Contents: …` | not ported (no `ctl` tooltip readout; would be unprovable) |
+| GUI (`GuiTank`), filter slot + `isFluidValid` | not ported (needs a menu; the filter needs `native_block_entity_accepts_fluid`, not stamped) |
+| inner fluid quad | not ported (a renderer — outside the machines tier) |
+| LAN guest's hand swap | not ported as its own leg (the engine's inventory sync is the only path; untested) |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 43,884 B | `3e00917a88b3d284c2933c3a3a2a98b170a226bea8ed10970880eed3f6d07e3f` | 43 |
+
+Built twice with `rm -f Cargo.lock` before each (`cmp` identical), **no packed `Cargo.lock`**,
+`check` green (`native-1/0a875da…/e59da909…, for 26.3`), `fits --build 0a875da` → `made for`,
+`fits --build 0b14f8a` → `fits`, `verify-sdk-package.py rftoolsutility` → **1/1**.

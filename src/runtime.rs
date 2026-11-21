@@ -196,6 +196,28 @@ pub fn bucket_click(held: &str, tank: &Tank) -> Click {
     Click::NotYours
 }
 
+/// What a broken tank carries on its item: what it holds, or nothing when it is
+/// empty (`TankTE.collectImplicitComponents` moves the tank's fluid handler onto
+/// the item, and an empty handler carries no fluid).
+#[must_use]
+pub fn carried(tank: &Tank) -> Option<&Tank> {
+    (tank.amount > 0 && tank.fluid.is_some()).then_some(tank)
+}
+
+/// The tank an item's carried contents restore: at most the capacity, because
+/// `FluidTank.setFluid` clamps a loaded amount, and empty when the item names no
+/// fluid (`TankTE.applyImplicitComponents`).
+#[must_use]
+pub fn clamped(tank: &Tank) -> Tank {
+    match tank.fluid.as_deref() {
+        Some(fluid) if tank.amount > 0 => Tank {
+            fluid: Some(fluid.to_owned()),
+            amount: tank.amount.clamp(0, CAPACITY),
+        },
+        _ => Tank::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,5 +423,52 @@ mod tests {
         );
         assert_eq!(tank.extract(BUCKET), BUCKET);
         assert_eq!(tank, Tank::new());
+    }
+
+    #[test]
+    fn an_empty_tank_carries_nothing_on_its_item() {
+        assert_eq!(carried(&Tank::new()), None);
+        assert_eq!(
+            carried(&Tank {
+                fluid: None,
+                amount: 4_000
+            }),
+            None,
+            "an amount without a fluid carries nothing"
+        );
+    }
+
+    #[test]
+    fn a_broken_tank_carries_exactly_what_it_holds() {
+        let held = tank("minecraft:water", 5_000);
+        assert_eq!(carried(&held), Some(&held));
+        let full = tank("minecraft:lava", CAPACITY);
+        assert_eq!(carried(&full), Some(&full));
+        let one = tank("minecraft:water", 1);
+        assert_eq!(carried(&one), Some(&one), "a single millibucket travels");
+    }
+
+    #[test]
+    fn a_carried_tank_is_restored_at_most_the_capacity() {
+        assert_eq!(
+            clamped(&tank("minecraft:water", 99_999)),
+            tank("minecraft:water", CAPACITY),
+            "a doctored item is clamped, as FluidTank.setFluid clamps it"
+        );
+        assert_eq!(
+            clamped(&tank("minecraft:water", CAPACITY * 2)),
+            tank("minecraft:water", CAPACITY)
+        );
+        assert_eq!(clamped(&tank("minecraft:water", -5)), Tank::new());
+        assert_eq!(
+            clamped(&Tank {
+                fluid: None,
+                amount: 1_000
+            }),
+            Tank::new(),
+            "an amount without a fluid restores empty"
+        );
+        let held = tank("minecraft:lava", 5_000);
+        assert_eq!(clamped(&held), held, "a carried tank comes back unchanged");
     }
 }
