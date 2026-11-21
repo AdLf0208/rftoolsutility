@@ -56,6 +56,13 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/tank.json",
     "data/rftoolsutility/recipe/tank.json",
     "data/rftoolsutility/loot_table/blocks/tank.json",
+    # Slice 3: the crafter tier 1 (its own front texture, item model, recipe, advancement,
+    # loot table and block model).
+    "assets/rftoolsutility/models/item/crafter1.json",
+    "assets/rftoolsutility/textures/block/machinecrafter1.png",
+    "data/rftoolsutility/advancement/recipes/misc/crafter1.json",
+    "data/rftoolsutility/recipe/crafter1.json",
+    "data/rftoolsutility/loot_table/blocks/crafter1.json",
 ]
 # The tank's own block models name RFToolsBase's machine base textures; the port
 # ships them under its own namespace so the one `.hnmod` needs no other content.
@@ -67,6 +74,8 @@ BASE_TEXTURES = [
 # The jar's inventory model, re-pointed at this namespace's copy of the base
 # textures (it names `rftoolsbase:block/base/…`).
 INVENTORY_MODEL = "assets/rftoolsutility/models/block/tank_inventory.json"
+# The crafter's own cube model, re-pointed the same way.
+CRAFTER_MODEL = "assets/rftoolsutility/models/block/crafter1.json"
 
 # `TankTE.createBlock` on McJtyLib's `BlockBuilder.STANDARD_IRON`: strength 2.0,
 # correct tool for drops, metal sound. `minecraft:iron_block` is a full cube
@@ -92,7 +101,35 @@ BLOCK = {
 TAB = {
     "title": "itemGroup.rftoolsutility",
     "icon": f"{MOD}:tank",
-    "items": [f"{MOD}:tank"],
+    "items": [f"{MOD}:tank", f"{MOD}:crafter1"],
+}
+
+# `CrafterBlock` on McJtyLib's `BlockBuilder.STANDARD_IRON` with `ironPickaxeTags()`: strength
+# 2.0, correct tool for drops, metal sound. Upstream orients the block in six directions
+# (`orientedBlock`); the content schema takes a block's states and placement rule from its
+# vanilla template, and the full-cube, block-entity-free, no-menu template whose horizontal
+# `facing` placement is measured on a content block is `minecraft:white_glazed_terracotta`
+# (`bibliocraft`'s four blocks), so the crafter faces the four horizontal directions. The
+# jar's own blockstate keeps its rotations for those four.
+CRAFTER_BLOCK = {
+    "template": "minecraft:white_glazed_terracotta",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "item": True,
+}
+
+# The jar's blockstate rotations for the four horizontal facings (its `orientedBlock`): the
+# front is the model's north face.
+CRAFTER_FACINGS = {
+    "north": {},
+    "east": {"y": 90},
+    "south": {"y": 180},
+    "west": {"y": 270},
 }
 
 # The jar's recipes name `c:` convention tags the prepared 26.3 root does not
@@ -104,10 +141,11 @@ CONVENTION_TAGS = {
     "glass_blocks": ["minecraft:glass", "minecraft:tinted_glass"],
 }
 
-# The jar's lang lines for the tank, verbatim.
+# The jar's lang lines for the tank and the crafter, verbatim.
 LANG_KEYS = [
     "itemGroup.rftoolsutility",
     "block.rftoolsutility.tank",
+    "block.rftoolsutility.crafter1",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -188,17 +226,23 @@ def main() -> None:
             target = CONTENT / name
             target.parent.mkdir(parents=True, exist_ok=True)
             raw = jar.read(name)
-            if name.endswith("/recipe/tank.json"):
+            if "/recipe/" in name and name.endswith(".json"):
                 raw = (json.dumps(upgrade_recipe(json.loads(raw)), indent=2, sort_keys=True) + "\n").encode()
-            elif name.endswith("loot_table/blocks/tank.json"):
+            elif "loot_table/blocks/" in name:
                 raw = (json.dumps(upgrade_loot(json.loads(raw)), indent=2, sort_keys=True) + "\n").encode()
             target.write_bytes(raw)
         inventory = json.loads(jar.read(INVENTORY_MODEL))
+        crafter_model = json.loads(jar.read(CRAFTER_MODEL))
     inventory["textures"] = {
         key: value.replace("rftoolsbase:", f"{MOD}:")
         for key, value in inventory["textures"].items()
     }
     dump(assets / "models" / "block" / "tank_inventory.json", inventory)
+    crafter_model["textures"] = {
+        key: value.replace("rftoolsbase:", f"{MOD}:")
+        for key, value in crafter_model["textures"].items()
+    }
+    dump(assets / "models" / "block" / "crafter1.json", crafter_model)
 
     with zipfile.ZipFile(BASE_JAR) as base:
         base_data = BASE_JAR.read_bytes()
@@ -218,19 +262,33 @@ def main() -> None:
         assets / "items" / "tank.json",
         {"model": {"type": "minecraft:model", "model": f"{MOD}:item/tank"}},
     )
+    dump(
+        assets / "items" / "crafter1.json",
+        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/crafter1"}},
+    )
+    dump(
+        assets / "blockstates" / "crafter1.json",
+        {
+            "variants": {
+                f"facing={facing}": {"model": f"{MOD}:block/crafter1", **rotation}
+                for facing, rotation in CRAFTER_FACINGS.items()
+            }
+        },
+    )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
+    dump(data_dir / "horizon" / "block" / "crafter1.json", CRAFTER_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
     dump(
         CONTENT / "data" / "minecraft" / "tags" / "block" / "mineable" / "pickaxe.json",
-        {"values": [f"{MOD}:tank"]},
+        {"values": [f"{MOD}:tank", f"{MOD}:crafter1"]},
     )
     dump(
         CONTENT / "data" / "minecraft" / "tags" / "block" / "needs_iron_tool.json",
-        {"values": [f"{MOD}:tank"]},
+        {"values": [f"{MOD}:tank", f"{MOD}:crafter1"]},
     )
 
     print(f"assembled assets/ and data/ under {CONTENT} from {JAR.name}")

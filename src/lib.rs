@@ -14,9 +14,10 @@
 use mod_api::{
     self, BlockClick, BlockDropsEvent, BlockEntityPart, BlockEntityRef, BlockEntityTickEvent,
     BlockEntityTickReply, BlockEntityTicksEvent, BlockPart, Command, CommandArgumentValue,
-    CommandSource, Compound, Direction, Flow, FluidResource, FluidStack, Hand, Hooks, HostSide,
-    ITEM_FLUIDS, Identifier, InteractionResult, ItemKey, ItemPart, ItemPlace, ItemStack, LevelHost,
-    LevelRef, ModFluidTanks, OnBlockPlacedByEvent, PlayerRef, RegisterCommandsEvent, Registrar,
+    CommandSource, Compound, Direction, Flow, FluidResource, FluidStack, Hand, Hooks, Host,
+    HostSide, HostTransaction, ITEM_FLUIDS, Identifier, InteractionResult, ItemKey, ItemPart,
+    ItemPlace, ItemStack, LevelHost, LevelRef, ModContainer, ModEnergyBuffer, ModFluidTanks,
+    OnBlockPlacedByEvent, PlayerRef, RecipeInput, RegisterCommandsEvent, Registrar,
     RegistrationContext, RunModCommandEvent, ServerHost, ServerTickEvent, Tag, Text,
     UseItemOnBlockEvent, UsePhase, fluid_util,
 };
@@ -24,7 +25,11 @@ use std::sync::{Mutex, OnceLock};
 
 pub mod runtime;
 
-use runtime::{BUCKET, CAPACITY, Click, Tank, bucket_click, carried, clamped, fill_level};
+use runtime::{
+    BUCKET, BUFFER_IN, BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY,
+    CRAFTER_RECEIVE, CRAFTER_SLOTS, Click, CraftMode, GHOST_INPUT, GHOST_RESULT, Speed, Tank,
+    bucket_click, carried, clamped, fill_level, placements, plan, result_range, spend, steps,
+};
 
 /// The tank block and its item (`TankModule.TANK`).
 const TANK: &str = "rftoolsutility:tank";
@@ -40,6 +45,54 @@ const TANK_INDEX: usize = 0;
 /// The vanilla component that moves a block entity's saved data on its item
 /// (`BlockEntity.applyComponentsFromItemStack`).
 const BLOCK_ENTITY_DATA: &str = "minecraft:block_entity_data";
+
+// ---------------------------------------------------------------------------
+// The crafter (slice 3)
+// ---------------------------------------------------------------------------
+
+/// The crafter tier 1 block and its item (`CrafterModule.CRAFTER1`).
+const CRAFTER: &str = "rftoolsutility:crafter1";
+/// The block entity type the port declares for it, in its own namespace
+/// (`CrafterBaseTE.createTier1`).
+const CRAFTER_TYPE: &str = "crafter1";
+/// The type id a `minecraft:block_entity_data` payload on a crafter's item carries
+/// (`TypedEntityData.loadInto`).
+const CRAFTER_TYPE_ID: &str = "rftoolsutility:crafter1";
+/// The one recipe type the crafter matches (`RecipeType.CRAFTING`).
+const RECIPE_TYPE: &str = "minecraft:crafting";
+/// `CrafterBaseTE.createTier1`'s recipe count: a crafter 1 keeps two recipes
+/// (`supportedRecipes`), and crafts them in order each cycle.
+const CRAFTER_RECIPES: usize = 2;
+/// The crafter's saved keys beside the engine's own (`CrafterContainer`'s item slots are the
+/// engine's `Items`, and the energy amount the engine's `energy` int).
+const KEY_ENERGY: &str = "energy";
+const KEY_RECIPES: &str = "recipes";
+const KEY_SPEED: &str = "speed";
+const KEY_MODE: &str = "mode";
+const KEY_KEEP: &str = "keep";
+
+/// A crafter's item, resolved once in `register` for the same reason as the tank's.
+static CRAFTER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+/// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
+/// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
+/// the engine's recipe manager every operation; the port resolves the ingredient sets once,
+/// when the harness teaches the recipe, so a tick needs no recipe-table walk.
+struct Taught {
+    /// `minecraft:oak_planks`, the recipe the grid matches.
+    id: String,
+    /// Each of the nine cells: the item ids the cell accepts (empty for a cell the pattern
+    /// leaves empty).
+    cells: [Vec<String>; 9],
+}
+
+/// What a `/rftoolsutility setting` writes.
+#[derive(Clone, Copy)]
+enum Setting {
+    Speed(Speed),
+    Mode(CraftMode),
+    Keep(bool),
+}
 
 /// The tank's item, resolved once in `register`: `block_drops` runs with a read-only level host,
 /// which cannot name an item, and a drop is only given the tank's contents when it is the tank.
@@ -128,23 +181,24 @@ fn write_tank(nbt: &mut Compound, tank: &Tank) {
     put(nbt, "fluids", Tag::List(vec![Tag::Compound(entry)]));
 }
 
-/// The `minecraft:block_entity_data` payload a broken tank's item carries: the block entity's own
-/// saved data, tagged with its type id (`TypedEntityData.loadInto` loads a payload only when its
-/// `id` names the block entity it is placed as). This is upstream's
-/// `collectImplicitComponents` moving the fluid handler onto the item.
-fn carried_data(saved: &Compound) -> Compound {
+/// The `minecraft:block_entity_data` payload a broken block's item carries: the block entity's
+/// own saved data, tagged with its type id (`TypedEntityData.loadInto` loads a payload only when
+/// its `id` names the block entity it is placed as). This is upstream's
+/// `collectImplicitComponents` moving a machine's contents onto its item.
+fn carried_data(saved: &Compound, type_id: &str) -> Compound {
     let mut payload = saved.clone();
-    put(&mut payload, "id", Tag::String(TANK_TYPE_ID.into()));
+    put(&mut payload, "id", Tag::String(type_id.into()));
     payload
 }
 
-/// The component patch that puts `payload` on a dropped tank's item.
-fn carried_patch(saved: &Compound) -> Compound {
+/// The component patch that puts `saved` on a dropped machine's item, as `type_id`'s block
+/// entity.
+fn entity_patch(saved: &Compound, type_id: &str) -> Compound {
     let mut patch = Compound::new();
     put(
         &mut patch,
         BLOCK_ENTITY_DATA,
-        Tag::Compound(carried_data(saved)),
+        Tag::Compound(carried_data(saved, type_id)),
     );
     patch
 }
@@ -184,6 +238,391 @@ fn moved_fluid(click: Click, tank: &Tank) -> (&'static str, bool) {
             true,
         ),
         Click::Refused | Click::NotYours => ("minecraft:water", false),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The crafter's saved state
+// ---------------------------------------------------------------------------
+
+/// Save an int, replacing any value of another kind under the same name.
+fn write_int(nbt: &mut Compound, name: &str, value: i32) {
+    put(nbt, name, Tag::Int(value));
+}
+
+/// The int under `name`, or 0 when absent or of another kind.
+fn read_int(nbt: &Compound, name: &str) -> i32 {
+    match tag(nbt, name) {
+        Some(Tag::Int(value)) => *value,
+        _ => 0,
+    }
+}
+
+/// Save a string, replacing any value of another kind under the same name.
+fn write_text(nbt: &mut Compound, name: &str, value: &str) {
+    put(nbt, name, Tag::String(value.into()));
+}
+
+/// The text under `name`, or none when absent or of another kind.
+fn read_text(nbt: &Compound, name: &str) -> Option<String> {
+    match tag(nbt, name) {
+        Some(Tag::String(value)) => Some(value.to_string_lossy()),
+        _ => None,
+    }
+}
+
+/// The crafter's taught recipes (`CrafterData.recipes`), in the order they are crafted.
+fn read_taught(nbt: &Compound) -> Vec<Taught> {
+    let Some(Tag::List(entries)) = tag(nbt, KEY_RECIPES) else {
+        return Vec::new();
+    };
+    let mut taught = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Tag::Compound(entry) = entry else {
+            continue;
+        };
+        let Some(id) = read_text(entry, "id") else {
+            continue;
+        };
+        let mut cells: [Vec<String>; 9] = std::array::from_fn(|_| Vec::new());
+        if let Some(Tag::List(list)) = tag(entry, "cells") {
+            for (cell, entry) in cells.iter_mut().zip(list) {
+                if let Tag::List(ids) = entry {
+                    cell.extend(ids.iter().filter_map(|id| match id {
+                        Tag::String(id) => Some(id.to_string_lossy()),
+                        _ => None,
+                    }));
+                }
+            }
+        }
+        taught.push(Taught { id, cells });
+    }
+    taught
+}
+
+/// Write the crafter's taught recipes back.
+fn write_taught(nbt: &mut Compound, taught: &[Taught]) {
+    let entries: Vec<Tag> = taught
+        .iter()
+        .map(|recipe| {
+            let cells: Vec<Tag> = recipe
+                .cells
+                .iter()
+                .map(|accepted| {
+                    Tag::List(
+                        accepted
+                            .iter()
+                            .map(|id| Tag::String(id.as_str().into()))
+                            .collect(),
+                    )
+                })
+                .collect();
+            Tag::compound([
+                ("id", Tag::String(recipe.id.as_str().into())),
+                ("cells", Tag::List(cells)),
+            ])
+        })
+        .collect();
+    put(nbt, KEY_RECIPES, Tag::List(entries));
+}
+
+// ---------------------------------------------------------------------------
+// The crafter: its craft loop, its saved state and its readout
+// ---------------------------------------------------------------------------
+
+/// A slot's contents as the runtime's planning sees them.
+fn planned(host: &dyn Host, stack: &ItemStack) -> runtime::Stack {
+    runtime::Stack {
+        item: stack.item().id(host),
+        count: stack.count(),
+    }
+}
+
+/// The buffer slots `range`, as the runtime's planning sees them.
+fn planned_range(
+    host: &dyn Host,
+    items: &[Option<ItemStack>],
+    range: std::ops::Range<usize>,
+) -> Vec<Option<runtime::Stack>> {
+    range
+        .map(|slot| {
+            items
+                .get(slot)
+                .and_then(Option::as_ref)
+                .map(|s| planned(host, s))
+        })
+        .collect()
+}
+
+/// An item's stack limit (`Item.getMaxStackSize`), 64 for an id the game does not know.
+fn max_stack(host: &dyn Host, item: &str) -> u32 {
+    Identifier::parse(item)
+        .ok()
+        .and_then(|id| host.item_key(&id))
+        .and_then(|key| host.max_stack_size(key))
+        .unwrap_or(64)
+}
+
+/// The open level the crafter at `pos` stands in (a tick is not told its level, and a block
+/// entity is out of the world while it ticks).
+fn level_of(host: &dyn ServerHost, pos: [i32; 3]) -> Option<LevelRef> {
+    host.levels().list_levels().into_iter().find(|level| {
+        level
+            .block(host, pos)
+            .is_some_and(|block| block.id(host) == CRAFTER)
+    })
+}
+
+/// One crafting operation (`CrafterBaseTE.craftOneItem`): take one item per cell of the recipe's
+/// grid out of the input buffer, let the engine assemble it, and put the result and the
+/// recipe's remainders where the craft mode says. Answers whether the operation happened.
+fn craft_one(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    items: &mut [Option<ItemStack>],
+    taught: &Taught,
+    mode: CraftMode,
+    keep: bool,
+) -> bool {
+    let inputs = BUFFER_IN..BUFFER_IN + BUFFER_IN_SLOTS;
+    let buffer = planned_range(&*host, items, inputs.clone());
+    let Some(takes) = plan(&taught.cells, &buffer, keep) else {
+        return false;
+    };
+    // The work grid holds the item each planned cell takes; the engine matches it against its
+    // own recipe table, which is what makes the recipe's tags and remainders work.
+    let mut grid: Vec<Option<ItemStack>> = vec![None; 9];
+    for take in &takes {
+        // `plan` numbers the slots of the buffer slice it was given, not the world.
+        let slot = inputs.start + take.slot;
+        let Some(stack) = items.get(slot).and_then(Option::as_ref) else {
+            return false;
+        };
+        let mut one = stack.clone();
+        if one.set_count(1).is_err() {
+            return false;
+        }
+        grid[take.cell] = Some(one);
+    }
+    let Ok(kind) = Identifier::parse(RECIPE_TYPE) else {
+        return false;
+    };
+    let input = RecipeInput::Crafting {
+        width: 3,
+        height: 3,
+        slots: grid,
+    };
+    let Ok(Some(matched)) = level.recipe_for(&*host, &kind, &input) else {
+        return false;
+    };
+    if matched.recipe.to_string() != taught.id {
+        return false;
+    }
+    // What the operation produces, in order: the result, then the recipe's remainders.
+    let produced: Vec<ItemStack> = std::iter::once(matched.output.clone())
+        .chain(matched.remainders.iter().flatten().cloned())
+        .filter(|stack| stack.count() > 0)
+        .collect();
+    if produced.is_empty() {
+        return false;
+    }
+    let stacks: Vec<runtime::Stack> = produced.iter().map(|s| planned(&*host, s)).collect();
+    let out = result_range(mode);
+    let room = planned_range(&*host, items, out.clone());
+    let limit = |item: &str| max_stack(&*host, item);
+    let Some(targets) = placements(&stacks, &room, &limit) else {
+        return false;
+    };
+    // `placements` numbers the slots of `room`; the write is to the buffer's own slots.
+    let targets: Vec<usize> = targets.into_iter().map(|slot| out.start + slot).collect();
+    // Everything is known to fit: consume, then write.
+    let mut after = planned_range(&*host, items, inputs.clone());
+    if !runtime::consume(&takes, &mut after, keep) {
+        return false;
+    }
+    for (slot, planned) in inputs.zip(after) {
+        match planned {
+            None => items[slot] = None,
+            Some(planned) => {
+                let Some(stack) = items.get_mut(slot).and_then(Option::as_mut) else {
+                    return false;
+                };
+                if stack.set_count(planned.count).is_err() {
+                    return false;
+                }
+            }
+        }
+    }
+    for (stack, slot) in produced.into_iter().zip(targets) {
+        match items.get_mut(slot).and_then(Option::as_mut) {
+            None => items[slot] = Some(stack),
+            Some(held) => {
+                if !held.is_stackable_with(&stack) {
+                    return false;
+                }
+                if held.grow(stack.count()).is_err() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// One server tick of the crafter (`CrafterBaseTE.tickServer`): while the energy pays for an
+/// operation, run the taught recipes in order — a result `Int` mode puts in the input buffer is
+/// what the next recipe of the same cycle can use (upstream's chained crafting).
+fn crafter_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let mut changed = false;
+    if event.entity.items.len() < CRAFTER_SLOTS {
+        event.entity.items.resize(CRAFTER_SLOTS, None);
+        changed = true;
+    }
+    let taught = read_taught(&event.entity.nbt);
+    let energy = read_int(&event.entity.nbt, KEY_ENERGY).clamp(0, CRAFTER_CAPACITY);
+    let speed = read_text(&event.entity.nbt, KEY_SPEED)
+        .as_deref()
+        .and_then(Speed::parse)
+        .unwrap_or_default();
+    let mode = read_text(&event.entity.nbt, KEY_MODE)
+        .as_deref()
+        .and_then(CraftMode::parse)
+        .unwrap_or_default();
+    let keep = read_text(&event.entity.nbt, KEY_KEEP).as_deref() == Some("Keep");
+    let mut operations = steps(speed, energy);
+    if operations == 0 || taught.is_empty() {
+        if !changed {
+            *event.reply = BlockEntityTickReply::Unchanged;
+        }
+        return;
+    }
+    let Some(level) = level_of(&*host, event.pos) else {
+        if !changed {
+            *event.reply = BlockEntityTickReply::Unchanged;
+        }
+        return;
+    };
+    let mut done = 0;
+    'cycles: for _ in 0..operations {
+        let mut crafted = false;
+        for recipe in &taught {
+            if craft_one(host, level, &mut event.entity.items, recipe, mode, keep) {
+                crafted = true;
+            }
+        }
+        if !crafted {
+            break 'cycles;
+        }
+        done += 1;
+    }
+    operations = done;
+    if operations > 0 {
+        write_int(
+            &mut event.entity.nbt,
+            KEY_ENERGY,
+            energy.saturating_sub(spend(operations)),
+        );
+        changed = true;
+    }
+    if !changed {
+        *event.reply = BlockEntityTickReply::Unchanged;
+    }
+}
+
+/// What `/rftoolsutility crafter` prints. The shape is the harness's contract
+/// (`tools/parse_crafter.py`), so the end-to-end scenario can parse it.
+fn crafter_readout(
+    host: &dyn Host,
+    pos: [i32; 3],
+    items: &[Option<ItemStack>],
+    nbt: &Compound,
+    nonce: Option<&str>,
+) -> String {
+    let energy = read_int(nbt, KEY_ENERGY).clamp(0, CRAFTER_CAPACITY);
+    let speed = read_text(nbt, KEY_SPEED).unwrap_or_else(|| Speed::default().name().to_owned());
+    let mode = read_text(nbt, KEY_MODE).unwrap_or_else(|| CraftMode::default().name().to_owned());
+    let keep = read_text(nbt, KEY_KEEP).unwrap_or_else(|| "All".to_owned());
+    let taught = read_taught(nbt);
+    let recipes = if taught.is_empty() {
+        "-".to_owned()
+    } else {
+        taught
+            .iter()
+            .map(|recipe| recipe.id.as_str())
+            .collect::<Vec<_>>()
+            .join("+")
+    };
+    let slots = |range: std::ops::Range<usize>| {
+        let listed: Vec<String> = range
+            .filter_map(|slot| {
+                let stack = items.get(slot)?.as_ref()?;
+                Some(format!(
+                    "{slot}={}x{}",
+                    stack.item().id(host),
+                    stack.count()
+                ))
+            })
+            .collect();
+        if listed.is_empty() {
+            "-".to_owned()
+        } else {
+            listed.join(";")
+        }
+    };
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "Crafter at {pos:?}: energy={energy}/{CRAFTER_CAPACITY} speed={speed} mode={mode} \
+         keep={keep} recipes={recipes} in={} out={}{suffix}",
+        slots(BUFFER_IN..BUFFER_IN + BUFFER_IN_SLOTS),
+        slots(BUFFER_OUT..BUFFER_OUT + BUFFER_OUT_SLOTS)
+    )
+}
+
+/// The crafter's container: 41 slots, the ten ghost slots and the filter module slot outside
+/// the automation's reach, the 26 input slots hoppers may fill and the four output slots they
+/// may take from (`CrafterContainer.CONTAINER_FACTORY` and its `in()`/`out()` slots).
+fn crafter_container() -> ModContainer {
+    let inputs: Vec<usize> = (BUFFER_IN..BUFFER_IN + BUFFER_IN_SLOTS).collect();
+    let outputs: Vec<usize> = (BUFFER_OUT..BUFFER_OUT + BUFFER_OUT_SLOTS).collect();
+    let reachable: Vec<usize> = inputs.iter().chain(&outputs).copied().collect();
+    ModContainer {
+        slots: CRAFTER_SLOTS,
+        faces: std::array::from_fn(|_| reachable.clone()),
+        inputs,
+        outputs,
+        menu: None,
+    }
+}
+
+/// The crafter's energy domain (`GenericEnergyStorage(this, true, 50,000, 500)`): a fill only,
+/// on every face. The amount is the `energy` int in the saved compound.
+fn crafter_energy() -> ModEnergyBuffer {
+    ModEnergyBuffer {
+        capacity: CRAFTER_CAPACITY,
+        max_insert: CRAFTER_RECEIVE,
+        max_extract: 0,
+        insert_faces: [true; 6],
+        extract_faces: [false; 6],
+    }
+}
+
+/// The crafter's Part: its block entity, its tick, and (as `ItemPart`) nothing — a crafter's
+/// item carries its saved data as vanilla's `minecraft:block_entity_data` and needs no clamp.
+struct CrafterPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for CrafterPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for CrafterPart {
+    /// The crafter ticks on the server (`EntityBlock.getTicker`).
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    /// One server tick of the craft loop.
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        crafter_tick(host, event);
     }
 }
 
@@ -417,7 +856,8 @@ impl ItemPart for TankItemPart {
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
     /// Declare the tank's block entity and its one tank (`EntityBlock.newBlockEntity`,
-    /// `Capabilities.Fluid.BLOCK`).
+    /// `Capabilities.Fluid.BLOCK`), and the crafter's block entity, its container and its
+    /// energy buffer (`Capabilities.ItemHandler.BLOCK`, `Capabilities.EnergyStorage.BLOCK`).
     fn register(&self, r: &mut dyn Registrar, cx: &RegistrationContext) {
         let block = r.block_key(TANK);
         let item = r.item_key(TANK);
@@ -447,6 +887,19 @@ impl Hooks for Mod {
         tanks.inputs = vec![TANK_INDEX];
         tanks.outputs = vec![TANK_INDEX];
         r.block_fluids(&block, tanks);
+
+        let crafter = r.block_key(CRAFTER);
+        let crafter_item = r.item_key(CRAFTER);
+        let _ = CRAFTER_ITEM.set(crafter_item);
+        let crafter_kind = r.block_entity_type(CRAFTER_TYPE).blocks(&[CRAFTER]).build();
+        if let Err(error) = r.block_entity_part(&crafter_kind, CrafterPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the crafter part was refused: {error}"
+            ));
+            return;
+        }
+        r.block_container(&crafter, crafter_container());
+        r.block_energy(&crafter, crafter_energy());
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -546,9 +999,30 @@ impl Hooks for Mod {
     /// `BlockDropsEvent`: a broken tank's own item carries the tank's contents, so placing the
     /// item puts them back (`TankTE`'s loot table copies `mcjtylib:item_fluids`; the port moves
     /// the same data as the vanilla `minecraft:block_entity_data` component, which vanilla's
-    /// placement applies). An empty tank's item carries nothing.
+    /// placement applies). An empty tank's item carries nothing. A broken crafter's item carries
+    /// its own saved state the same way (`CrafterBaseTE.collectImplicitComponents` moves the
+    /// inventory, the energy and the taught recipes onto the item).
     fn block_drops(&self, level: &dyn LevelHost, event: &mut BlockDropsEvent<'_>) -> Flow {
-        if level.state_block(event.state) != Some(TANK) {
+        let block = level.state_block(event.state);
+        if block == Some(CRAFTER) {
+            let Some(entity) = event.block_entity else {
+                return Flow::Continue;
+            };
+            let Some(saved) = level.block_entity_data(entity) else {
+                return Flow::Continue;
+            };
+            let Some(item) = CRAFTER_ITEM.get() else {
+                return Flow::Continue;
+            };
+            let patch = entity_patch(&saved, CRAFTER_TYPE_ID);
+            for drop in event.drops.iter_mut() {
+                if drop.stack.item() == *item {
+                    let _ = drop.stack.apply_components(&patch);
+                }
+            }
+            return Flow::Continue;
+        }
+        if block != Some(TANK) {
             return Flow::Continue;
         }
         let Some(entity) = event.block_entity else {
@@ -563,7 +1037,7 @@ impl Hooks for Mod {
         let Some(item) = TANK_ITEM.get() else {
             return Flow::Continue;
         };
-        let patch = carried_patch(&saved);
+        let patch = entity_patch(&saved, TANK_TYPE_ID);
         for drop in event.drops.iter_mut() {
             if drop.stack.item() == *item {
                 let _ = drop.stack.apply_components(&patch);
@@ -572,15 +1046,35 @@ impl Hooks for Mod {
         Flow::Continue
     }
 
-    /// `/rftoolsutility info|tank` (upstream has no command: its controls are the GUI and the
-    /// filter slot, and this slice has neither, so the harness needs a readout and a way to set
-    /// the tank without 32 buckets — the `/rftoolsbase energy` precedent).
+    /// `/rftoolsutility info|tank` and the crafter's controls (upstream has no commands: its
+    /// controls are the GUI and the filter slot, and this slice has no GUI, so the harness needs
+    /// a readout and a way to teach a recipe and stock a machine — the `/rftoolsbase energy`
+    /// precedent).
     fn register_commands(&self, _host: &mut dyn ServerHost, event: &mut RegisterCommandsEvent<'_>) {
         event.commands.push(Command::new(
             "rftoolsutility info <pos:block_pos> [nonce:word]",
         ));
         event.commands.push(Command::op(
             "rftoolsutility tank <pos:block_pos> <fluid:id> <mb:integer>",
+            2,
+        ));
+        event.commands.push(Command::new(
+            "rftoolsutility crafter <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility recipe <pos:block_pos> <index:integer> <recipe:id>",
+            2,
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility buffer <pos:block_pos> <slot:integer> <item:id> <count:integer>",
+            2,
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility energy <pos:block_pos> <amount:integer>",
+            2,
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility setting <pos:block_pos> <key:word> <value:word>",
             2,
         ));
     }
@@ -593,13 +1087,20 @@ impl Hooks for Mod {
     ) -> Flow {
         let invocation = event.command;
         let literals: Vec<&str> = invocation.literals.iter().map(String::as_str).collect();
-        if !matches!(literals.as_slice(), ["rftoolsutility", "info" | "tank"]) {
+        let known = matches!(
+            literals.as_slice(),
+            [
+                "rftoolsutility",
+                "info" | "tank" | "crafter" | "recipe" | "buffer" | "energy" | "setting"
+            ]
+        );
+        if !known {
             return Flow::Continue;
         }
         let Some(CommandArgumentValue::BlockPos(pos)) = invocation.argument("pos") else {
             feedback(
                 host,
-                "Usage: /rftoolsutility info <pos> [nonce] or /rftoolsutility tank <pos> <fluid> <mb>",
+                "Usage: /rftoolsutility info|tank|crafter|recipe|buffer|energy|setting <pos> …",
             );
             return Flow::Cancel;
         };
@@ -610,7 +1111,7 @@ impl Hooks for Mod {
             .into_iter()
             .find(|level| level.dimension() == invocation.dimension)
         else {
-            feedback(host, "No tank there.");
+            feedback(host, "No machine there.");
             return Flow::Cancel;
         };
         match literals.as_slice() {
@@ -671,10 +1172,366 @@ impl Hooks for Mod {
                     ),
                 );
             }
+            ["rftoolsutility", "crafter"] => {
+                let Some(entity) = crafter_at(host, level, pos) else {
+                    feedback(host, "No crafter there.");
+                    return Flow::Cancel;
+                };
+                let Some(data) = entity.data(&*host) else {
+                    feedback(host, "No crafter there.");
+                    return Flow::Cancel;
+                };
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let items = crafter_slots(host, entity);
+                let line = crafter_readout(&*host, pos, &items, &data, nonce);
+                feedback(host, &line);
+            }
+            ["rftoolsutility", "recipe"] => {
+                let Some(CommandArgumentValue::Integer(index)) = invocation.argument("index")
+                else {
+                    feedback(host, "Usage: /rftoolsutility recipe <pos> <index> <recipe>");
+                    return Flow::Cancel;
+                };
+                let id = match invocation.argument("recipe") {
+                    Some(CommandArgumentValue::String(id)) => id.clone(),
+                    Some(CommandArgumentValue::Id(id)) => id.to_string(),
+                    _ => {
+                        feedback(host, "Usage: /rftoolsutility recipe <pos> <index> <recipe>");
+                        return Flow::Cancel;
+                    }
+                };
+                let line = teach(host, level, pos, *index, &id);
+                feedback(host, &line);
+            }
+            ["rftoolsutility", "buffer"] => {
+                let (
+                    Some(CommandArgumentValue::Integer(slot)),
+                    Some(CommandArgumentValue::Integer(count)),
+                ) = (invocation.argument("slot"), invocation.argument("count"))
+                else {
+                    feedback(
+                        host,
+                        "Usage: /rftoolsutility buffer <pos> <slot> <item> <count>",
+                    );
+                    return Flow::Cancel;
+                };
+                let item = match invocation.argument("item") {
+                    Some(CommandArgumentValue::String(item)) => item.clone(),
+                    Some(CommandArgumentValue::Id(item)) => item.to_string(),
+                    _ => {
+                        feedback(
+                            host,
+                            "Usage: /rftoolsutility buffer <pos> <slot> <item> <count>",
+                        );
+                        return Flow::Cancel;
+                    }
+                };
+                let line = set_slot(host, level, pos, *slot, &item, *count);
+                feedback(host, &line);
+            }
+            ["rftoolsutility", "energy"] => {
+                let Some(CommandArgumentValue::Integer(amount)) = invocation.argument("amount")
+                else {
+                    feedback(host, "Usage: /rftoolsutility energy <pos> <amount>");
+                    return Flow::Cancel;
+                };
+                let line = set_energy(host, level, pos, *amount);
+                feedback(host, &line);
+            }
+            ["rftoolsutility", "setting"] => {
+                let (
+                    Some(CommandArgumentValue::String(key)),
+                    Some(CommandArgumentValue::String(value)),
+                ) = (invocation.argument("key"), invocation.argument("value"))
+                else {
+                    feedback(
+                        host,
+                        "Usage: /rftoolsutility setting <pos> speed|mode|keep <value>",
+                    );
+                    return Flow::Cancel;
+                };
+                let line = set_setting(host, level, pos, key, value);
+                feedback(host, &line);
+            }
             _ => return Flow::Continue,
         }
         Flow::Cancel
     }
+}
+
+// ---------------------------------------------------------------------------
+// The crafter's harness controls
+// ---------------------------------------------------------------------------
+
+/// The crafter's block entity at `pos`, when the block there is ours.
+fn crafter_at(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> Option<BlockEntityRef> {
+    let block = level.block(host, pos)?;
+    if block.id(host) != CRAFTER {
+        return None;
+    }
+    host.block_entity(level, pos)
+}
+
+/// The crafter's 41 slots, read one by one (`block_entity_item_slot`). A slot the entity cannot
+/// answer reads as empty.
+fn crafter_slots(host: &dyn ServerHost, entity: BlockEntityRef) -> Vec<Option<ItemStack>> {
+    (0..CRAFTER_SLOTS as u32)
+        .map(|slot| entity.item_slot(host, slot).ok().flatten())
+        .collect()
+}
+
+/// The item ids a recipe's cell accepts, sorted so a saved grid loads back the same way; none
+/// for an ingredient the engine cannot enumerate (a component predicate).
+fn accepted(ingredient: &mod_api::Ingredient) -> Option<Vec<String>> {
+    let mut ids: Vec<String> = if ingredient.items.is_empty() {
+        ingredient.order.clone()
+    } else {
+        ingredient.items.iter().cloned().collect()
+    };
+    ids.sort_unstable();
+    ids.dedup();
+    (!ids.is_empty()).then_some(ids)
+}
+
+/// The nine cells of a crafting recipe's grid. A shaped recipe's pattern is mapped cell by cell
+/// (its ingredient list is the pattern's cells row by row, empty cells left out); a shapeless
+/// recipe's ingredients go in order. None for a special crafting recipe (no grid) or an
+/// ingredient that cannot be enumerated.
+fn recipe_cells(recipe: &mod_api::Recipe) -> Option<[Vec<String>; 9]> {
+    let mut cells: [Vec<String>; 9] = std::array::from_fn(|_| Vec::new());
+    let pattern = recipe.json.get("pattern").and_then(|p| p.as_array());
+    match pattern {
+        Some(rows) => {
+            let mut ingredient = recipe.ingredients.iter();
+            for (row, line) in rows.iter().enumerate().take(3) {
+                let line = line.as_str()?;
+                for (column, cell) in line.chars().enumerate().take(3) {
+                    if cell == ' ' {
+                        continue;
+                    }
+                    cells[row * 3 + column] = accepted(ingredient.next()?)?;
+                }
+            }
+        }
+        None => {
+            for (cell, ingredient) in cells.iter_mut().zip(&recipe.ingredients) {
+                *cell = accepted(ingredient)?;
+            }
+        }
+    }
+    cells.iter().any(|cell| !cell.is_empty()).then_some(cells)
+}
+
+/// The ghost grid a player's GUI would show for a taught recipe: the first item id of each
+/// filled cell, none for a cell the pattern leaves empty (`CrafterBaseTE.setSelected` writes the
+/// same 3x3 grid into the ghost slots).
+fn ghost_grid(cells: &[Vec<String>; 9]) -> [Option<&str>; 9] {
+    std::array::from_fn(|cell| cells[cell].first().map(String::as_str))
+}
+
+/// `/rftoolsutility recipe`: teach the crafter slot `index` the crafting recipe `id`, resolving
+/// its grid from the engine's recipe table (`CrafterBaseTE`'s GUI writes the same ghost grid).
+/// The ghost slots then show the grid, as a player's would.
+fn teach(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    index: i32,
+    id: &str,
+) -> String {
+    let Some(entity) = crafter_at(host, level, pos) else {
+        return "No crafter there.".to_owned();
+    };
+    let index = usize::try_from(index).unwrap_or(usize::MAX);
+    if index >= CRAFTER_RECIPES {
+        return format!("/rftoolsutility: this crafter has {CRAFTER_RECIPES} recipe slots.");
+    }
+    let recipe = host
+        .recipes_of_type(RECIPE_TYPE)
+        .iter()
+        .find(|recipe| recipe.id == id)
+        .cloned();
+    let Some(recipe) = recipe else {
+        return format!("/rftoolsutility: no crafting recipe {id}.");
+    };
+    let Some(cells) = recipe_cells(&recipe) else {
+        return format!("/rftoolsutility: {id} has no 3x3 grid this crafter can hold.");
+    };
+    // What a player's ghost grid would hold: one of each cell's items, and the recipe's result.
+    let mut grid: Vec<Option<ItemStack>> = vec![None; 9];
+    for (cell, id) in ghost_grid(&cells).into_iter().enumerate() {
+        let Some(id) = id else {
+            continue;
+        };
+        let Some(key) = Identifier::parse(id).ok().and_then(|id| host.item_key(&id)) else {
+            return format!("/rftoolsutility: the game does not know {id}.");
+        };
+        grid[cell] = Some(ItemStack::of(key));
+    }
+    // The grid must be exactly the recipe it names: a pattern mapped wrongly is refused here
+    // rather than silently crafting something else.
+    let Ok(kind) = Identifier::parse(RECIPE_TYPE) else {
+        return "/rftoolsutility: the crafting recipe type is unparsable.".to_owned();
+    };
+    let input = RecipeInput::Crafting {
+        width: 3,
+        height: 3,
+        slots: grid.clone(),
+    };
+    let matched = level.recipe_for(&*host, &kind, &input);
+    match matched {
+        Ok(Some(matched)) if matched.recipe.to_string() == id => {}
+        _ => return format!("/rftoolsutility: {id}'s grid does not match in this world."),
+    }
+    let Some(mut data) = entity.data(&*host) else {
+        return "No crafter there.".to_owned();
+    };
+    let mut taught = read_taught(&data);
+    while taught.len() <= index {
+        taught.push(Taught {
+            id: String::new(),
+            cells: std::array::from_fn(|_| Vec::new()),
+        });
+    }
+    taught[index] = Taught {
+        id: id.to_owned(),
+        cells,
+    };
+    write_taught(&mut data, &taught);
+    if entity.replace_data(host, data).is_err() {
+        return "No crafter there.".to_owned();
+    }
+    // The ghost grid follows the first recipe, as the GUI's selected recipe does.
+    if index == 0 {
+        let result = recipe.results.first().cloned();
+        let written = host.transaction(|host, tx| -> Result<bool, ()> {
+            for (cell, stack) in grid.into_iter().enumerate() {
+                if entity
+                    .set_item_slot(host, tx, (GHOST_INPUT + cell) as u32, stack)
+                    .is_err()
+                {
+                    return Ok(false);
+                }
+            }
+            entity
+                .set_item_slot(host, tx, GHOST_RESULT as u32, result)
+                .map_err(|_| ())
+        });
+        if !matches!(written, Ok(true)) {
+            return "No crafter there.".to_owned();
+        }
+    }
+    format!("/rftoolsutility: slot {index} of the crafter at {pos:?} crafts {id}.")
+}
+
+/// `/rftoolsutility buffer`: put `count` of `item` in the crafter's buffer slot `slot` (0 clears
+/// it). The harness's stand-in for a hopper; a slot outside the buffer range is refused.
+fn set_slot(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    slot: i32,
+    item: &str,
+    count: i32,
+) -> String {
+    let Some(entity) = crafter_at(host, level, pos) else {
+        return "No crafter there.".to_owned();
+    };
+    let slot = usize::try_from(slot).unwrap_or(usize::MAX);
+    let buffers = BUFFER_IN..BUFFER_OUT + BUFFER_OUT_SLOTS;
+    if !buffers.contains(&slot) {
+        return format!(
+            "/rftoolsutility: slot {slot} is not one of the crafter's buffer slots \
+             ({BUFFER_IN}..{}).",
+            BUFFER_IN + BUFFER_IN_SLOTS + BUFFER_OUT_SLOTS
+        );
+    }
+    let stack = if count <= 0 {
+        None
+    } else {
+        let Some(key) = Identifier::parse(item)
+            .ok()
+            .and_then(|id| host.item_key(&id))
+        else {
+            return format!("/rftoolsutility: the game does not know {item}.");
+        };
+        let limit = host.max_stack_size(key).unwrap_or(64);
+        let count = u32::try_from(count).unwrap_or(u32::MAX).min(limit);
+        ItemStack::new(key, count)
+    };
+    let written = host.transaction(|host, tx| -> Result<bool, ()> {
+        entity
+            .set_item_slot(host, tx, slot as u32, stack)
+            .map_err(|_| ())
+    });
+    match written {
+        Ok(true) => format!(
+            "/rftoolsutility: the crafter at {pos:?} slot {slot} holds {}.",
+            match count {
+                0 => "nothing".to_owned(),
+                count => format!("{item} x{count}"),
+            }
+        ),
+        _ => "No crafter there.".to_owned(),
+    }
+}
+
+/// `/rftoolsutility energy`: set the crafter's buffer, clamped to its capacity.
+fn set_energy(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], amount: i32) -> String {
+    let Some(entity) = crafter_at(host, level, pos) else {
+        return "No crafter there.".to_owned();
+    };
+    let Some(mut data) = entity.data(&*host) else {
+        return "No crafter there.".to_owned();
+    };
+    let amount = amount.clamp(0, CRAFTER_CAPACITY);
+    write_int(&mut data, KEY_ENERGY, amount);
+    if entity.replace_data(host, data).is_err() {
+        return "No crafter there.".to_owned();
+    }
+    format!("/rftoolsutility: the crafter at {pos:?} holds {amount}/{CRAFTER_CAPACITY} FE.")
+}
+
+/// `/rftoolsutility setting`: the crafter's speed, craft mode or keep mode.
+fn set_setting(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    key: &str,
+    value: &str,
+) -> String {
+    let Some(entity) = crafter_at(host, level, pos) else {
+        return "No crafter there.".to_owned();
+    };
+    let setting = match key.to_ascii_lowercase().as_str() {
+        "speed" => Speed::parse(value).map(Setting::Speed),
+        "mode" => CraftMode::parse(value).map(Setting::Mode),
+        "keep" => match value.to_ascii_lowercase().as_str() {
+            "all" => Some(Setting::Keep(false)),
+            "keep" => Some(Setting::Keep(true)),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(setting) = setting else {
+        return "/rftoolsutility: settings are speed slow|fast, mode ext|int, keep all|keep."
+            .to_owned();
+    };
+    let Some(mut data) = entity.data(&*host) else {
+        return "No crafter there.".to_owned();
+    };
+    match setting {
+        Setting::Speed(speed) => write_text(&mut data, KEY_SPEED, speed.name()),
+        Setting::Mode(mode) => write_text(&mut data, KEY_MODE, mode.name()),
+        Setting::Keep(keep) => write_text(&mut data, KEY_KEEP, if keep { "Keep" } else { "All" }),
+    }
+    if entity.replace_data(host, data).is_err() {
+        return "No crafter there.".to_owned();
+    }
+    format!("/rftoolsutility: the crafter at {pos:?} sets {key} to {value}.")
 }
 
 /// `/rftoolsutility tank <pos> <fluid> <mb>`'s write: the tank it leaves, clamped to the capacity
@@ -820,7 +1677,7 @@ mod tests {
     fn the_carried_payload_is_the_vanilla_block_entity_data() {
         let mut nbt = Compound::new();
         write_tank(&mut nbt, &water(5_000));
-        let patch = carried_patch(&nbt);
+        let patch = entity_patch(&nbt, TANK_TYPE_ID);
         let Some(Tag::Compound(payload)) = tag(&patch, BLOCK_ENTITY_DATA) else {
             panic!("the patch has no {BLOCK_ENTITY_DATA}");
         };
@@ -869,5 +1726,159 @@ mod tests {
             .map(|amount| fill_level(*amount).to_string())
             .collect();
         assert_eq!(levels, vec!["0", "1", "1", "2", "8"]);
+    }
+
+    // -- the crafter's glue (slice 3) ------------------------------------------
+
+    #[test]
+    fn the_taught_recipes_round_trip() {
+        let taught = vec![
+            Taught {
+                id: "minecraft:oak_planks".to_owned(),
+                cells: std::array::from_fn(|cell| {
+                    if cell == 0 {
+                        vec!["minecraft:oak_log".to_owned()]
+                    } else {
+                        Vec::new()
+                    }
+                }),
+            },
+            Taught {
+                id: "minecraft:crafting_table".to_owned(),
+                cells: std::array::from_fn(|cell| {
+                    if cell < 4 {
+                        vec![
+                            "minecraft:oak_planks".to_owned(),
+                            "minecraft:spruce_planks".to_owned(),
+                        ]
+                    } else {
+                        Vec::new()
+                    }
+                }),
+            },
+        ];
+        let mut nbt = Compound::new();
+        write_taught(&mut nbt, &taught);
+        let back = read_taught(&nbt);
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].id, "minecraft:oak_planks");
+        assert_eq!(back[0].cells[0], vec!["minecraft:oak_log"]);
+        assert!(back[0].cells[1].is_empty());
+        assert_eq!(back[1].cells[3].len(), 2, "a tag's ids survive the trip");
+        assert_eq!(read_taught(&Compound::new()).len(), 0);
+    }
+
+    fn crafting_recipe(pattern: Option<&[&str]>, ingredients: &[&[&str]]) -> mod_api::Recipe {
+        let json = match pattern {
+            Some(rows) => mod_api::serde_json::json!({ "pattern": rows }),
+            None => mod_api::serde_json::json!({}),
+        };
+        let mut recipe = mod_api::Recipe::new("test:recipe", "minecraft:crafting", json.into());
+        recipe.ingredients = ingredients
+            .iter()
+            .map(|items| mod_api::Ingredient::of(items.iter().map(|id| (*id).to_owned()).collect()))
+            .collect();
+        recipe
+    }
+
+    #[test]
+    fn a_shaped_recipe_maps_its_pattern_onto_the_grid() {
+        let planks: &[&str] = &["minecraft:oak_planks"];
+        let recipe = crafting_recipe(
+            Some(&["X X", " X ", "X X"]),
+            &[planks, planks, planks, planks, planks],
+        );
+        let cells = recipe_cells(&recipe).expect("a pattern maps cell by cell");
+        assert_eq!(cells[0], vec!["minecraft:oak_planks"]);
+        assert_eq!(cells[1], Vec::<String>::new(), "a space is an empty cell");
+        assert_eq!(cells[2], vec!["minecraft:oak_planks"]);
+        assert_eq!(cells[4], vec!["minecraft:oak_planks"]);
+        assert_eq!(cells[6], vec!["minecraft:oak_planks"]);
+        assert_eq!(cells[8], vec!["minecraft:oak_planks"]);
+        assert_eq!(cells.iter().filter(|cell| cell.is_empty()).count(), 4);
+    }
+
+    #[test]
+    fn a_shapeless_recipe_takes_its_ingredients_in_order() {
+        let recipe = crafting_recipe(None, &[&["minecraft:oak_log"], &["minecraft:oak_log"]]);
+        let cells = recipe_cells(&recipe).expect("a shapeless recipe fills its cells");
+        assert_eq!(cells[0], vec!["minecraft:oak_log"]);
+        assert_eq!(cells[1], vec!["minecraft:oak_log"]);
+        assert!(cells[2..].iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn the_ghost_grid_shows_one_item_per_filled_cell() {
+        let mut cells: [Vec<String>; 9] = std::array::from_fn(|_| Vec::new());
+        cells[0] = vec![
+            "minecraft:oak_planks".to_owned(),
+            "minecraft:birch_planks".to_owned(),
+        ];
+        cells[4] = vec!["minecraft:stick".to_owned()];
+        let grid = ghost_grid(&cells);
+        assert_eq!(
+            grid[0],
+            Some("minecraft:oak_planks"),
+            "the first candidate is shown"
+        );
+        assert_eq!(grid[4], Some("minecraft:stick"));
+        assert_eq!(grid[1], None, "an empty cell stays empty");
+        assert_eq!(
+            grid.iter().filter(|cell| cell.is_some()).count(),
+            2,
+            "only the pattern's own cells are written"
+        );
+    }
+
+    #[test]
+    fn an_ingredient_with_no_named_items_cannot_be_taught() {
+        let empty = mod_api::Ingredient::of(Vec::new());
+        assert_eq!(accepted(&empty), None);
+        let mut sorted = mod_api::Ingredient::of(vec![
+            "minecraft:spruce_planks".to_owned(),
+            "minecraft:birch_planks".to_owned(),
+        ]);
+        sorted.order = vec![
+            "minecraft:spruce_planks".to_owned(),
+            "minecraft:birch_planks".to_owned(),
+        ];
+        assert_eq!(
+            accepted(&sorted),
+            Some(vec![
+                "minecraft:birch_planks".to_owned(),
+                "minecraft:spruce_planks".to_owned()
+            ]),
+            "the ids are sorted so a saved grid reads back the same"
+        );
+    }
+
+    #[test]
+    fn the_crafter_container_keeps_the_ghost_slots_out_of_automation() {
+        let container = crafter_container();
+        assert_eq!(container.slots, CRAFTER_SLOTS);
+        assert!(container.menu.is_none(), "this slice opens no menu");
+        assert_eq!(container.inputs.first(), Some(&BUFFER_IN));
+        assert_eq!(container.inputs.len(), BUFFER_IN_SLOTS);
+        assert_eq!(container.outputs.first(), Some(&BUFFER_OUT));
+        assert_eq!(container.outputs.len(), BUFFER_OUT_SLOTS);
+        let reachable: Vec<usize> = container
+            .inputs
+            .iter()
+            .chain(&container.outputs)
+            .copied()
+            .collect();
+        assert!(
+            container.faces.iter().all(|face| *face == reachable),
+            "every face reaches the buffer slots and nothing else"
+        );
+        assert!(
+            !reachable.contains(&GHOST_RESULT) && !reachable.contains(&GHOST_INPUT),
+            "hoppers never reach the ghost grid"
+        );
+        assert_eq!(
+            container.slots - 1,
+            BUFFER_OUT + BUFFER_OUT_SLOTS,
+            "the last slot is the filter module slot"
+        );
     }
 }

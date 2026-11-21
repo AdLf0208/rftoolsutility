@@ -41,11 +41,28 @@
 #     empty tank (the same three assertions, inverted)
 #  M  an item doctored to 99,999 mB places a tank clamped to the 32,000 mB
 #     capacity (upstream's `FluidTank.setFluid` clamp), level 8
+#  N  a crafter placed from its item is empty, knows no recipe, holds no FE and
+#     has the template's horizontal facing state
+#  O  a recipe is taught from the engine's own crafting table and an id the
+#     table does not hold (or a slot past the machine's two) is refused
+#  P  with no energy nothing is crafted
+#  Q  5,000 FE and three oak logs become 12 oak planks for exactly 300 FE
+#  R  an input the recipe does not take stays put and costs no energy
+#  S  a full output buffer refuses the operation: no item consumed, no energy
+#  T  chained crafting in `mode int`: four logs become four crafting tables
+#     inside the machine, for 400 FE (no planks are ever inserted; upstream
+#     charges per cycle, and a cycle runs each taught recipe once)
+#  U  a broken crafter keeps its taught recipes, its buffer and its energy on its
+#     own item, and placing it back restores them
+#  V  the crafter's loot table is gated by `minecraft:needs_iron_tool`: a wooden
+#     pickaxe breaks it and drops nothing, an iron pickaxe drops it (the control)
 #
 # SELFTEST=1 flips B's assertion (the tank must still read 0 mB), proving the
 # scenario can fail: it prints FAIL and exits non-zero.
 # SELFTEST=1 SELFTEST_AT=restore flips K's assertion instead (the restored tank
 # must read 0 mB), which is slice 2's own fail-capable leg.
+# SELFTEST=1 SELFTEST_AT=craft flips Q's assertion (the crafter must have made
+# nothing and spent nothing), which is slice 3's own fail-capable leg.
 #
 # CONTROL=1 runs the same scenario on the Nightly WITHOUT this package
 # (CONTROL_GAME, exported by launcher-game.sh): the tank item is not there, so A
@@ -76,6 +93,7 @@ WATER_BUCKET=minecraft:water_bucket
 LAVA_BUCKET=minecraft:lava_bucket
 EMPTY_BUCKET=minecraft:bucket
 CAULDRON=minecraft:cauldron
+CRAFTER=rftoolsutility:crafter1
 
 [ -x "$CTL" ] || { echo "missing horizon-ctl: $CTL" >&2; exit 1; }
 [ -n "$CTL" ] || { echo "set CTL= to the horizon-ctl of this pin (launcher-game.sh env)" >&2; exit 1; }
@@ -142,9 +160,9 @@ arena() {
         fi
     done
     [ "$loaded" = true ] || fail "the End arena chunk never loaded"
-    ctl command "execute in minecraft:the_end run fill $((X0 - 2)) 100 -14 $((X0 + 4)) 100 14 minecraft:stone" >/dev/null
+    ctl command "execute in minecraft:the_end run fill $((X0 - 2)) 100 -20 $((X0 + 4)) 100 20 minecraft:stone" >/dev/null
     ctl wait 6 >/dev/null
-    ctl command "execute in minecraft:the_end run fill $((X0 - 2)) 101 -14 $((X0 + 4)) 108 14 minecraft:air" >/dev/null
+    ctl command "execute in minecraft:the_end run fill $((X0 - 2)) 101 -20 $((X0 + 4)) 108 20 minecraft:air" >/dev/null
     ctl wait 6 >/dev/null
     ctl command "execute in minecraft:the_end run kill @e[type=!player]" >/dev/null
     ctl command "execute in minecraft:the_end run tp @s $X0.5 101 0.5" >/dev/null
@@ -184,20 +202,40 @@ hold() { # hold ITEM [COUNT]
     ctl wait 2 >/dev/null
 }
 
-place_tank() { # place_tank X Y Z
-    local x=$1 y=$2 z=$3
+# Click ITEM from the hand down onto the floor under X Y Z. Retries the click twice: the
+# client's selection and aim settle a tick or two after a teleport, and a `place` that lands
+# before that is refused by the server (seen once, on the tank's doctored-item phase).
+try_place() { # try_place ITEM X Y Z
+    local item=$1 x=$2 y=$3 z=$4 attempt reply=""
+    for attempt in 1 2 3; do
+        ctl select "$item" >/dev/null 2>&1 || true
+        ctl wait 3 >/dev/null
+        ctl look-at-block "$x" $((y - 1)) "$z" up >/dev/null 2>&1 || true
+        ctl wait 1 >/dev/null
+        if reply=$(ctl place "$x" "$y" "$z" --item "$item" 2>&1); then
+            return 0
+        fi
+        echo "  place attempt $attempt refused: $(tr -d '\n' <<<"$reply" | cut -c1-240)" >&2
+        ctl wait 10 >/dev/null
+    done
+    fail "ctl place $item at $x,$y,$z was refused three times: $(ctl inventory | jq -c '{hotbar,main}')"
+}
+
+# Place ITEM from the player's hand at X Y Z (the player stands two blocks west).
+place_block() { # place_block ITEM X Y Z
+    local item=$1 x=$2 y=$3 z=$4
     ctl command "execute in minecraft:the_end run tp @s $((x - 2)).5 $y $z.5" >/dev/null
     ctl wait 6 >/dev/null
-    hold "$BLOCK"
-    local aim reply
-    aim=$(ctl look-at-block "$x" $((y - 1)) "$z" up 2>&1) \
-        || fail "cannot aim at the floor under $x,$y,$z: $aim"
-    reply=$(ctl place "$x" "$y" "$z" --item "$BLOCK" 2>&1) \
-        || fail "ctl place at $x,$y,$z failed: $(tr -d '\n' <<<"$reply" | cut -c1-300)"
+    hold "$item"
+    try_place "$item" "$x" "$y" "$z"
     ctl wait 6 >/dev/null
     local name
     name=$(block_name "$x" "$y" "$z")
-    [ "$name" = "$BLOCK" ] || fail "the tank did not place at $x,$y,$z (got '$name')"
+    [ "$name" = "$item" ] || fail "$item did not place at $x,$y,$z (got '$name')"
+}
+
+place_tank() { # place_tank X Y Z
+    place_block "$BLOCK" "$1" "$2" "$3"
 }
 
 # Right-click the tank from two blocks away, holding ITEM.
@@ -235,7 +273,7 @@ break_block() { # break_block X Y Z TOOL
 # its own tag, components included. (A selector over dropped items would also
 # catch the arena's ambient ender pearls.)
 held_item_line() {
-    ctl select "$BLOCK" >/dev/null
+    ctl select "${1:-$BLOCK}" >/dev/null
     ctl wait 4 >/dev/null
     ctl command "data get entity @s SelectedItem" >/dev/null
     ctl wait 6 >/dev/null
@@ -243,31 +281,74 @@ held_item_line() {
 }
 
 # Collect the drop (`ctl collect` walks to it), then stand on its block as a fallback.
-pick_up() { # pick_up X Y Z
+pick_up() { # pick_up X Y Z [ITEM]
+    local item=${4:-$BLOCK}
     ctl collect 8 >/dev/null 2>&1 || true
     ctl wait 10 >/dev/null
-    if ! ctl inventory | jq -e "[.hotbar[], .main[] | select(.item == \"$BLOCK\")] | length >= 1" >/dev/null; then
+    if ! ctl inventory | jq -e "[.hotbar[], .main[] | select(.item == \"$item\")] | length >= 1" >/dev/null; then
         ctl command "execute in minecraft:the_end run tp @s $1.5 $2 $3.5" >/dev/null
         ctl wait 20 >/dev/null
     fi
-    ctl inventory | jq -e "[.hotbar[], .main[] | select(.item == \"$BLOCK\")] | length >= 1" >/dev/null \
-        || fail "the broken tank's item was not picked up: $(ctl inventory | jq -c '{hotbar,main}')"
+    ctl inventory | jq -e "[.hotbar[], .main[] | select(.item == \"$item\")] | length >= 1" >/dev/null \
+        || fail "the broken block's $item item was not picked up: $(ctl inventory | jq -c '{hotbar,main}')"
 }
 
 # Place the tank item the player already carries. Never `/item replace` here:
 # that hands a fresh, empty tank and proves nothing about the carried one.
-place_kept() { # place_kept X Y Z
-    local x=$1 y=$2 z=$3
+place_kept() { # place_kept X Y Z [ITEM]
+    local x=$1 y=$2 z=$3 item=${4:-$BLOCK}
     ctl command "execute in minecraft:the_end run tp @s $((x - 2)).5 101 $z.5" >/dev/null
     ctl wait 6 >/dev/null
-    ctl select "$BLOCK" >/dev/null
-    ctl wait 2 >/dev/null
-    ctl look-at-block "$x" $((y - 1)) "$z" up >/dev/null
-    ctl place "$x" "$y" "$z" --item "$BLOCK" >/dev/null \
-        || fail "ctl place at $x,$y,$z failed: $(ctl inventory | jq -c '{hotbar,main}')"
+    try_place "$item" "$x" "$y" "$z"
     ctl wait 6 >/dev/null
-    [ "$(block_name "$x" "$y" "$z")" = "$BLOCK" ] || fail "the carried tank did not place at $x,$y,$z"
+    [ "$(block_name "$x" "$y" "$z")" = "$item" ] || fail "the carried $item did not place at $x,$y,$z"
 }
+
+
+# ---------------------------------------------------------------------------
+# The crafter (slice 3): readouts and the harness's controls
+# ---------------------------------------------------------------------------
+
+# `/rftoolsutility crafter X Y Z`, parsed into C_ENERGY/C_CAP/C_SPEED/C_MODE/C_KEEP/
+# C_RECIPES/C_IN/C_OUT.
+crafter() { # crafter X Y Z
+    NONCE=$((NONCE + 1))
+    say "rftoolsutility crafter $1 $2 $3 $NONCE"
+    ctl wait 12 >/dev/null
+    local line
+    line=$(ctl messages 20 | jq -r '.chat[]' | grep -m1 "nonce=$NONCE" || true)
+    [ -n "$line" ] || fail "no fresh /rftoolsutility crafter reply for nonce $NONCE: $(ctl messages 8 | jq -c '.chat')"
+    eval "$(python3 "$PORT/tools/parse_crafter.py" "$line")"
+    [ "${ok:-0}" = 1 ] || fail "the crafter line did not parse: $line"
+    echo "  $line" >&2
+}
+
+# Run a crafter control and keep its own reply (the newest `/rftoolsutility:` line, after a
+# 12-tick wait); the caller asserts on that text and on the readout that follows.
+control() { # control ARGS…
+    say "rftoolsutility $*"
+    ctl wait 12 >/dev/null
+    # `ctl messages` lists the newest line first, so `-m1` is this command's own reply.
+    REPLY=$(ctl messages 12 | jq -r '.chat[]' | grep -m1 '/rftoolsutility' || true)
+    echo "  $REPLY" >&2
+}
+
+teach() { control recipe "$@"; }
+set_slot() { control buffer "$@"; }
+set_energy() { control energy "$@"; }
+set_setting() { control setting "$@"; }
+
+expect_energy() { [ "$C_ENERGY" = "$1" ] || fail "the crafter holds $C_ENERGY FE, expected $1"; }
+expect_recipes() { [ "$C_RECIPES" = "$1" ] || fail "the crafter's recipes read '$C_RECIPES', expected '$1'"; }
+expect_in() { [ "$C_IN" = "$1" ] || fail "the crafter's buffer reads '$C_IN', expected '$1'"; }
+expect_out() { [ "$C_OUT" = "$1" ] || fail "the crafter's output reads '$C_OUT', expected '$1'"; }
+# The total number of ITEM in the crafter's input buffer, across however many slots (and
+# however they merged): `in_total minecraft:crafting_table`.
+in_total() { # in_total ITEM
+    printf '%s' "$C_IN" | tr ';' '\n' | sed -n "s/.*=$1x\([0-9]*\)$/\1/p" \
+        | awk '{sum += $1} END {print sum + 0}'
+}
+in_has() { [[ "$C_IN" == *"$1"* ]] || fail "the crafter's buffer '$C_IN' does not hold '$1'"; }
 
 echo "== launch (The End arena, the package's own content and code) =="
 launch
@@ -459,4 +540,148 @@ expect_level 8
 expect_block_level "$SX" 101 12 8
 echo "  99,999 mB asked by the item, $AMOUNT mB in the placed tank (level $LEVEL)"
 
-echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; and an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity"
+
+echo "== N: a crafter placed from its item is empty and knows no recipe =="
+place_block "$CRAFTER" "$SX" 101 -18
+crafter "$SX" 101 -18
+[ "$C_CAP" = 50000 ] || fail "the crafter's capacity reads $C_CAP, expected 50000"
+expect_energy 0
+expect_recipes -
+expect_in -
+expect_out -
+CRAFTER_STATE=$(ctl block "$SX" 101 -18 | jq -r '.state // empty')
+echo "  block state $CRAFTER_STATE" >&2
+case "$CRAFTER_STATE" in
+    *facing=north*|*facing=south*|*facing=east*|*facing=west*) ;;
+    *) fail "the crafter has no horizontal facing state: $CRAFTER_STATE" ;;
+esac
+
+echo "== O: a recipe is taught from the engine's table, and a bad one is refused =="
+teach "$SX" 101 -18 0 minecraft:oak_planks
+[[ "$REPLY" == *"crafts minecraft:oak_planks"* ]] || fail "teaching oak_planks did not answer: $REPLY"
+crafter "$SX" 101 -18
+expect_recipes minecraft:oak_planks
+# A slot past this machine's two, and an id the crafting table does not hold: both refused.
+teach "$SX" 101 -18 5 minecraft:oak_planks
+[[ "$REPLY" == *"2 recipe slots"* ]] || fail "a fifth recipe slot was not refused: $REPLY"
+teach "$SX" 101 -18 0 minecraft:iron_ingot_from_smelting
+[[ "$REPLY" == *"no crafting recipe"* ]] || fail "a smelting recipe was not refused: $REPLY"
+crafter "$SX" 101 -18
+expect_recipes minecraft:oak_planks
+echo "  the crafter still knows only $C_RECIPES"
+
+echo "== P: with no energy nothing is crafted =="
+set_slot "$SX" 101 -18 10 minecraft:oak_log 3
+ctl wait 30 >/dev/null
+crafter "$SX" 101 -18
+expect_energy 0
+expect_in 10=minecraft:oak_logx3
+expect_out -
+echo "  three logs, no FE: $C_IN, output '$C_OUT'"
+
+echo "== Q: 5,000 FE and three logs become twelve planks for 300 FE =="
+set_energy "$SX" 101 -18 5000
+ctl wait 40 >/dev/null
+crafter "$SX" 101 -18
+if [ "$SELFTEST" = 1 ] && [ "$SELFTEST_AT" = craft ]; then
+    echo "(selftest: asserting the crafter made nothing and spent nothing)"
+    expect_energy 5000
+    expect_in 10=minecraft:oak_logx3
+    expect_out -
+else
+    expect_energy 4700
+    expect_in -
+    expect_out 36=minecraft:oak_planksx12
+fi
+echo "  three logs crafted: $C_OUT, $C_ENERGY FE left"
+
+echo "== R: an input the recipe does not take is left alone and costs nothing =="
+set_slot "$SX" 101 -18 10 minecraft:cobblestone 3
+set_energy "$SX" 101 -18 1000
+ctl wait 30 >/dev/null
+crafter "$SX" 101 -18
+expect_energy 1000
+expect_in 10=minecraft:cobblestonex3
+echo "  cobblestone is no plank: $C_IN, $C_ENERGY FE untouched"
+
+echo "== S: a full output refuses the operation (nothing consumed, no energy) =="
+# Setup runs at 0 FE so nothing crafts while the machine is being filled.
+set_energy "$SX" 101 -18 0
+for slot in 36 37 38 39; do
+    set_slot "$SX" 101 -18 "$slot" minecraft:wooden_pickaxe 1
+done
+set_slot "$SX" 101 -18 10 minecraft:oak_log 2
+set_energy "$SX" 101 -18 1000
+ctl wait 30 >/dev/null
+crafter "$SX" 101 -18
+expect_energy 1000
+expect_in 10=minecraft:oak_logx2
+[ "$C_OUT" = "36=minecraft:wooden_pickaxex1;37=minecraft:wooden_pickaxex1;38=minecraft:wooden_pickaxex1;39=minecraft:wooden_pickaxex1" ] \
+    || fail "the four output slots did not stay as they were: $C_OUT"
+echo "  no room for planks: $C_ENERGY FE untouched, the logs stay"
+
+echo "== T: chained crafting in int mode turns four logs into four crafting tables =="
+# The machine is emptied and reconfigured at 0 FE, so only the four logs below are crafted.
+set_energy "$SX" 101 -18 0
+for slot in 36 37 38 39; do
+    set_slot "$SX" 101 -18 "$slot" minecraft:air 0
+done
+set_slot "$SX" 101 -18 10 minecraft:air 0
+set_setting "$SX" 101 -18 mode int
+set_setting "$SX" 101 -18 speed slow
+teach "$SX" 101 -18 1 minecraft:crafting_table
+[[ "$REPLY" == *"crafts minecraft:crafting_table"* ]] || fail "teaching the crafting table did not answer: $REPLY"
+set_slot "$SX" 101 -18 10 minecraft:oak_log 4
+set_energy "$SX" 101 -18 5000
+ctl wait 60 >/dev/null
+crafter "$SX" 101 -18
+# Upstream charges per *cycle* (`rf * i`), and a cycle runs each taught recipe once: four
+# cycles, two crafts each, is 400 FE.
+expect_energy 4600
+expect_out -
+[ "$(in_total minecraft:crafting_table)" = 4 ] \
+    || fail "four logs did not become four crafting tables inside the machine: $C_IN"
+echo "  four logs ($C_ENERGY FE left) chained into four tables in the buffer: $C_IN"
+
+echo "== U: a broken crafter keeps its recipes, buffer and energy on its item =="
+ctl command "gamemode survival" >/dev/null
+ctl wait 20 >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 6 >/dev/null
+break_block "$SX" 101 -18 minecraft:iron_pickaxe
+# A survival break needs the player to be in reach; the drop is the crafter's own item.
+pick_up "$SX" 101 -18 "$CRAFTER"
+DROP_LINE=$(held_item_line "$CRAFTER")
+[ -n "$DROP_LINE" ] || fail "no /data get reply for the picked-up crafter: $(ctl messages 8 | jq -c '.chat')"
+[[ "$DROP_LINE" == *"minecraft:block_entity_data"* ]] \
+    || fail "the dropped crafter carries no block-entity data: $DROP_LINE"
+echo "  $DROP_LINE" >&2
+place_kept "$SX" 101 -18 "$CRAFTER"
+crafter "$SX" 101 -18
+expect_recipes "minecraft:oak_planks+minecraft:crafting_table"
+expect_energy 4600
+[ "$(in_total minecraft:crafting_table)" = 4 ] \
+    || fail "the placed crafter lost its crafting tables: $C_IN"
+echo "  the placed crafter still knows $C_RECIPES, holds $C_ENERGY FE and $C_IN"
+
+
+echo "== V: the crafter drops only for an iron-tier pickaxe (the needs_iron_tool tag) =="
+ctl command "gamemode survival" >/dev/null
+ctl wait 20 >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 6 >/dev/null
+place_block "$CRAFTER" "$SX" 101 18
+break_block "$SX" 101 18 minecraft:wooden_pickaxe
+ctl collect 8 >/dev/null 2>&1 || true
+ctl wait 10 >/dev/null
+if ctl inventory | jq -e "[.hotbar[], .main[] | select(.item == \"$CRAFTER\")] | length >= 1" >/dev/null; then
+    fail "a wooden pickaxe broke the crafter and it dropped: the block is not needs_iron_tool"
+fi
+echo "  a wooden pickaxe broke the crafter and dropped nothing"
+# The control: the same block, the same break, with a tool the tag accepts.
+place_block "$CRAFTER" "$SX" 101 18
+break_block "$SX" 101 18 minecraft:iron_pickaxe
+pick_up "$SX" 101 18 "$CRAFTER"
+echo "  an iron pickaxe broke the same block and the item came back"
+
+echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it"

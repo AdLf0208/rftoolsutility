@@ -1,14 +1,14 @@
-# RFTools Utility for Horizon — slices 1–2: the tank
+# RFTools Utility for Horizon — slices 1–3: the tank and the crafter
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1 and 2, the tank.** One flat SDK package
-(`rftoolsutility.hmod`, mod API 0.2) carries the block, the item, the models and
-textures, and the behaviour — see [`notes.md`](notes.md) § "Migration to the SDK
-format" and § "Slice 2 — the tank's contents travel with its item".
+**Status: slices 1–3, the tank and the crafter.** One flat SDK package
+(`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the models and
+textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 3 — the crafter"
+and § "Slice 2 — the tank's contents travel with its item".
 
 ## What works
 
@@ -27,17 +27,28 @@ format" and § "Slice 2 — the tank's contents travel with its item".
 - **The fill level is visible**: the block's own `level` state (0…8) picks the
   jar's nine `tank0`…`tank8` side textures, and the server tick keeps it on the
   tank's contents however they changed.
-- `/rftoolsutility info <pos> [nonce]` prints the fluid, the amount, the
-  capacity, the level and the held item; `/rftoolsutility tank <pos> <fluid>
-  <mb>` sets the contents (an operator harness control, like
-  `/rftoolsbase energy`).
+- `rftoolsutility:crafter1` — a **crafting machine**: a 41-slot container (10
+  ghost, 26 input, 4 output, the filter slot), a **50,000 FE** buffer filling at
+  500 a call, and a server tick that runs a taught 3x3 crafting recipe from the
+  input buffer for 100 FE a cycle. Two recipes per machine, crafted in order, and
+  `mode int` puts a result back in the input buffer so the next recipe can use it
+  (**chained crafting**: a log becomes planks, the planks a crafting table, for
+  100 FE). `keep` leaves the last item of each slot; `speed fast` runs five
+  cycles a tick. Hoppers reach the input and output slots on every face, and a
+  broken crafter's item carries its recipes, buffer and energy.
+- Commands (the harness, as upstream has no commands): `/rftoolsutility info
+  <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
+  crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
+  <count>`, `energy <pos> <amount>` and `setting <pos> speed|mode|keep <value>`
+  for the crafter.
 
 ## What does not (yet)
 
 Teleporters, screens and their 30 modules, the logic blocks, the environmental
-controller and its modules, the spawner, the three crafters, the tank's GUI and
-filter slot, the fluid quad inside its window, and the item's `Contents: …`
-tooltip. The full list, with the reason for each, is in [`notes.md`](notes.md).
+controller and its modules, the spawner, `crafter2`/`crafter3`, the tank's GUI and
+filter slot, the fluid quad inside its window, the crafter's GUI, the item
+tooltips, and the infusing power discount. The full list, with the reason for
+each, is in [`notes.md`](notes.md).
 
 ## Building and checking
 

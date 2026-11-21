@@ -218,6 +218,245 @@ pub fn clamped(tank: &Tank) -> Tank {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Slice 3: the crafter (`CrafterBaseTE`, `CrafterConfiguration`, `CrafterContainer`)
+// ---------------------------------------------------------------------------
+
+/// `CrafterConfiguration.MAXENERGY`'s default (`crafterMaxRF`): the crafter's buffer.
+pub const CRAFTER_CAPACITY: i32 = 50_000;
+/// `CrafterConfiguration.RECEIVEPERTICK`'s default (`crafterRFPerTick`).
+pub const CRAFTER_RECEIVE: i32 = 500;
+/// `CrafterConfiguration.rfPerOperation`'s default: what one crafting operation costs.
+pub const RF_PER_OPERATION: i32 = 100;
+/// `CrafterConfiguration.speedOperations`'s default: operations per tick in fast mode.
+pub const FAST_OPERATIONS: i32 = 5;
+/// `CrafterContainer.SLOT_CRAFTINPUT`: cell (0,0) of the 3x3 ghost grid.
+pub const GHOST_INPUT: usize = 0;
+/// `CrafterContainer.SLOT_CRAFTOUTPUT`: the ghost grid's result slot.
+pub const GHOST_RESULT: usize = 9;
+/// `CrafterContainer.SLOT_BUFFER`: the first of the 26 input buffer slots.
+pub const BUFFER_IN: usize = 10;
+/// `CrafterContainer.BUFFER_SIZE`: 13 x 2 input buffer slots.
+pub const BUFFER_IN_SLOTS: usize = 26;
+/// `CrafterContainer.SLOT_BUFFEROUT`: the first of the four output buffer slots.
+pub const BUFFER_OUT: usize = 36;
+/// `CrafterContainer.BUFFEROUT_SIZE`.
+pub const BUFFER_OUT_SLOTS: usize = 4;
+/// The crafter's container: 10 ghost slots, 26 buffer slots, 4 output slots and the filter
+/// module slot (`CrafterContainer.CONTAINER_FACTORY`'s `10 + 26 + 4 + 1`).
+pub const CRAFTER_SLOTS: usize = 41;
+
+/// `SpeedMode`: whether the crafter runs one operation a tick or five.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Speed {
+    /// One operation per tick, upstream's default (`CrafterData.createDefault`).
+    #[default]
+    Slow,
+    /// `FAST_OPERATIONS` operations per tick.
+    Fast,
+}
+
+impl Speed {
+    /// The name the machine's own setting uses (`SpeedMode.getSerializedName`).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Speed::Slow => "Slow",
+            Speed::Fast => "Fast",
+        }
+    }
+
+    /// The speed a name from the harness names, case-insensitive; none for anything else.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.to_ascii_lowercase().as_str() {
+            "slow" => Some(Speed::Slow),
+            "fast" => Some(Speed::Fast),
+            _ => None,
+        }
+    }
+}
+
+/// A stack as the crafter's planning sees it: the item id and how many. Components are the
+/// glue's business; a crafting operation only moves whole items.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stack {
+    /// `minecraft:oak_log`, `minecraft:oak_planks`, …
+    pub item: String,
+    /// How many items the slot holds.
+    pub count: u32,
+}
+
+/// One cell of the operation's work grid and the buffer slot that feeds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Take {
+    /// The work grid's cell, row-major, 0..9.
+    pub cell: usize,
+    /// The buffer slot the item comes out of.
+    pub slot: usize,
+}
+
+/// `CraftMode`: where a crafted result is put (`CrafterBaseTE.placeResult`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CraftMode {
+    /// The four output slots the automation takes from (upstream's `Ext` and `ExtC`).
+    #[default]
+    Ext,
+    /// The input buffer, where the next recipe of the cycle can use it: upstream's chained
+    /// crafting ("allows recipes to use the crafting results of previous steps").
+    Int,
+}
+
+impl CraftMode {
+    /// The name the machine's own setting uses (`CraftMode.getSerializedName`).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            CraftMode::Ext => "Ext",
+            CraftMode::Int => "Int",
+        }
+    }
+
+    /// The craft mode a name from the harness names, case-insensitive; none for anything else.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.to_ascii_lowercase().as_str() {
+            "ext" => Some(CraftMode::Ext),
+            "int" => Some(CraftMode::Int),
+            _ => None,
+        }
+    }
+}
+
+/// The buffer slots a crafted result goes to: [`CraftMode::Int`]'s input buffer, which the next
+/// recipe of the cycle reads, or [`CraftMode::Ext`]'s four output slots.
+#[must_use]
+pub fn result_range(mode: CraftMode) -> std::ops::Range<usize> {
+    match mode {
+        CraftMode::Int => BUFFER_IN..BUFFER_IN + BUFFER_IN_SLOTS,
+        CraftMode::Ext => BUFFER_OUT..BUFFER_OUT + BUFFER_OUT_SLOTS,
+    }
+}
+
+/// How many operations one tick runs: one in slow mode, [`FAST_OPERATIONS`] in fast, and never
+/// more than the energy held pays for (`CrafterBaseTE.tickServer`).
+#[must_use]
+pub fn steps(speed: Speed, energy: i32) -> i32 {
+    let wanted = match speed {
+        Speed::Slow => 1,
+        Speed::Fast => FAST_OPERATIONS,
+    };
+    wanted.min(energy.max(0) / RF_PER_OPERATION.max(1))
+}
+
+/// The plan for one operation: which buffer slot feeds each cell of the 3x3 work grid, in
+/// cell order (`CrafterBaseTE.testAndConsume`). A take's `slot` is an index into `buffer` (the
+/// caller's input buffer slice), not a world slot. `cells` holds, for each of the nine cells, the
+/// item ids the recipe accepts there (an empty list for a cell the recipe leaves empty).
+///
+/// Upstream splits one item per cell out of the first slot that still holds more than `keep`
+/// *after the cells already fed*, so one slot of four planks feeds a recipe that wants four
+/// (this is what makes chained crafting work); `keep_one` (`KeepMode.KEEP`) leaves the last item
+/// of a slot in place. None when the buffer cannot supply every filled cell.
+#[must_use]
+pub fn plan(
+    cells: &[Vec<String>; 9],
+    buffer: &[Option<Stack>],
+    keep_one: bool,
+) -> Option<Vec<Take>> {
+    let keep = u32::from(keep_one);
+    let mut left: Vec<u32> = buffer
+        .iter()
+        .map(|slot| slot.as_ref().map_or(0, |stack| stack.count))
+        .collect();
+    let mut takes = Vec::new();
+    for (cell, accepted) in cells.iter().enumerate() {
+        if accepted.is_empty() {
+            continue;
+        }
+        let found = buffer.iter().enumerate().find(|(slot, stack)| {
+            let Some(stack) = stack else {
+                return false;
+            };
+            left[*slot] > keep && accepted.contains(&stack.item)
+        });
+        let (slot, _) = found?;
+        left[slot] -= 1;
+        takes.push(Take { cell, slot });
+    }
+    (!takes.is_empty()).then_some(takes)
+}
+
+/// Take one item per planned cell out of `buffer` (`testAndConsume`'s `split(1)`), answering
+/// whether every planned take happened.
+pub fn consume(takes: &[Take], buffer: &mut [Option<Stack>], keep_one: bool) -> bool {
+    if takes.is_empty() {
+        return false;
+    }
+    let keep = u32::from(keep_one);
+    for take in takes {
+        let Some(Some(stack)) = buffer.get_mut(take.slot) else {
+            return false;
+        };
+        if stack.count <= keep {
+            return false;
+        }
+        stack.count -= 1;
+        if stack.count == 0 {
+            buffer[take.slot] = None;
+        }
+    }
+    true
+}
+
+/// The energy a tick's cycles cost: one cycle runs each taught recipe once and costs
+/// [`RF_PER_OPERATION`] (`CrafterBaseTE.tickServer`'s `rf * i`, `i` the cycles run).
+#[must_use]
+pub fn spend(cycles: i32) -> i32 {
+    cycles.max(0) * RF_PER_OPERATION
+}
+
+/// Where each of `stacks` lands in the output buffer, in order: the index into `out` per stack
+/// (the caller adds its own base slot), or none when the buffer has no room for all of them
+/// (`InventoryTools.insertItemRanged` over the four output slots). `max_of` is the item's own
+/// stack limit.
+#[must_use]
+pub fn placements(
+    stacks: &[Stack],
+    out: &[Option<Stack>],
+    max_of: &dyn Fn(&str) -> u32,
+) -> Option<Vec<usize>> {
+    let mut room: Vec<Option<Stack>> = out.to_vec();
+    let mut slots = Vec::with_capacity(stacks.len());
+    for stack in stacks {
+        let limit = max_of(&stack.item).max(1);
+        // `InventoryTools.insertItemRanged` merges into a slot that already holds the item
+        // first, then takes an empty one; a stack larger than the limit never fits.
+        let merge = room.iter().position(|slot| {
+            slot.as_ref().is_some_and(|held| {
+                held.item == stack.item && held.count.saturating_add(stack.count) <= limit
+            })
+        });
+        let target = match merge {
+            Some(slot) => slot,
+            None => {
+                if stack.count > limit {
+                    return None;
+                }
+                room.iter().position(Option::is_none)?
+            }
+        };
+        match &mut room[target] {
+            Some(held) => held.count += stack.count,
+            empty @ None => {
+                *empty = Some(stack.clone());
+            }
+        }
+        slots.push(target);
+    }
+    Some(slots)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +709,251 @@ mod tests {
         );
         let held = tank("minecraft:lava", 5_000);
         assert_eq!(clamped(&held), held, "a carried tank comes back unchanged");
+    }
+
+    // -- the crafter (slice 3) -------------------------------------------------
+
+    fn stack(item: &str, count: u32) -> Option<Stack> {
+        Some(Stack {
+            item: item.to_owned(),
+            count,
+        })
+    }
+
+    fn ids(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    fn grid(cells: [Vec<String>; 9]) -> [Vec<String>; 9] {
+        cells
+    }
+
+    #[test]
+    fn a_crafter_burns_one_operation_in_slow_mode_and_five_in_fast() {
+        assert_eq!(steps(Speed::Slow, CRAFTER_CAPACITY), 1);
+        assert_eq!(steps(Speed::Fast, CRAFTER_CAPACITY), FAST_OPERATIONS);
+    }
+
+    #[test]
+    fn energy_pays_for_no_more_operations_than_it_covers() {
+        assert_eq!(
+            steps(Speed::Fast, 250),
+            2,
+            "250 RF pays for two 100 RF operations"
+        );
+        assert_eq!(
+            steps(Speed::Fast, 99),
+            0,
+            "less than one operation runs none"
+        );
+        assert_eq!(steps(Speed::Slow, 0), 0);
+        assert_eq!(steps(Speed::Fast, -500), 0, "a nonsense amount runs none");
+        assert_eq!(spend(3), 3 * RF_PER_OPERATION);
+        assert_eq!(spend(0), 0);
+    }
+
+    #[test]
+    fn one_log_crafts_from_the_buffer() {
+        // `minecraft:oak_planks` is shapeless: one log, one filled cell.
+        let cells = grid([
+            ids(&["minecraft:oak_log"]),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        ]);
+        let mut buffer = vec![None; BUFFER_IN_SLOTS];
+        buffer[0] = stack("minecraft:oak_log", 3);
+        let takes = plan(&cells, &buffer, false).expect("one log feeds the one cell");
+        assert_eq!(takes, vec![Take { cell: 0, slot: 0 }]);
+        assert!(consume(&takes, &mut buffer, false));
+        assert_eq!(buffer[0], stack("minecraft:oak_log", 2));
+    }
+
+    #[test]
+    fn a_cell_accepts_any_item_of_its_ingredient() {
+        // A `#minecraft:planks` cell: four ids, the buffer holds the third.
+        let cells = grid([
+            ids(&[
+                "minecraft:oak_planks",
+                "minecraft:birch_planks",
+                "minecraft:spruce_planks",
+            ]),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        ]);
+        let mut buffer = vec![None; BUFFER_IN_SLOTS];
+        buffer[7] = stack("minecraft:spruce_planks", 1);
+        let takes = plan(&cells, &buffer, false).expect("spruce is a plank");
+        assert_eq!(takes, vec![Take { cell: 0, slot: 7 }]);
+    }
+
+    #[test]
+    fn one_slot_can_feed_several_cells() {
+        // Upstream splits one item per cell out of the same slot while it still holds more than
+        // `keep`; two cells of one ingredient are fed by one slot of two.
+        let cells = grid([
+            ids(&["minecraft:oak_log"]),
+            ids(&["minecraft:oak_log"]),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        ]);
+        let mut two = vec![None; BUFFER_IN_SLOTS];
+        two[0] = stack("minecraft:oak_log", 2);
+        let takes = plan(&cells, &two, false).expect("one slot of two feeds two cells");
+        assert_eq!(
+            takes,
+            vec![Take { cell: 0, slot: 0 }, Take { cell: 1, slot: 0 }]
+        );
+        assert!(consume(&takes, &mut two, false));
+        assert_eq!(two[0], None, "both logs left the slot");
+        // One item cannot feed two cells, and keep-one leaves the last one behind.
+        let mut one = vec![None; BUFFER_IN_SLOTS];
+        one[0] = stack("minecraft:oak_log", 1);
+        assert_eq!(plan(&cells, &one, false), None);
+        let mut kept = vec![None; BUFFER_IN_SLOTS];
+        kept[0] = stack("minecraft:oak_log", 2);
+        assert_eq!(
+            plan(&cells, &kept, true),
+            None,
+            "keep-one needs a spare item"
+        );
+        kept[0] = stack("minecraft:oak_log", 3);
+        assert_eq!(plan(&cells, &kept, true).map(|takes| takes.len()), Some(2));
+        // A second slot is not needed either way.
+        let mut spread = vec![None; BUFFER_IN_SLOTS];
+        spread[0] = stack("minecraft:oak_log", 1);
+        spread[3] = stack("minecraft:oak_log", 1);
+        let takes = plan(&cells, &spread, false).expect("two slots feed two cells");
+        assert_eq!(
+            takes,
+            vec![Take { cell: 0, slot: 0 }, Take { cell: 1, slot: 3 }]
+        );
+    }
+
+    #[test]
+    fn keeping_one_leaves_the_last_item_behind() {
+        let cells = grid([
+            ids(&["minecraft:oak_log"]),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        ]);
+        let mut one = vec![None; BUFFER_IN_SLOTS];
+        one[3] = stack("minecraft:oak_log", 1);
+        assert_eq!(
+            plan(&cells, &one, true),
+            None,
+            "keep-one needs more than one item to take one"
+        );
+        let mut two = vec![None; BUFFER_IN_SLOTS];
+        two[3] = stack("minecraft:oak_log", 2);
+        let takes = plan(&cells, &two, true).expect("the second log is spare");
+        assert!(consume(&takes, &mut two, true));
+        assert_eq!(two[3], stack("minecraft:oak_log", 1), "one log is kept");
+    }
+
+    #[test]
+    fn an_empty_grid_has_no_operation() {
+        let cells = grid([
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        ]);
+        let mut buffer = vec![None; BUFFER_IN_SLOTS];
+        buffer[0] = stack("minecraft:oak_log", 5);
+        assert_eq!(plan(&cells, &buffer, false), None);
+        assert!(!consume(&[], &mut buffer, false), "an empty take consumes");
+        assert_eq!(buffer[0], stack("minecraft:oak_log", 5));
+    }
+
+    #[test]
+    fn the_output_merges_up_to_the_stack_limit() {
+        let out = vec![None, stack("minecraft:oak_planks", 60), None, None];
+        let four = Stack {
+            item: "minecraft:oak_planks".to_owned(),
+            count: 4,
+        };
+        let slots =
+            placements(std::slice::from_ref(&four), &out, &|_| 64).expect("60 + 4 fits a 64 stack");
+        assert_eq!(
+            slots,
+            vec![1],
+            "it merges into the slot that already holds planks"
+        );
+        let pickaxe = Stack {
+            item: "minecraft:wooden_pickaxe".to_owned(),
+            count: 1,
+        };
+        let two = vec![pickaxe.clone(), pickaxe];
+        assert_eq!(
+            placements(&two, &[None, None, None, None], &|_| 1),
+            Some(vec![0, 1]),
+            "unstackable results take a slot each"
+        );
+    }
+
+    #[test]
+    fn a_full_output_buffer_refuses_the_operation() {
+        let out = vec![
+            stack("minecraft:wooden_pickaxe", 1),
+            stack("minecraft:wooden_sword", 1),
+            stack("minecraft:wooden_shovel", 1),
+            stack("minecraft:wooden_axe", 1),
+        ];
+        let hoe = Stack {
+            item: "minecraft:wooden_hoe".to_owned(),
+            count: 1,
+        };
+        assert_eq!(placements(&[hoe], &out, &|_| 1), None);
+    }
+
+    #[test]
+    fn an_internal_result_lands_in_the_input_buffer_where_the_next_recipe_reads_it() {
+        let range = result_range(CraftMode::Int);
+        assert_eq!(range, BUFFER_IN..BUFFER_IN + BUFFER_IN_SLOTS);
+        assert_eq!(
+            CraftMode::default(),
+            CraftMode::Ext,
+            "upstream's CraftingRecipe defaults to Ext"
+        );
+        assert_eq!(CraftMode::Int.name(), "Int");
+        assert_eq!(CraftMode::parse("ext"), Some(CraftMode::Ext));
+        assert_eq!(CraftMode::parse("INT"), Some(CraftMode::Int));
+        assert_eq!(CraftMode::parse("chain"), None);
+    }
+
+    #[test]
+    fn an_external_result_lands_in_the_output_slots() {
+        assert_eq!(
+            result_range(CraftMode::Ext),
+            BUFFER_OUT..BUFFER_OUT + BUFFER_OUT_SLOTS
+        );
     }
 }

@@ -1,9 +1,11 @@
 id = "rftoolsutility"
 name = "RFTools Utility"
-version = "0.2.1"
+version = "0.2.2"
 description = """A port of RFTools Utility for Horizon: the tank, a 32,000 mB fluid tank that holds
 one fluid at a time, takes and gives a bucket on a right click, exposes the fluid
-capability on every face and shows its fill level through the jar's own nine textures."""
+capability on every face and shows its fill level through the jar's own nine textures;
+and the crafter, a 50,000 FE crafting machine that runs a taught 3x3 recipe from its
+buffer, chains one recipe's result into the next, and takes automation on every face."""
 authors = ["McJty", "Horizon native mod contributors"]
 # A native mod: Rust in src/, compiled by the launcher against the game build [native] pins,
 # beside the carried data/ and assets/. The id is the resource namespace and the only identity:

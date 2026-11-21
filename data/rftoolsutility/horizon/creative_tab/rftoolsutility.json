@@ -1,7 +1,8 @@
 {
   "icon": "rftoolsutility:tank",
   "items": [
-    "rftoolsutility:tank"
+    "rftoolsutility:tank",
+    "rftoolsutility:crafter1"
   ],
   "title": "itemGroup.rftoolsutility"
 }

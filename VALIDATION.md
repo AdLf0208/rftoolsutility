@@ -146,3 +146,36 @@ One lease per step, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`, no `--target-dir`. L
 The in-game phases and what each asserts are the table in `notes.md` § "In game". The
 `fits --build 0a875da` run is the package's own pin (a tautology); `0b14f8a` is a different,
 earlier Nightly, where the package still fits — the two lines the brief asks for are both here.
+
+## Slice 3 — the crafter (2026-11-21, pin `0a875da`, package 0.2.2)
+
+One lease per step, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`, no `--target-dir`. Logs:
+`../_shared/evidence/rftoolsutility/{slice3-red,slice3-red-craftmode,slice3-green,sdk-test,sdk-clippy,sdk-check,sdk-fits,sdk-fits-other}.log`
+(each `sdk-*` log prints the `rftoolsutility.hmod` sha256 and size it ran against) and
+`../_shared/evidence/rftoolsutility-e2e/` (the game legs).
+
+| # | Step | Command (inside the lease) | Result |
+|---|---|---|---|
+| 1 | red, unit | the nine new `runtime` rules stubbed `todo!()`, `cargo test` | `FAILED. 31 passed; 9 failed`, each at `not yet implemented` (`slice3-red.log`) |
+| 2 | red, modes | the two `CraftMode` rules stubbed, `cargo test` | `FAILED. 40 passed; 2 failed` at `result_range` (`slice3-red-craftmode.log`) |
+| 3 | green, unit | `cargo test` after the two in-game corrections below | **48 passed; 0 failed** (21 tank runtime + 12 crafter runtime + 10 tank glue + 5 crafter glue) |
+| 4 | fmt | `cargo fmt --check` | clean |
+| 5 | clippy | `cargo clippy --all-targets --offline -- -D warnings` | `Finished`, 0 warnings |
+| 6 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **63,478 B**, SHA-256 `ba50851d…463eb`, 52 entries, no `Cargo.lock` |
+| 7 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.2 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)` **EXIT 0** |
+| 8 | fits the pin | `cargo horizon-mod fits rftoolsutility.hmod --build 0a875da` | `0a875da  made for` **EXIT 0** (a tautology, reported as the brief asks) |
+| 9 | fits another build | `cargo horizon-mod fits rftoolsutility.hmod --build 0b14f8a` | `0b14f8a  fits` **EXIT 0** |
+| 10 | gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | **1/1** (`48 passed`, `no packed Cargo.lock`, 52 entries, skills PASS) |
+| 11 | in game, PASS | `launcher-game.sh build` (`Compiling rftoolsutility (1 of 1)`), then `build-slot.sh run --step e2e -- tools/e2e.sh` | **PASS**, `EXIT:0` — phases A–V (`e2e-slice3.log`) |
+| 12 | in game, c/f | `SELFTEST=1 SELFTEST_AT=craft` | **FAIL: the crafter holds 4700 FE, expected 5000**, `EXIT:1` |
+| 13 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: the tank item did not register**, `EXIT:1` |
+| 14 | log gate | `python3 ports/tools/check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=8 ok=8 missing-exit=0 bad-exit=0`, exit 0 |
+| 15 | skills | `python3 ports/tools/check-skills.py --notes ports/rftoolsutility` | `SKILLS GATE: PASS` |
+
+Two rules changed *after* meeting the game, each red before the fix (both in
+`notes.md` § "Red → green"): one buffer slot feeds several cells (upstream's `split(1)` loop,
+which chained crafting needs), and a cycle costs 100 FE whatever it crafted (`rf * i` counts
+cycles). The first in-game failure this slice produced was a real defect of the glue — `plan`
+and `placements` number their own slice, and the glue used those indices as world slots, so the
+product was written into the ghost slots; it is fixed and pinned by
+`the_ghost_grid_shows_one_item_per_filled_cell`.
