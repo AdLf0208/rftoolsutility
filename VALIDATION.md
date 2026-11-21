@@ -214,3 +214,38 @@ from that final source (`native-0a875da-878276d6ae1e`), which it compiled itself
 (`Compiling rftoolsutility (1 of 1)`). What each new phase asserts is the table in `notes.md`
 § "Slice 4 — the spawner", and the two traps the slice cost (a control reply's leading slash,
 an entity blocking `ctl place`) are recorded there.
+
+## Slice 5 — the crafter tiers (2026-11-21, pin `0a875da`, package 0.2.4)
+
+One lease per step, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`, no `--target-dir`, no bare cargo.
+Logs: `../_shared/evidence/rftoolsutility/{slice5-red,slice5-green,slice5-clippy,slice5-build-1,
+slice5-build-2,slice5-check,slice5-fits,slice5-fits-other,slice5-package-gate}.log` (the `sdk-*`
+logs are copies of these for the gate), and `../_shared/evidence/rftoolsutility-e2e/
+{e2e-slice5-red,e2e-slice5,e2e-slice5-selftest-tiers,e2e-slice5-control,slice5-native-build}.log`.
+The 0.2.3 logs are under `../_shared/evidence/rftoolsutility/retired-0.2.3/`.
+
+| # | Step | Command (inside the lease) | Result |
+|---|---|---|---|
+| 1 | red, unit | the tier rule stubbed `todo!()` (3 runtime tests + 1 glue test), `cargo test` | `FAILED. 58 passed; 4 failed`, each at `not yet implemented` (`slice5-red.log`) |
+| 2 | green | `cargo test` after the implementation | **62 passed; 0 failed** (`slice5-green.log`, `sdk-test.log`) |
+| 3 | fmt | `cargo fmt --check` | clean |
+| 4 | clippy | `cargo clippy --all-targets --offline -- -D warnings` | `Finished`, 0 warnings (`slice5-clippy.log`, `sdk-clippy.log`) |
+| 5 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice from the final sources | `cmp` identical; **111,935 B**, SHA-256 `4cd3abdb4786ff498bfd2d45bfb8d50a444f7f89d18d396a93ebd9c2e427534f`, 152 entries, no `Cargo.lock` |
+| 6 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.4 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)` **CHECK_EXIT:0** (`slice5-check.log`) |
+| 7 | fits the pin | `cargo horizon-mod fits rftoolsutility.hmod --build 0a875da` | `0a875da  made for` **FITS_EXIT:0** (a tautology, reported as the brief asks; `slice5-fits.log`, sha `4cd3abdb…`) |
+| 8 | fits another build | `cargo horizon-mod fits rftoolsutility.hmod --build 0b14f8a` | `0b14f8a  fits` **FITS_EXIT:0** (`slice5-fits-other.log`, sha `4cd3abdb…`) |
+| 9 | gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | **1/1** (62 passed, 0 clippy warnings, `no packed Cargo.lock`, 152 entries, skills PASS; `slice5-package-gate.log`) |
+| 10 | native compile | `launcher-game.sh build rftoolsutility --port ports/rftoolsutility` (in a slot) | `Compiling rftoolsutility (1 of 1)` — the mod compiled against the pin, then exported (`slice5-native-build.log`) |
+| 11 | in game, red | the new script on the **0.2.3** package | **FAIL: ctl place rftoolsutility:crafter3 … was refused three times** (`no rftoolsutility:crafter3 in the inventory`), `EXIT:1` (`e2e-slice5-red.log`) |
+| 12 | in game, PASS | `build-slot.sh run --step e2e -- tools/e2e.sh` | **PASS**, `EXIT:0` — phases A–AF (`e2e-slice5.log`) |
+| 13 | in game, c/f | `SELFTEST=1 SELFTEST_AT=tiers` | **FAIL: the crafter holds 0 FE, expected 800**, `EXIT:1` (`e2e-slice5-selftest-tiers.log`) |
+| 14 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: the tank item did not register**, `EXIT:1` (`e2e-slice5-control.log`) |
+| 15 | log gate | `python3 ports/tools/check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=15 ok=15 missing-exit=0 bad-exit=0`, exit 0 |
+| 16 | coverage | `python3 ports/tools/check-coverage.py rftoolsutility --no-upstream` | `families=14 tested=8 declared=6 missing_families=0 entries=92 named=92 missing=0`, exit 0 |
+| 17 | skills | `python3 ports/tools/check-skills.py --notes ports/rftoolsutility` | `SKILLS GATE: PASS` |
+
+The game the legs ran on was built by the launcher from this source
+(`native-0a875da-c2f7cf370efc`, the 0.2.4 package installed) and compiled by it
+(`Compiling rftoolsutility (1 of 1)`). What each new phase asserts is the table in `notes.md`
+§ "Slice 5 — the crafter tiers", and the trap the slice cost (`$CRAFTER` being a prefix of
+`$CRAFTER2` for the coverage tool's variable expansion) is recorded there.

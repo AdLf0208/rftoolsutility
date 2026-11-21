@@ -1,8 +1,13 @@
 {
   "block.rftoolsutility.crafter1": "Crafter Tier 1",
+  "block.rftoolsutility.crafter2": "Crafter Tier 2",
+  "block.rftoolsutility.crafter3": "Crafter Tier 3",
   "block.rftoolsutility.spawner": "Spawner",
   "block.rftoolsutility.tank": "Tank",
   "itemGroup.rftoolsutility": "RFTools Utility",
+  "message.rftoolsutility.crafter1.header": "This machine can handle up to 2 recipes at once and allows recipes to use the crafting results of previous steps",
+  "message.rftoolsutility.crafter2.header": "This machine can handle up to 4 recipes at once and allows recipes to use the crafting results of previous steps",
+  "message.rftoolsutility.crafter3.header": "This machine can handle up to 8 recipes at once and allows recipes to use the crafting results of previous steps",
   "message.rftoolsutility.shiftmessage": "<Press Shift>",
   "message.rftoolsutility.spawner.gold": "Infusing bonus: reduced power usage",
   "message.rftoolsutility.spawner.header": "This block can spawn creatures. It needs a syringe of the appropriate type, RF power and also it needs beams of energized matter",

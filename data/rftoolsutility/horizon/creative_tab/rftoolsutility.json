@@ -3,6 +3,8 @@
   "items": [
     "rftoolsutility:tank",
     "rftoolsutility:crafter1",
+    "rftoolsutility:crafter2",
+    "rftoolsutility:crafter3",
     "rftoolsutility:spawner"
   ],
   "title": "itemGroup.rftoolsutility"

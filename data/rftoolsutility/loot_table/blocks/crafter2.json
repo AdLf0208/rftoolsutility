@@ -1,0 +1,23 @@
+{
+  "pools": [
+    {
+      "bonus_rolls": 0.0,
+      "entries": [
+        {
+          "functions": [
+            {
+              "function": "minecraft:copy_name",
+              "source": "block_entity"
+            }
+          ],
+          "name": "rftoolsutility:crafter2",
+          "type": "minecraft:item"
+        }
+      ],
+      "name": "crafter2",
+      "rolls": 1.0
+    }
+  ],
+  "random_sequence": "rftoolsutility:blocks/crafter2",
+  "type": "minecraft:block"
+}

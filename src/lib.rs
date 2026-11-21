@@ -30,9 +30,9 @@ pub mod runtime;
 
 use runtime::{
     BUCKET, BUFFER_IN, BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY,
-    CRAFTER_RECEIVE, CRAFTER_SLOTS, Click, CraftMode, GHOST_INPUT, GHOST_RESULT, MobRecipe,
-    SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, Tank, bucket_click, carried, clamped, fill_level,
-    placements, plan, recipe_for, result_range, spawn_at, spawn_once, spend, steps,
+    CRAFTER_RECEIVE, CRAFTER_SLOTS, Click, CraftMode, CrafterTier, GHOST_INPUT, GHOST_RESULT,
+    MobRecipe, SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, Tank, bucket_click, carried, clamped,
+    fill_level, placements, plan, recipe_for, result_range, spawn_at, spawn_once, spend, steps,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -54,19 +54,11 @@ const BLOCK_ENTITY_DATA: &str = "minecraft:block_entity_data";
 // The crafter (slice 3)
 // ---------------------------------------------------------------------------
 
-/// The crafter tier 1 block and its item (`CrafterModule.CRAFTER1`).
-const CRAFTER: &str = "rftoolsutility:crafter1";
-/// The block entity type the port declares for it, in its own namespace
-/// (`CrafterBaseTE.createTier1`).
-const CRAFTER_TYPE: &str = "crafter1";
-/// The type id a `minecraft:block_entity_data` payload on a crafter's item carries
-/// (`TypedEntityData.loadInto`).
-const CRAFTER_TYPE_ID: &str = "rftoolsutility:crafter1";
+/// The crafter tiers (`CrafterModule.CRAFTER1..3`), one block entity with 2, 4 or 8 recipe
+/// slots; the tier's own block id, type id and count live in [`runtime::CrafterTier`].
+const CRAFTER_TIERS: [CrafterTier; 3] = CrafterTier::ALL;
 /// The one recipe type the crafter matches (`RecipeType.CRAFTING`).
 const RECIPE_TYPE: &str = "minecraft:crafting";
-/// `CrafterBaseTE.createTier1`'s recipe count: a crafter 1 keeps two recipes
-/// (`supportedRecipes`), and crafts them in order each cycle.
-const CRAFTER_RECIPES: usize = 2;
 /// The crafter's saved keys beside the engine's own (`CrafterContainer`'s item slots are the
 /// engine's `Items`, and the energy amount the engine's `energy` int).
 const KEY_ENERGY: &str = "energy";
@@ -75,8 +67,9 @@ const KEY_SPEED: &str = "speed";
 const KEY_MODE: &str = "mode";
 const KEY_KEEP: &str = "keep";
 
-/// A crafter's item, resolved once in `register` for the same reason as the tank's.
-static CRAFTER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+/// The crafters' items, resolved once in `register` for the same reason as the tank's, one per
+/// tier in [`CRAFTER_TIERS`]' order.
+static CRAFTER_ITEMS: OnceLock<[ItemKey; 3]> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // The spawner (slice 4)
@@ -461,6 +454,16 @@ fn level_of(host: &dyn ServerHost, pos: [i32; 3], block: &str) -> Option<LevelRe
     })
 }
 
+/// The level a crafter of any tier stands in: its tick is told a position, not its level, and a
+/// block entity is out of the world while it ticks (`level_of`, for the three tier blocks).
+fn crafter_level_of(host: &dyn ServerHost, pos: [i32; 3]) -> Option<LevelRef> {
+    host.levels().list_levels().into_iter().find(|level| {
+        level
+            .block(host, pos)
+            .is_some_and(|here| CrafterTier::from_block(&here.id(host)).is_some())
+    })
+}
+
 /// One crafting operation (`CrafterBaseTE.craftOneItem`): take one item per cell of the recipe's
 /// grid out of the input buffer, let the engine assemble it, and put the result and the
 /// recipe's remainders where the craft mode says. Answers whether the operation happened.
@@ -584,7 +587,7 @@ fn crafter_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>)
         }
         return;
     }
-    let Some(level) = level_of(&*host, event.pos, CRAFTER) else {
+    let Some(level) = crafter_level_of(&*host, event.pos) else {
         if !changed {
             *event.reply = BlockEntityTickReply::Unchanged;
         }
@@ -1233,18 +1236,31 @@ impl Hooks for Mod {
         tanks.outputs = vec![TANK_INDEX];
         r.block_fluids(&block, tanks);
 
-        let crafter = r.block_key(CRAFTER);
-        let crafter_item = r.item_key(CRAFTER);
-        let _ = CRAFTER_ITEM.set(crafter_item);
-        let crafter_kind = r.block_entity_type(CRAFTER_TYPE).blocks(&[CRAFTER]).build();
-        if let Err(error) = r.block_entity_part(&crafter_kind, CrafterPart) {
-            cx.refuse(&format!(
-                "rftoolsutility: the crafter part was refused: {error}"
-            ));
-            return;
+        // The three crafter tiers share one block entity, one container and one energy buffer;
+        // each has its own block, item, block entity type and `supportedRecipes` count
+        // (`CrafterBaseTE.createTier1/2/3`).
+        let mut crafter_items: [Option<ItemKey>; 3] = [None; 3];
+        for (slot, tier) in crafter_items.iter_mut().zip(CRAFTER_TIERS) {
+            let crafter = r.block_key(tier.block());
+            let crafter_item = r.item_key(tier.block());
+            *slot = Some(crafter_item);
+            let crafter_kind = r
+                .block_entity_type(tier.kind())
+                .blocks(&[tier.block()])
+                .build();
+            if let Err(error) = r.block_entity_part(&crafter_kind, CrafterPart) {
+                cx.refuse(&format!(
+                    "rftoolsutility: the {} part was refused: {error}",
+                    tier.kind()
+                ));
+                return;
+            }
+            r.block_container(&crafter, crafter_container());
+            r.block_energy(&crafter, crafter_energy());
         }
-        r.block_container(&crafter, crafter_container());
-        r.block_energy(&crafter, crafter_energy());
+        if let [Some(tier1), Some(tier2), Some(tier3)] = crafter_items {
+            let _ = CRAFTER_ITEMS.set([tier1, tier2, tier3]);
+        }
 
         let spawner = r.block_key(SPAWNER);
         let spawner_item = r.item_key(SPAWNER);
@@ -1365,9 +1381,12 @@ impl Hooks for Mod {
     /// inventory, the energy and the taught recipes onto the item).
     fn block_drops(&self, level: &dyn LevelHost, event: &mut BlockDropsEvent<'_>) -> Flow {
         let block = level.state_block(event.state);
-        if block == Some(CRAFTER) {
-            if let Some(item) = CRAFTER_ITEM.get() {
-                carry_machine(level, event, *item, CRAFTER_TYPE_ID);
+        if let Some(tier) = block.and_then(CrafterTier::from_block) {
+            if let Some(item) = CRAFTER_ITEMS
+                .get()
+                .and_then(|items| items.get(tier.index()))
+            {
+                carry_machine(level, event, *item, tier.type_id());
             }
             return Flow::Continue;
         }
@@ -1572,7 +1591,7 @@ impl Hooks for Mod {
                 );
             }
             ["rftoolsutility", "crafter"] => {
-                let Some(entity) = crafter_at(host, level, pos) else {
+                let Some((entity, _tier)) = crafter_at(host, level, pos) else {
                     feedback(host, "No crafter there.");
                     return Flow::Cancel;
                 };
@@ -1708,9 +1727,15 @@ fn machine_at(
         .flatten()
 }
 
-/// The crafter's block entity at `pos`, when the block there is ours.
-fn crafter_at(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> Option<BlockEntityRef> {
-    machine_at(host, level, pos, CRAFTER)
+/// The crafter at `pos` and its tier, when the block there is one of the three crafter tiers.
+fn crafter_at(
+    host: &dyn Host,
+    level: LevelRef,
+    pos: [i32; 3],
+) -> Option<(BlockEntityRef, CrafterTier)> {
+    let block = level.block(host, pos)?;
+    let tier = CrafterTier::from_block(&block.id(host))?;
+    host.block_entity(level, pos).map(|entity| (entity, tier))
 }
 
 /// The crafter's 41 slots, read one by one (`block_entity_item_slot`). A slot the entity cannot
@@ -1770,6 +1795,19 @@ fn ghost_grid(cells: &[Vec<String>; 9]) -> [Option<&str>; 9] {
     std::array::from_fn(|cell| cells[cell].first().map(String::as_str))
 }
 
+/// Whether the crafter `tier` has a recipe slot for `index`: a slot past its count is refused
+/// with that count (`CrafterBaseTE.setRecipe`'s `sel >= supportedRecipes` bound), which is the
+/// reply the harness asserts for a crafter2/3.
+fn recipe_slot(tier: CrafterTier, index: usize) -> Result<(), String> {
+    if index < tier.recipes() {
+        return Ok(());
+    }
+    Err(format!(
+        "/rftoolsutility: this crafter has {} recipe slots.",
+        tier.recipes()
+    ))
+}
+
 /// `/rftoolsutility recipe`: teach the crafter slot `index` the crafting recipe `id`, resolving
 /// its grid from the engine's recipe table (`CrafterBaseTE`'s GUI writes the same ghost grid).
 /// The ghost slots then show the grid, as a player's would.
@@ -1780,12 +1818,12 @@ fn teach(
     index: i32,
     id: &str,
 ) -> String {
-    let Some(entity) = crafter_at(host, level, pos) else {
+    let Some((entity, tier)) = crafter_at(host, level, pos) else {
         return "No crafter there.".to_owned();
     };
     let index = usize::try_from(index).unwrap_or(usize::MAX);
-    if index >= CRAFTER_RECIPES {
-        return format!("/rftoolsutility: this crafter has {CRAFTER_RECIPES} recipe slots.");
+    if let Err(refusal) = recipe_slot(tier, index) {
+        return refusal;
     }
     let recipe = host
         .recipes_of_type(RECIPE_TYPE)
@@ -1875,7 +1913,7 @@ fn set_slot(
     item: &str,
     count: i32,
 ) -> String {
-    let Some(entity) = crafter_at(host, level, pos) else {
+    let Some((entity, _tier)) = crafter_at(host, level, pos) else {
         return "No crafter there.".to_owned();
     };
     let slot = usize::try_from(slot).unwrap_or(usize::MAX);
@@ -1920,7 +1958,7 @@ fn set_slot(
 /// `/rftoolsutility energy`: set a machine's buffer, clamped to its own capacity. The crafter
 /// and the spawner both keep their FE in the engine's `energy` int, so one command serves both.
 fn set_energy(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], amount: i32) -> String {
-    let (entity, capacity, name) = if let Some(entity) = crafter_at(&*host, level, pos) {
+    let (entity, capacity, name) = if let Some((entity, _tier)) = crafter_at(&*host, level, pos) {
         (entity, CRAFTER_CAPACITY, "crafter")
     } else if let Some(entity) = machine_at(&*host, level, pos, SPAWNER) {
         (entity, SPAWNER_CAPACITY, "spawner")
@@ -1976,7 +2014,7 @@ fn set_setting(
     key: &str,
     value: &str,
 ) -> String {
-    let Some(entity) = crafter_at(host, level, pos) else {
+    let Some((entity, _tier)) = crafter_at(host, level, pos) else {
         return "No crafter there.".to_owned();
     };
     let setting = match key.to_ascii_lowercase().as_str() {
@@ -2352,6 +2390,30 @@ mod tests {
             container.slots - 1,
             BUFFER_OUT + BUFFER_OUT_SLOTS,
             "the last slot is the filter module slot"
+        );
+    }
+
+    #[test]
+    fn a_slot_past_the_tiers_count_is_refused_with_that_count() {
+        assert_eq!(recipe_slot(CrafterTier::Tier1, 1), Ok(()));
+        assert_eq!(
+            recipe_slot(CrafterTier::Tier1, 2).unwrap_err(),
+            "/rftoolsutility: this crafter has 2 recipe slots."
+        );
+        assert_eq!(recipe_slot(CrafterTier::Tier2, 3), Ok(()));
+        assert_eq!(
+            recipe_slot(CrafterTier::Tier2, 4).unwrap_err(),
+            "/rftoolsutility: this crafter has 4 recipe slots."
+        );
+        assert_eq!(recipe_slot(CrafterTier::Tier3, 7), Ok(()));
+        assert_eq!(
+            recipe_slot(CrafterTier::Tier3, 8).unwrap_err(),
+            "/rftoolsutility: this crafter has 8 recipe slots."
+        );
+        assert_eq!(
+            recipe_slot(CrafterTier::Tier3, usize::MAX).unwrap_err(),
+            "/rftoolsutility: this crafter has 8 recipe slots.",
+            "a negative slot parses to usize::MAX and is refused, not a panic"
         );
     }
 

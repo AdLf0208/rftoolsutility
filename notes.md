@@ -1,9 +1,10 @@
-# RFTools Utility — port notes (slices 1–4: the tank, the crafter and the spawner)
+# RFTools Utility — port notes (slices 1–5: the tank, the crafter tiers and the spawner)
 
-> **Current state (2026-11-21): slice 4, package 0.2.3 at pin
+> **Current state (2026-11-21): slice 5, package 0.2.4 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 4 — the spawner (2026-11-21)`** first; it is the current behaviour, its evidence
-> and the traps it cost. Then `## Slice 3 — the crafter`, `## Slice 2` (the tank's contents on
+> **`## Slice 5 — the crafter tiers (2026-11-21)`** first; it closes the crafter family
+> (`crafter2`/`crafter3`, 4 and 8 recipes), with its evidence and the traps it cost. Then
+> `## Slice 4 — the spawner`, `## Slice 3 — the crafter`, `## Slice 2` (the tank's contents on
 > its item) and the 2026-11-18 migration note that produced 0.2.0; everything after the
 > migration describes the retired `.hnmod` bundle.
 
@@ -184,11 +185,10 @@ this slice does not implement. Recorded so slice 2 does not carry it:
   fluid quad, and the item's `Contents: …` tooltip. ~~Its carried fluid and the
   block's loot copy~~ — **done in slice 2**: the tank's saved data moves on the
   item as vanilla's `minecraft:block_entity_data` and comes back on placement.
-- **Crafters** — **`crafter1` done in slice 3** (the block, its 41-slot container, its 50,000 FE
-  buffer, the craft loop with chained crafting, keep-one, and its item carrying the machine).
-  Remaining: `crafter2`/`crafter3` (4 and 8 recipe slots, the same block entity), the GUI and its
-  ghost-grid editor, the filter module slot, the infusing power discount and `ExtC`, and
-  `creative_screen`.
+- **Crafters** — **the whole family is done**: `crafter1` in slice 3, `crafter2`/`crafter3` (4
+  and 8 recipe slots, the same block entity) in slice 5. Remaining there: the GUI and its
+  ghost-grid editor, the filter module slot, the infusing power discount and `ExtC`, the
+  tier-upgrade's component copy (`mcjtylib:copy_components`), and `creative_screen`.
 - **Teleporters:** `charged_porter`, `advanced_charged_porter` (9 animation
   frames each), `teleport_probe`, `matter_transmitter/receiver/beamer/booster`,
   `dialing_device`, `simple_dialer`, `destination_analyzer`, and the
@@ -734,8 +734,9 @@ wooden and the iron pickaxe on the same block).
 - **The infusing power discount is not ported.** Upstream's crafter is infusable
   (`rf * (2 - infused/256) / 2`); that needs `rftoolsbase`'s infusable item path (the
   `rftoolsbase:infused` component and `DefaultInfusable`), which this port does not carry.
-- **Remaining crafter content:** `crafter2` and `crafter3` (the same block entity with 4 and 8
-  recipe slots), which differ only in `supportedRecipes` and their carried content; the GUI; the
+- **Remaining crafter content:** ~~`crafter2` and `crafter3`~~ **— done in slice 5** (the same
+  block entity with 4 and 8 recipe slots, which differ only in `supportedRecipes` and their
+  carried content). What is still open: the GUI; the
   filter module; and the tier-specific recipes (`crafter2` needs a `crafter1`).
 
 ### Coverage of the crafter family (after slice 3)
@@ -752,7 +753,7 @@ wooden and the iron pickaxe on the same block).
 | `keep` mode | unit-tested (`keeping_one_leaves_the_last_item_behind`); no harness phase (a GUI setting) |
 | a refused operation (wrong input, full output) | tested (R, S) |
 | contents, energy and recipes on the item, restored on placement | tested (U) |
-| `crafter2`, `crafter3` (4 and 8 recipes) | not ported (same machine, more slots; carried content not added) |
+| `crafter2`, `crafter3` (4 and 8 recipes) | tested (slice 5: AC, AD, AE — see `## Slice 5`) |
 | the GUI (`GuiCrafter`), the ghost-grid editor, the active-recipe button | not ported (no menu in this slice; the harness writes the grid) |
 | the filter module slot and `FilterModuleItem` | not ported (needs `rftoolsbase:filter_module`) |
 | the infusing power discount | not ported (needs `rftoolsbase`'s infusable path) |
@@ -977,8 +978,8 @@ same script on the unmodded Nightly, where the package's items do not exist.
 | Family | Status | Evidence / why not |
 |---|---|---|
 | `rftoolsutility:spawner` | tested | W: placed, read back, `facing` state; AB: the item carries the machine |
-| `block_entity` | tested | A–AB (the tank's, the crafter's and the spawner's) |
-| `loot_table` | tested | V: the iron-tool gate; J, U and AB: the drop and the data it carries |
+| `block_entity` | tested | A–AB (the tank's, the crafter's and the spawner's); AC/AD/AE/AF: the three crafter tiers, each under its own type id |
+| `loot_table` | tested | V: the iron-tool gate; J, U, AB and AF: the drop and the data it carries (all three crafter tiers share the table shape and the tag, proven by V and AF) |
 | `recipe:rftoolsutility:spawner` | tested | W: all 70 in force; X/Y/Z/AA: zombie 800 and blaze 1000 exercised end to end. The other 68 are carried and decoded by the same reader; the count in W is what proves they loaded, and a row per file would prove nothing the count does not |
 | `recipe:minecraft:crafting_shaped` | blocked(`rftoolsbase:machine_frame`) | the tank's, the crafter's and the spawner's own recipes need the parent port's item; the e2e gives the blocks instead |
 | `tag:item` | not ported | the jar's `rftoolsutility:living/*` yield tags belong to the matter system; the `c:` tags the recipes name are declared by the assembler |
@@ -1000,6 +1001,189 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Built twice with `rm -f Cargo.lock` before each (`cmp` identical: `8c836e61…` for the pre-fix
 source, `a55d4e5f…` after the reply fix and `d12c3646…` for the final, documented source), **no packed `Cargo.lock`**, `check` green
 (`native-1/0a875da…/e59da909…, for 26.3`), `fits --build 0a875da` → `made for`,
+`fits --build 0b14f8a` → `fits`, `verify-sdk-package.py rftoolsutility` → **1/1**, and the
+launcher's `native-build` compiled the mod against the pin (`Compiling rftoolsutility (1 of 1)`)
+for the in-game legs.
+
+## Slice 5 — the crafter tiers (2026-11-21)
+
+**Chosen from the port's own gap list** — `## Gaps (the rest of the mod)` and the slice-3
+coverage row, verbatim:
+
+> **Crafters** — **`crafter1` done in slice 3** (the block, its 41-slot container, its 50,000 FE
+> buffer, the craft loop with chained crafting, keep-one, and its item carrying the machine).
+> Remaining: `crafter2`/`crafter3` (4 and 8 recipe slots, the same block entity), …
+
+and the slice-3 artefact's own conclusion (`## Next slice` in the 0.2.3 report): two carried
+blocks with items/recipes/advancements/loot and **one `supportedRecipes` value each**
+(`CrafterBaseTE.createTier2/3`), read by the loop slice 3 already proved. It closes the crafter
+family's content and fits the **machines** tier exactly — no new block entity, container, energy
+buffer or renderer; one carried block and one number per tier.
+
+**Pin:** Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, horizon-mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, mod API `0.2`, game 26.3. **Version 0.2.4.**
+
+**Read for this slice** (analysis only): the jar's `assets/rftoolsutility/{blockstates,models,
+textures}/**crafter2|3*`, its `data/rftoolsutility/{recipe,advancement,loot_table}/**crafter2|3*`,
+the lang lines (`message.rftoolsutility.crafter2/3.header`: "can handle up to 4/8 recipes at
+once"), and from the branch `1.21_neo` clone at commit `f799314007d68042df8504e83cd549360f2627c7`:
+`CrafterModule` (`CRAFTER2`/`CRAFTER3` registration, `frontBasedModel`, the tier recipes) and
+`CrafterBaseTE.createTier1/2/3` (`new CrafterBaseTE(…, 2 / 4 / 8)`).
+
+### What it does
+
+- **The blocks.** `rftoolsutility:crafter2` and `rftoolsutility:crafter3` on the crafter1's own
+  measured template (`minecraft:white_glazed_terracotta`: full cube, four horizontal facings,
+  no block entity of its own, no menu), their own jar front textures (`machinecrafter2/3`) on the
+  north face and the machine base top/bottom/sides, on McJtyLib's `STANDARD_IRON` properties.
+- **The same machine, one number different.** Each tier declares its own block entity type
+  (`rftoolsutility:crafter2/3`), the same 41-slot container, the same 50,000 FE buffer and the
+  same craft loop; the only tier-specific value is `supportedRecipes` — **2, 4 or 8** — and it is
+  now `runtime::CrafterTier::recipes()`, read by `register` (the type it declares), by
+  `crafter_at` (which tier a position holds), by `teach` (the slot bound and the refusal's count)
+  and by `block_drops` (each tier's own item and `block_entity_data` id).
+- **The carried content.** Each tier brings its item model, item definition, blockstate
+  (the jar's four horizontal rotations), block model, front texture, block declaration, creative
+  tab entry, `mineable/pickaxe` + `needs_iron_tool` membership, recipe, advancement and loot
+  table. The recipes are the jar's `mcjtylib:copy_components` wrapper **unwrapped** to its inner
+  `minecraft:crafting_shaped` (the wrapper's component copy is a deviation below).
+- **The readout and the refusal.** `/rftoolsutility crafter <pos>` is the same line for every
+  tier; `/rftoolsutility recipe <pos> <index> <id>` refuses a slot past the tier's own count with
+  that count — `this crafter has 8 recipe slots` on a crafter3, `… 4 …` on a crafter2, `… 2 …` on
+  a crafter1 (`fn recipe_slot`, pinned by a glue test).
+
+### Numbers and where they came from
+
+| Number | Value | Source |
+|---|---:|---|
+| recipes per tier | 2 / 4 / 8 | `CrafterBaseTE.createTier1/2/3` (`supportedRecipes`) and the jar's lang lines "can handle up to 2/4/8 recipes at once" |
+| energy buffer | 50,000 FE | `CrafterConfiguration.MAXENERGY` (the same machine) |
+| fill per call | 500 FE | `CrafterConfiguration.RECEIVERTICK` — unchanged from slice 3 |
+| one cycle | 100 FE | `CrafterConfiguration.rfPerOperation` — unchanged |
+| slots | 41 per tier | `CrafterContainer.CONTAINER_FACTORY` — the same container |
+| block properties | hardness 2.0, blast 2.0, correct tool, metal sound | `BlockBuilder.STANDARD_IRON` + `ironPickaxeTags()`, the crafter1 row |
+| facing | four horizontal directions | `orientedBlock` is six-way upstream; the template gives four (slice 3's recorded deviation) |
+| tier recipes | crafter2 = craft table + `rftoolsutility:crafter1` + table; crafter3 = the same with `crafter2` | the jar's `recipe/crafter2.json` / `crafter3.json` inner shaped recipe |
+
+### Red → green (unit, verbatim)
+
+The tier rule was written as tests over `todo!()` bodies first (`slice5-red.log`):
+
+```
+---- runtime::tests::a_crafter_tier_is_found_by_its_own_block stdout ----
+thread 'runtime::tests::a_crafter_tier_is_found_by_its_own_block' (634970) panicked at src/runtime.rs:303:9:
+not yet implemented
+---- runtime::tests::each_crafter_tier_keeps_its_own_number_of_recipes stdout ----
+thread 'runtime::tests::each_crafter_tier_keeps_its_own_number_of_recipes' (634994) panicked at src/runtime.rs:290:9:
+not yet implemented
+---- runtime::tests::every_crafter_tier_has_its_own_identity_and_slot stdout ----
+thread 'runtime::tests::every_crafter_tier_has_its_own_identity_and_slot' (634996) panicked at src/runtime.rs:296:9:
+not yet implemented
+---- tests::a_slot_past_the_tiers_count_is_refused_with_that_count stdout ----
+thread 'tests::a_slot_past_the_tiers_count_is_refused_with_that_count' (635007) panicked at src/lib.rs:1777:5:
+not yet implemented
+
+test result: FAILED. 58 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Green: **62 passed; 0 failed** (`slice5-green.log`, `sdk-test.log`) — 39 `runtime` tests
+(the tank's, the crafter's including the three new tier tests, and the spawner's) and 23 glue
+tests in `src/lib.rs` (the tank's, the crafter's — including the new
+`a_slot_past_the_tiers_count_is_refused_with_that_count` — and the spawner's). fmt clean, clippy `-D warnings` 0 warnings
+(`slice5-clippy.log`, `sdk-clippy.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e.sh` phases A–AF, one lease per leg, every log ends with its exit:
+
+| log | verdict |
+|---|---|
+| `e2e-slice5-red.log` | **FAIL: ctl place rftoolsutility:crafter3 … was refused three times** (the same script on the 0.2.3 package, where the tier does not exist), `EXIT:1` — the in-game assertion's own red leg |
+| `e2e-slice5.log` | **PASS**, `EXIT:0` — A–AF |
+| `e2e-slice5-selftest-tiers.log` | **FAIL: the crafter holds 0 FE, expected 800**, `EXIT:1` |
+| `e2e-slice5-control.log` | **FAIL: the tank item did not register**, `EXIT:1` (the unmodded Nightly) |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=15 ok=15 missing-exit=0 bad-exit=0`.
+
+The slice's phases, each asserting a parsed value (the transcript is in the log):
+
+| phase | what it asserts (observed) |
+|---|---|
+| **AC** | a crafter3 placed from its item reads `recipes=-`, `energy=0` and no buffer; eight recipes are taught (each answering `slot N … crafts <id>`) and the readout lists all eight; a **ninth** slot answers `this crafter has 8 recipe slots.`; stocked for eight cycles and charged exactly **800 FE**, the readout ends `energy=0` with `crafting_tablex8`, `chestx8`, `stickx32`, `furnacex8`, `sugarx8`, `paperx24`, `breadx8` and `gold_nuggetx72` — exactly eight 100 FE cycles, all eight recipes in each |
+| **AD** | a crafter2 takes four recipes and a **fifth** answers `this crafter has 4 recipe slots.`, the readout still listing four |
+| **AE** | the **counterfactual**: the same eight teaches on a **crafter1** — slots 2…7 refused with `2 recipe slots` — the same stock and the same 800 FE end at `energy=0` with only `crafting_tablex8` and `chestx8`; none of `stick`/`furnace`/`sugar`/`paper`/`bread`/`gold_nugget` exists |
+| **AF** | a survival break of the taught crafter3 drops an item whose `minecraft:block_entity_data` carries all eight `id: "…"` recipes (and the buffer: 8 tables, 32 sticks, 8 chests, 8 furnaces, 8 sugar, 24 paper, 8 bread, 72 nuggets); placing it back reads the same eight recipes and the same buffer |
+
+Counterfactuals: **AE** is the same script on another tier (two products against eight); `AC`'s
+ninth slot against `AD`'s fifth and `AE`'s third differ only in the tier's count;
+`SELFTEST_AT=tiers` inverts AC (the machine must have crafted nothing and spent nothing) and the
+leg fails as designed, so AC can fail; `CONTROL=1` runs the same script on the unmodded Nightly,
+where the package's items do not exist.
+
+### Measured traps and notes this slice cost (harness)
+
+1. **`$CRAFTER` is a prefix of `$CRAFTER2`.** `check-coverage.py` expands `NAME=literal`
+   assignments before matching ids, replacing `$CRAFTER` first, so `"$CRAFTER2"` became
+   `rftoolsutility:crafter12` and both new blocks read as *unnamed* (`MISSING: 4 entries`).
+   Renaming the variables to `TIER2_BLOCK`/`TIER3_BLOCK` fixed the tool's view; the ids
+   themselves were correct in game all along.
+2. **The craft-count stock has to match the cycle count exactly.** The stock is eight cycles'
+   worth (112 planks across two slots, 64 cobblestone, 32 sugar cane, 24 wheat, 8 gold ingots)
+   and the charge is exactly 800 FE: a recipe that fails to craft ends that tick's cycle early, so
+   the buffer cannot reach 0 FE unless all eight recipes crafted in all eight cycles.
+3. **Products are no recipe's ingredient in this script.** That is deliberate — with `mode int`
+   a product that another recipe accepts (planks) would be consumed by a later cycle and the
+   counts would drift; the eight recipes here produce tables, chests, sticks, furnaces, sugar,
+   paper, bread and gold nuggets, none of which any of the eight consumes.
+4. **The recipe ids are the 26.3 ids, not the 1.21.1 file names' guesses:** sugar is
+   `minecraft:sugar_from_sugar_cane` (there is no `minecraft:sugar` recipe), and the furnace
+   accepts `minecraft:cobblestone` through `#minecraft:stone_crafting_materials` — both read from
+   the prepared 26.3 root before the run.
+
+### Deviations and content adaptations
+
+- **The tier upgrade does not keep the old machine's data.** The jar's `crafter2`/`crafter3`
+  recipes are `mcjtylib:copy_components` — an outer wrapper that copies the crafted result's
+  components from the tier-1 (or tier-2) machine in the grid onto the new item, so an upgraded
+  machine keeps its taught recipes, buffer and energy. This port does not register mcjtylib's
+  recipe type, so the wrapper is unwrapped to its inner `minecraft:crafting_shaped` recipe: the
+  grid, the result and the unlock are the jar's, and the crafted machine starts empty. A user
+  notices: upgrading a taught crafter1 to a crafter2 loses what it was taught. Recorded as a gap
+  (`mcjtylib:copy_components`), not a defect — upstream's own behaviour needs the library mod.
+- **Four-way facing, not six** — the crafter1's template deviation, shared by both tiers.
+- **No GUI, no filter module, no `ExtC`, no tooltip, no infusing discount** — the crafter1 gaps;
+  the tiers add no new one.
+- The carried recipes name `rftoolsutility:crafter1`/`crafter2` (this port's own blocks), so with
+  this port alone the chain is craftable as soon as a player has the ingredients — the tier
+  recipes do **not** need `rftoolsbase:machine_frame` (only the crafter1's own recipe does).
+
+### Upstream defects fixed
+
+None new in this slice: the tier's behaviour is the same block entity with a different
+`supportedRecipes`, and the port reproduces it exactly (the jar's own lines say 2/4/8). The
+slice-3 and slice-4 defect records stand.
+
+### Coverage of the crafter family (after slice 5)
+
+| Family | Status | Evidence / why not |
+|---|---|---|
+| `rftoolsutility:crafter1` | tested | N: placed, read back, `facing` state; U: the item carries the machine |
+| `rftoolsutility:crafter2` | tested | AD: four recipes, a fifth refused with 4; the block, item and `facing` read back |
+| `rftoolsutility:crafter3` | tested | AC: eight recipes and eight cycles; AF: the drop carries all eight and places back with them |
+| `recipe:rftoolsutility:crafter1|2|3` | blocked(`rftoolsbase:machine_frame` / `mcjtylib:copy_components`) | crafter1's own recipe needs the parent port's machine frame; the tier recipes are carried unwrapped and craftable, but no phase crafts them (the e2e gives the blocks, as every slice has) |
+| the craft loop, chained crafting, keep-one, the 50,000 FE buffer | tested | Q, R, S, T (slice 3); the tier's `supportedRecipes` by AC/AD/AE |
+| the GUI, the ghost-grid editor, the filter module, `ExtC`, the infusing discount, the item tooltip | not ported | the crafter1 gaps (a menu, `rftoolsbase`'s items and paths, a `ctl` tooltip readout) |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 111,935 B | `4cd3abdb4786ff498bfd2d45bfb8d50a444f7f89d18d396a93ebd9c2e427534f` | 152 |
+
+Built twice with `rm -f Cargo.lock` before each (`cmp` identical), **no packed `Cargo.lock`**,
+`check` green (`native-1/0a875da…/e59da909…, for 26.3`), `fits --build 0a875da` → `made for`,
 `fits --build 0b14f8a` → `fits`, `verify-sdk-package.py rftoolsutility` → **1/1**, and the
 launcher's `native-build` compiled the mod against the pin (`Compiling rftoolsutility (1 of 1)`)
 for the in-game legs.

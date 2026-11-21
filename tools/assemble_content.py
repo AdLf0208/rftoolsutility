@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble the slice-1 `assets/` and `data/` folders from the pack's RFTools Utility jar.
+"""Assemble the slices' `assets/` and `data/` folders from the pack's RFTools Utility jar.
 
 The jar is the ATM10 file (`ports/_shared/licence-cache/rftoolsutility-1.21-7.0.13.jar`,
 SHA-256 `615642b1…d3ff`), kept as the licence and provenance evidence. Nothing
@@ -10,7 +10,9 @@ name `rftoolsbase:block/base/…`, and this port must stand alone), copied into
 this namespace and re-pointed. Only spellings 26.3 needs are rewritten: a
 recipe ingredient `{"item": X}` becomes `"X"` and `{"tag": T}` becomes `"#T"`,
 the item model becomes a 26.3 item definition, and the block model is nine
-per-level cubes because the pin has no custom model loader.
+per-level cubes because the pin has no custom model loader. The crafter tier 2/3
+recipes are the jar's `mcjtylib:copy_components` wrapper unwrapped to its inner
+shaped recipe (`unwrap_recipe`).
 
 The block/item/creative-tab declarations and the `c:` tags the recipe names are
 written here, because a carry has no oracle for a code-registered block and no
@@ -63,6 +65,19 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/crafter1.json",
     "data/rftoolsutility/recipe/crafter1.json",
     "data/rftoolsutility/loot_table/blocks/crafter1.json",
+    # Slice 5: the crafter tiers 2 and 3, the same block entity with four and eight recipe
+    # slots. Their recipes are the jar's `mcjtylib:copy_components` wrapper around a plain
+    # `minecraft:crafting_shaped`; the wrapper is unwrapped below (see `unwrap_recipe`).
+    "assets/rftoolsutility/models/item/crafter2.json",
+    "assets/rftoolsutility/models/item/crafter3.json",
+    "assets/rftoolsutility/textures/block/machinecrafter2.png",
+    "assets/rftoolsutility/textures/block/machinecrafter3.png",
+    "data/rftoolsutility/advancement/recipes/misc/crafter2.json",
+    "data/rftoolsutility/advancement/recipes/misc/crafter3.json",
+    "data/rftoolsutility/recipe/crafter2.json",
+    "data/rftoolsutility/recipe/crafter3.json",
+    "data/rftoolsutility/loot_table/blocks/crafter2.json",
+    "data/rftoolsutility/loot_table/blocks/crafter3.json",
     # Slice 4: the spawner (its front texture, item model, recipe, advancement and loot table;
     # its block model is re-pointed below, like the crafter's).
     "assets/rftoolsutility/models/item/spawner.json",
@@ -87,8 +102,12 @@ BASE_TEXTURES = [
 # The jar's inventory model, re-pointed at this namespace's copy of the base
 # textures (it names `rftoolsbase:block/base/…`).
 INVENTORY_MODEL = "assets/rftoolsutility/models/block/tank_inventory.json"
-# The crafter's own cube model, re-pointed the same way.
-CRAFTER_MODEL = "assets/rftoolsutility/models/block/crafter1.json"
+# The crafter's own cube models, re-pointed the same way (one per tier).
+CRAFTER_MODELS = [
+    "assets/rftoolsutility/models/block/crafter1.json",
+    "assets/rftoolsutility/models/block/crafter2.json",
+    "assets/rftoolsutility/models/block/crafter3.json",
+]
 # The spawner's own cube model, re-pointed the same way.
 SPAWNER_MODEL = "assets/rftoolsutility/models/block/spawner.json"
 
@@ -116,8 +135,19 @@ BLOCK = {
 TAB = {
     "title": "itemGroup.rftoolsutility",
     "icon": f"{MOD}:tank",
-    "items": [f"{MOD}:tank", f"{MOD}:crafter1", f"{MOD}:spawner"],
+    "items": [
+        f"{MOD}:tank",
+        f"{MOD}:crafter1",
+        f"{MOD}:crafter2",
+        f"{MOD}:crafter3",
+        f"{MOD}:spawner",
+    ],
 }
+
+# The crafter's three tiers (`CrafterModule.CRAFTER1..3`): the same block, container and block
+# entity with 2, 4 or 8 recipe slots. The jar's lang lines say the count ("can handle up to
+# 2/4/8 recipes at once"), which is where `runtime::CrafterTier::recipes` reads it from.
+CRAFTER_TIERS = ["crafter1", "crafter2", "crafter3"]
 
 # `CrafterBlock` on McJtyLib's `BlockBuilder.STANDARD_IRON` with `ironPickaxeTags()`: strength
 # 2.0, correct tool for drops, metal sound. Upstream orients the block in six directions
@@ -180,15 +210,20 @@ CONVENTION_TAGS = {
     "ender_pearls": ["minecraft:ender_pearl"],
 }
 
-# The jar's lang lines for the tank, the crafter and the spawner, verbatim.
+# The jar's lang lines for the tank, the crafter tiers and the spawner, verbatim.
 LANG_KEYS = [
     "itemGroup.rftoolsutility",
     "block.rftoolsutility.tank",
     "block.rftoolsutility.crafter1",
+    "block.rftoolsutility.crafter2",
+    "block.rftoolsutility.crafter3",
     "block.rftoolsutility.spawner",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
+    "message.rftoolsutility.crafter1.header",
+    "message.rftoolsutility.crafter2.header",
+    "message.rftoolsutility.crafter3.header",
     "message.rftoolsutility.spawner.header",
     "message.rftoolsutility.spawner.gold",
 ]
@@ -202,6 +237,21 @@ def upgrade_recipe(recipe: dict) -> dict:
             recipe["key"][key] = f"#{value['tag']}"
         elif isinstance(value, dict) and "item" in value:
             recipe["key"][key] = value["item"]
+    return recipe
+
+
+def unwrap_recipe(recipe: dict) -> dict:
+    """The recipe a carried one becomes.
+
+    The jar's `crafter2`/`crafter3` recipes are `mcjtylib:copy_components`: a wrapper whose inner
+    `recipe` is the plain `minecraft:crafting_shaped` one and whose component copy (the tier-1
+    machine's taught recipes, buffer and energy travelling onto the upgraded machine) needs
+    mcjtylib's recipe type, which this port does not register. The wrapper is unwrapped to the
+    inner recipe — the same grid, the same result, the same unlock — so a crafted tier-2/3
+    machine starts empty (recorded as a deviation in `notes.md`).
+    """
+    if recipe.get("type") == "mcjtylib:copy_components":
+        return recipe["recipe"]
     return recipe
 
 
@@ -269,12 +319,19 @@ def main() -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             raw = jar.read(name)
             if "/recipe/" in name and name.endswith(".json"):
-                raw = (json.dumps(upgrade_recipe(json.loads(raw)), indent=2, sort_keys=True) + "\n").encode()
+                raw = (
+                    json.dumps(
+                        upgrade_recipe(unwrap_recipe(json.loads(raw))),
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                ).encode()
             elif "loot_table/blocks/" in name:
                 raw = (json.dumps(upgrade_loot(json.loads(raw)), indent=2, sort_keys=True) + "\n").encode()
             target.write_bytes(raw)
         inventory = json.loads(jar.read(INVENTORY_MODEL))
-        crafter_model = json.loads(jar.read(CRAFTER_MODEL))
+        crafter_models = [(name, json.loads(jar.read(name))) for name in CRAFTER_MODELS]
         spawner_model = json.loads(jar.read(SPAWNER_MODEL))
         # Slice 4: the 70 mob recipes, byte for byte (see `MOB_RECIPE_PREFIX`).
         mob_recipes = [
@@ -289,11 +346,12 @@ def main() -> None:
         for key, value in inventory["textures"].items()
     }
     dump(assets / "models" / "block" / "tank_inventory.json", inventory)
-    crafter_model["textures"] = {
-        key: value.replace("rftoolsbase:", f"{MOD}:")
-        for key, value in crafter_model["textures"].items()
-    }
-    dump(assets / "models" / "block" / "crafter1.json", crafter_model)
+    for name, model in crafter_models:
+        model["textures"] = {
+            key: value.replace("rftoolsbase:", f"{MOD}:")
+            for key, value in model["textures"].items()
+        }
+        dump(CONTENT / name, model)
     spawner_model["textures"] = {
         key: value.replace("rftoolsbase:", f"{MOD}:")
         for key, value in spawner_model["textures"].items()
@@ -318,19 +376,20 @@ def main() -> None:
         assets / "items" / "tank.json",
         {"model": {"type": "minecraft:model", "model": f"{MOD}:item/tank"}},
     )
-    dump(
-        assets / "items" / "crafter1.json",
-        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/crafter1"}},
-    )
-    dump(
-        assets / "blockstates" / "crafter1.json",
-        {
-            "variants": {
-                f"facing={facing}": {"model": f"{MOD}:block/crafter1", **rotation}
-                for facing, rotation in CRAFTER_FACINGS.items()
-            }
-        },
-    )
+    for tier in CRAFTER_TIERS:
+        dump(
+            assets / "items" / f"{tier}.json",
+            {"model": {"type": "minecraft:model", "model": f"{MOD}:item/{tier}"}},
+        )
+        dump(
+            assets / "blockstates" / f"{tier}.json",
+            {
+                "variants": {
+                    f"facing={facing}": {"model": f"{MOD}:block/{tier}", **rotation}
+                    for facing, rotation in CRAFTER_FACINGS.items()
+                }
+            },
+        )
     dump(
         assets / "items" / "spawner.json",
         {"model": {"type": "minecraft:model", "model": f"{MOD}:item/spawner"}},
@@ -347,18 +406,19 @@ def main() -> None:
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
-    dump(data_dir / "horizon" / "block" / "crafter1.json", CRAFTER_BLOCK)
+    for tier in CRAFTER_TIERS:
+        dump(data_dir / "horizon" / "block" / f"{tier}.json", CRAFTER_BLOCK)
     dump(data_dir / "horizon" / "block" / "spawner.json", SPAWNER_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
     dump(
         CONTENT / "data" / "minecraft" / "tags" / "block" / "mineable" / "pickaxe.json",
-        {"values": [f"{MOD}:tank", f"{MOD}:crafter1", f"{MOD}:spawner"]},
+        {"values": [f"{MOD}:tank", *[f"{MOD}:{tier}" for tier in CRAFTER_TIERS], f"{MOD}:spawner"]},
     )
     dump(
         CONTENT / "data" / "minecraft" / "tags" / "block" / "needs_iron_tool.json",
-        {"values": [f"{MOD}:tank", f"{MOD}:crafter1", f"{MOD}:spawner"]},
+        {"values": [f"{MOD}:tank", *[f"{MOD}:{tier}" for tier in CRAFTER_TIERS], f"{MOD}:spawner"]},
     )
 
     print(

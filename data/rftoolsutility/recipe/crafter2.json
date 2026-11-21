@@ -1,0 +1,18 @@
+{
+  "category": "misc",
+  "key": {
+    "C": "minecraft:crafting_table",
+    "M": "rftoolsutility:crafter1",
+    "T": "minecraft:redstone_torch"
+  },
+  "pattern": [
+    " T ",
+    "CMC",
+    " T "
+  ],
+  "result": {
+    "count": 1,
+    "id": "rftoolsutility:crafter2"
+  },
+  "type": "minecraft:crafting_shaped"
+}

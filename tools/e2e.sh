@@ -72,6 +72,14 @@
 #     one blaze
 #  AB a broken spawner's item carries its mob and its numbers, and placing it back
 #     restores them
+#  AC a crafter3 keeps eight recipes (an eighth taught, a ninth refused with the tier's
+#     count) and, stocked for eight cycles and charged exactly 800 FE, runs exactly eight
+#     cycles: all eight products present at 8x their craft count and 0 FE left
+#  AD a crafter2 keeps four recipes and refuses a fifth slot with its own count
+#  AE the same eight teaches, the same stock and the same 800 FE on a crafter1 (the
+#     counterfactual): only its two recipes are taught, only their two products appear
+#  AF a survival break of the taught crafter3 drops an item carrying all eight recipes in
+#     `minecraft:block_entity_data`, and placing it back keeps them and its buffer
 #
 # SELFTEST=1 flips B's assertion (the tank must still read 0 mB), proving the
 # scenario can fail: it prints FAIL and exits non-zero.
@@ -81,6 +89,8 @@
 # nothing and spent nothing), which is slice 3's own fail-capable leg.
 # SELFTEST=1 SELFTEST_AT=spawn flips Z's assertion (the spawner must have spawned
 # nothing and spent nothing), which is slice 4's own fail-capable leg.
+# SELFTEST=1 SELFTEST_AT=tiers flips AC's assertion (the crafter3 must have crafted
+# nothing and spent nothing), which is slice 5's own fail-capable leg.
 #
 # CONTROL=1 runs the same scenario on the Nightly WITHOUT this package
 # (CONTROL_GAME, exported by launcher-game.sh): the tank item is not there, so A
@@ -115,6 +125,8 @@ LAVA_BUCKET=minecraft:lava_bucket
 EMPTY_BUCKET=minecraft:bucket
 CAULDRON=minecraft:cauldron
 CRAFTER=rftoolsutility:crafter1
+TIER2_BLOCK=rftoolsutility:crafter2
+TIER3_BLOCK=rftoolsutility:crafter3
 SPAWNER_BLOCK=rftoolsutility:spawner
 SZ=3   # the spawner's z in the arena: clear of the tank's and the crafter's cells
 
@@ -872,4 +884,158 @@ expect_spawned 2
 expect_spawn_energy 0
 echo "  the placed spawner still spawns $S_MOB for $S_COST FE (spawned=$S_SPAWNED)"
 
-echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it; a spawner placed from its item knows no mob and 70 mob recipes are in force; a mob no recipe names is refused while minecraft:zombie is set from its own 800 FE recipe with its own matter amounts; with no energy it spawns nothing; 800 FE spawns exactly one zombie within 5 blocks for that 800 FE and leaves 0; minecraft:blaze costs its own 1,000 FE and spawns one blaze; and a broken spawner's item carries its mob and numbers, which placing it back restores"
+echo "== AC: a crafter3 keeps eight recipes and runs exactly eight cycles =="
+# The jar's own line for the tier: "This machine can handle up to 8 recipes at once".
+ctl command "gamemode creative" >/dev/null
+ctl wait 10 >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 4 >/dev/null
+place_block "$TIER3_BLOCK" "$SX" 101 -4
+crafter "$SX" 101 -4
+expect_recipes -
+expect_energy 0
+expect_in -
+expect_out -
+# Eight recipes, each with its own ingredient and a product no other recipe of the eight
+# consumes, so the cycle's own results can never feed a later cycle and every product
+# counted below is that recipe's own craft count.
+TIER_RECIPES=(minecraft:crafting_table minecraft:chest minecraft:stick minecraft:furnace \
+              minecraft:sugar_from_sugar_cane minecraft:paper minecraft:bread minecraft:gold_nugget)
+for index in "${!TIER_RECIPES[@]}"; do
+    teach "$SX" 101 -4 "$index" "${TIER_RECIPES[$index]}"
+    [[ "$REPLY" == *"crafts ${TIER_RECIPES[$index]}"* ]] \
+        || fail "teaching slot $index (${TIER_RECIPES[$index]}) did not answer: $REPLY"
+done
+crafter "$SX" 101 -4
+TIER_EIGHT="minecraft:crafting_table+minecraft:chest+minecraft:stick+minecraft:furnace+minecraft:sugar_from_sugar_cane+minecraft:paper+minecraft:bread+minecraft:gold_nugget"
+expect_recipes "$TIER_EIGHT"
+# A ninth slot is past this tier's own count (`CrafterBaseTE.setRecipe`'s bound).
+teach "$SX" 101 -4 8 minecraft:oak_planks
+[[ "$REPLY" == *"this crafter has 8 recipe slots"* ]] \
+    || fail "a ninth recipe slot was not refused with this tier's 8: $REPLY"
+echo "  eight recipes taught; the ninth slot says: $REPLY"
+
+# Eight cycles' stock at 0 FE, then exactly 800 FE: eight 100 FE cycles. A recipe that does
+# not craft in a cycle ends that tick's cycle early, so the energy cannot reach 0 unless all
+# eight cycles ran with all eight recipes.
+set_setting "$SX" 101 -4 mode int
+set_setting "$SX" 101 -4 speed slow
+set_energy "$SX" 101 -4 0
+set_slot "$SX" 101 -4 11 minecraft:oak_planks 64
+set_slot "$SX" 101 -4 12 minecraft:birch_planks 48
+set_slot "$SX" 101 -4 13 minecraft:cobblestone 64
+set_slot "$SX" 101 -4 14 minecraft:sugar_cane 32
+set_slot "$SX" 101 -4 15 minecraft:wheat 24
+set_slot "$SX" 101 -4 16 minecraft:gold_ingot 8
+set_energy "$SX" 101 -4 800
+ctl wait 120 >/dev/null
+crafter "$SX" 101 -4
+if [ "$SELFTEST" = 1 ] && [ "$SELFTEST_AT" = tiers ]; then
+    echo "(selftest: asserting the crafter3 crafted nothing and spent nothing)"
+    expect_energy 800
+    [ "$(in_total minecraft:crafting_table)" = 0 ] \
+        || fail "the crafter3 crafted with the selftest on: $C_IN"
+    [ "$(in_total minecraft:chest)" = 0 ] \
+        || fail "the crafter3 crafted with the selftest on: $C_IN"
+else
+    expect_energy 0
+    [ "$(in_total minecraft:crafting_table)" = 8 ] \
+        || fail "eight cycles gave $(in_total minecraft:crafting_table) crafting tables, expected 8"
+    [ "$(in_total minecraft:chest)" = 8 ] \
+        || fail "eight cycles gave $(in_total minecraft:chest) chests, expected 8"
+    [ "$(in_total minecraft:stick)" = 32 ] \
+        || fail "eight cycles gave $(in_total minecraft:stick) sticks, expected 32"
+    [ "$(in_total minecraft:furnace)" = 8 ] \
+        || fail "eight cycles gave $(in_total minecraft:furnace) furnaces, expected 8"
+    [ "$(in_total minecraft:sugar)" = 8 ] \
+        || fail "eight cycles gave $(in_total minecraft:sugar) sugar, expected 8"
+    [ "$(in_total minecraft:paper)" = 24 ] \
+        || fail "eight cycles gave $(in_total minecraft:paper) paper, expected 24"
+    [ "$(in_total minecraft:bread)" = 8 ] \
+        || fail "eight cycles gave $(in_total minecraft:bread) bread, expected 8"
+    [ "$(in_total minecraft:gold_nugget)" = 72 ] \
+        || fail "eight cycles gave $(in_total minecraft:gold_nugget) gold nuggets, expected 72"
+fi
+echo "  eight cycles at 800 FE: $C_ENERGY FE left, $C_IN"
+
+echo "== AD: a crafter2 keeps four recipes and refuses a fifth slot =="
+place_block "$TIER2_BLOCK" "$SX" 101 -6
+crafter "$SX" 101 -6
+expect_recipes -
+for index in 0 1 2 3; do
+    teach "$SX" 101 -6 "$index" "${TIER_RECIPES[$index]}"
+    [[ "$REPLY" == *"crafts ${TIER_RECIPES[$index]}"* ]] \
+        || fail "teaching crafter2 slot $index (${TIER_RECIPES[$index]}) did not answer: $REPLY"
+done
+crafter "$SX" 101 -6
+expect_recipes "minecraft:crafting_table+minecraft:chest+minecraft:stick+minecraft:furnace"
+teach "$SX" 101 -6 4 minecraft:oak_planks
+[[ "$REPLY" == *"this crafter has 4 recipe slots"* ]] \
+    || fail "a fifth recipe slot on a crafter2 was not refused with 4: $REPLY"
+crafter "$SX" 101 -6
+expect_recipes "minecraft:crafting_table+minecraft:chest+minecraft:stick+minecraft:furnace"
+echo "  a crafter2 keeps four recipes; a fifth says: $REPLY"
+
+echo "== AE: the same eight recipes on a crafter1 stop at two (the counterfactual) =="
+place_block "$CRAFTER" "$SX" 101 -10
+for index in "${!TIER_RECIPES[@]}"; do
+    teach "$SX" 101 -10 "$index" "${TIER_RECIPES[$index]}"
+    if [ "$index" -lt 2 ]; then
+        [[ "$REPLY" == *"crafts ${TIER_RECIPES[$index]}"* ]] \
+            || fail "teaching crafter1 slot $index did not answer: $REPLY"
+    else
+        [[ "$REPLY" == *"this crafter has 2 recipe slots"* ]] \
+            || fail "a crafter1 accepted slot $index: $REPLY"
+    fi
+done
+crafter "$SX" 101 -10
+expect_recipes "minecraft:crafting_table+minecraft:chest"
+# The same script, the same stock and the same 800 FE: only the two recipes this tier keeps
+# are in the machine, so only those two products can appear.
+set_setting "$SX" 101 -10 mode int
+set_setting "$SX" 101 -10 speed slow
+set_energy "$SX" 101 -10 0
+set_slot "$SX" 101 -10 11 minecraft:oak_planks 64
+set_slot "$SX" 101 -10 12 minecraft:birch_planks 48
+set_slot "$SX" 101 -10 13 minecraft:cobblestone 64
+set_slot "$SX" 101 -10 14 minecraft:sugar_cane 32
+set_slot "$SX" 101 -10 15 minecraft:wheat 24
+set_slot "$SX" 101 -10 16 minecraft:gold_ingot 8
+set_energy "$SX" 101 -10 800
+ctl wait 120 >/dev/null
+crafter "$SX" 101 -10
+expect_energy 0
+[ "$(in_total minecraft:crafting_table)" = 8 ] \
+    || fail "the crafter1 made $(in_total minecraft:crafting_table) crafting tables, expected 8"
+[ "$(in_total minecraft:chest)" = 8 ] \
+    || fail "the crafter1 made $(in_total minecraft:chest) chests, expected 8"
+for product in stick furnace sugar paper bread gold_nugget; do
+    [ "$(in_total "minecraft:$product")" = 0 ] \
+        || fail "the crafter1 crafted $product, which this tier never taught: $C_IN"
+done
+echo "  the same script on a crafter1 (two recipes, 800 FE): $C_IN"
+
+echo "== AF: a broken crafter3 carries its eight recipes and places back with them =="
+ctl command "gamemode survival" >/dev/null
+ctl wait 20 >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 6 >/dev/null
+break_block "$SX" 101 -4 minecraft:iron_pickaxe
+pick_up "$SX" 101 -4 "$TIER3_BLOCK"
+DROP_LINE=$(held_item_line "$TIER3_BLOCK")
+[ -n "$DROP_LINE" ] || fail "no /data get reply for the picked-up crafter3: $(ctl messages 8 | jq -c '.chat')"
+[[ "$DROP_LINE" == *"minecraft:block_entity_data"* ]] \
+    || fail "the dropped crafter3 carries no block-entity data: $DROP_LINE"
+for recipe in "${TIER_RECIPES[@]}"; do
+    [[ "$DROP_LINE" == *"id: \"$recipe\""* ]] \
+        || fail "the dropped crafter3 does not carry the taught $recipe: $DROP_LINE"
+done
+echo "  $DROP_LINE" >&2
+place_kept "$SX" 101 -4 "$TIER3_BLOCK"
+crafter "$SX" 101 -4
+expect_recipes "$TIER_EIGHT"
+[ "$(in_total minecraft:crafting_table)" = 8 ] \
+    || fail "the placed crafter3 lost its buffer: $C_IN"
+echo "  the placed crafter3 still knows $C_RECIPES and keeps its buffer: $C_IN"
+
+echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it; a spawner placed from its item knows no mob and 70 mob recipes are in force; a mob no recipe names is refused while minecraft:zombie is set from its own 800 FE recipe with its own matter amounts; with no energy it spawns nothing; 800 FE spawns exactly one zombie within 5 blocks for that 800 FE and leaves 0; minecraft:blaze costs its own 1,000 FE and spawns one blaze; a broken spawner's item carries its mob and numbers, which placing it back restores; a crafter3 keeps eight taught recipes and, stocked for eight cycles and charged 800 FE, runs exactly eight cycles with all eight products (0 FE left); a crafter2 keeps four recipes and refuses a fifth; the same eight teaches and the same stock on a crafter1 stop at its two recipes and craft only their two products; and a broken crafter3's item carries all eight recipes in minecraft:block_entity_data, which placing it back keeps"

@@ -246,6 +246,80 @@ pub const BUFFER_OUT_SLOTS: usize = 4;
 /// module slot (`CrafterContainer.CONTAINER_FACTORY`'s `10 + 26 + 4 + 1`).
 pub const CRAFTER_SLOTS: usize = 41;
 
+/// The crafter's three tiers (`CrafterModule.CRAFTER1..3`): one block entity with 2, 4 or 8
+/// recipe slots (`CrafterBaseTE.createTier1/2/3`'s `supportedRecipes`, and the jar's own lang
+/// lines "can handle up to 2/4/8 recipes at once").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrafterTier {
+    /// `rftoolsutility:crafter1`, two recipes.
+    Tier1,
+    /// `rftoolsutility:crafter2`, four recipes.
+    Tier2,
+    /// `rftoolsutility:crafter3`, eight recipes.
+    Tier3,
+}
+
+impl CrafterTier {
+    /// The three tiers, low to high: the order the port registers, drops and lists them in.
+    pub const ALL: [CrafterTier; 3] = [Self::Tier1, Self::Tier2, Self::Tier3];
+
+    /// The block and item id of the tier (`CrafterModule.CRAFTER1..3`).
+    #[must_use]
+    pub fn block(self) -> &'static str {
+        match self {
+            Self::Tier1 => "rftoolsutility:crafter1",
+            Self::Tier2 => "rftoolsutility:crafter2",
+            Self::Tier3 => "rftoolsutility:crafter3",
+        }
+    }
+
+    /// The block entity type name the port declares for the tier; the registry namespaces it
+    /// to `<mod>:<kind>`, which is the block id ([`Self::block`]).
+    #[must_use]
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Tier1 => "crafter1",
+            Self::Tier2 => "crafter2",
+            Self::Tier3 => "crafter3",
+        }
+    }
+
+    /// The registry id a `minecraft:block_entity_data` payload on the tier's item carries
+    /// (`TypedEntityData.loadInto` only loads data that names the block entity it becomes).
+    #[must_use]
+    pub fn type_id(self) -> &'static str {
+        self.block()
+    }
+
+    /// `supportedRecipes`: how many recipes the tier keeps, and the count a slot past it is
+    /// refused with.
+    #[must_use]
+    pub fn recipes(self) -> usize {
+        match self {
+            Self::Tier1 => 2,
+            Self::Tier2 => 4,
+            Self::Tier3 => 8,
+        }
+    }
+
+    /// The tier's slot in [`Self::ALL`], which is also its slot in the port's own tables.
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            Self::Tier1 => 0,
+            Self::Tier2 => 1,
+            Self::Tier3 => 2,
+        }
+    }
+
+    /// The tier whose block is `block`, if any: the one lookup a drop, a command or a tick
+    /// makes from a block id.
+    #[must_use]
+    pub fn from_block(block: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|tier| tier.block() == block)
+    }
+}
+
 /// `SpeedMode`: whether the crafter runs one operation a tick or five.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Speed {
@@ -788,6 +862,64 @@ mod tests {
 
     fn grid(cells: [Vec<String>; 9]) -> [Vec<String>; 9] {
         cells
+    }
+
+    #[test]
+    fn each_crafter_tier_keeps_its_own_number_of_recipes() {
+        assert_eq!(
+            CrafterTier::Tier1.recipes(),
+            2,
+            "the jar's \"up to 2 recipes\""
+        );
+        assert_eq!(
+            CrafterTier::Tier2.recipes(),
+            4,
+            "the jar's \"up to 4 recipes\""
+        );
+        assert_eq!(
+            CrafterTier::Tier3.recipes(),
+            8,
+            "the jar's \"up to 8 recipes\""
+        );
+    }
+
+    #[test]
+    fn a_crafter_tier_is_found_by_its_own_block() {
+        assert_eq!(
+            CrafterTier::from_block("rftoolsutility:crafter1"),
+            Some(CrafterTier::Tier1)
+        );
+        assert_eq!(
+            CrafterTier::from_block("rftoolsutility:crafter2"),
+            Some(CrafterTier::Tier2)
+        );
+        assert_eq!(
+            CrafterTier::from_block("rftoolsutility:crafter3"),
+            Some(CrafterTier::Tier3)
+        );
+        assert_eq!(CrafterTier::from_block("rftoolsutility:crafter4"), None);
+        assert_eq!(
+            CrafterTier::from_block("rftoolsutility:tank"),
+            None,
+            "another machine is not a crafter"
+        );
+        assert_eq!(CrafterTier::from_block(""), None);
+    }
+
+    #[test]
+    fn every_crafter_tier_has_its_own_identity_and_slot() {
+        for (slot, tier) in CrafterTier::ALL.iter().enumerate() {
+            assert_eq!(tier.index(), slot, "{tier:?} is not in its own table slot");
+            assert_eq!(
+                tier.block(),
+                tier.type_id(),
+                "{tier:?}: the carried block_entity_data names the block entity"
+            );
+            assert_eq!(tier.block(), format!("rftoolsutility:{}", tier.kind()));
+            assert_eq!(CrafterTier::from_block(tier.block()), Some(*tier));
+        }
+        let kinds: Vec<&str> = CrafterTier::ALL.iter().map(|tier| tier.kind()).collect();
+        assert_eq!(kinds, ["crafter1", "crafter2", "crafter3"]);
     }
 
     #[test]

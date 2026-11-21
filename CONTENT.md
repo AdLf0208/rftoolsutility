@@ -1,4 +1,4 @@
-# RFTools Utility slices 1–4 — the carried content
+# RFTools Utility slices 1–5 — the carried content
 
 The `assets/` and `data/` at the package root are generated from the pack jars by
 [`tools/assemble_content.py`](tools/assemble_content.py); rerun it to rebuild
@@ -24,8 +24,13 @@ of the RFTools Utility jar, re-spelled only where 26.3 differs.
 | File | Why |
 |---|---|
 | `assets/rftoolsutility/textures/block/tank0.png` … `tank8.png` | the nine fill-level side textures (`TankBakedModel.getSideTexture`) |
-| `assets/rftoolsutility/textures/block/machinecrafter1.png` | the crafter's front face (`CrafterModule`'s `p.frontBasedModel("crafter1", …)`) |
-| `assets/rftoolsutility/models/item/crafter1.json` | the crafter's item model (`parent: block/crafter1`) |
+| `assets/rftoolsutility/textures/block/machinecrafter1.png` | the crafter tier 1's front face (`CrafterModule`'s `p.frontBasedModel("crafter1", …)`) |
+| `assets/rftoolsutility/models/item/crafter1.json` | the crafter tier 1's item model (`parent: block/crafter1`) |
+| `assets/rftoolsutility/textures/block/machinecrafter2.png`, `machinecrafter3.png` | the crafter tiers 2 and 3 front faces (`frontBasedModel("crafter2"/"crafter3", …)`) |
+| `assets/rftoolsutility/models/item/crafter2.json`, `crafter3.json` | the tier item models (`parent: block/crafter2`/`crafter3`) |
+| `data/rftoolsutility/recipe/crafter2.json`, `crafter3.json` | the **inner** `minecraft:crafting_shaped` of the jar's `mcjtylib:copy_components` wrapper: redstone torch / crafting table + the previous tier + crafting table / redstone torch |
+| `data/rftoolsutility/advancement/recipes/misc/crafter2.json`, `crafter3.json` | the tiers' recipe unlocks (the previous tier as the criterion) |
+| `data/rftoolsutility/loot_table/blocks/crafter2.json`, `crafter3.json` | the tiers' drops |
 | `assets/rftoolsutility/models/item/spawner.json` | the spawner's item model (`parent: block/spawner`) |
 | `assets/rftoolsutility/textures/block/machinespawner.png` | the spawner's front face (`SpawnerModule`'s `frontBasedModel("spawner", …)`) |
 | `data/rftoolsutility/recipe/spawner.json` | redstone/rotten flesh/ender pearl/blaze rod/bone around a machine frame |
@@ -40,7 +45,7 @@ of the RFTools Utility jar, re-spelled only where 26.3 differs.
 | `data/rftoolsutility/recipe/tank.json` | 3 glass / bucket + machine frame + bucket / 3 iron ingots |
 | `data/rftoolsutility/advancement/recipes/misc/tank.json` | the recipe unlock |
 | `data/rftoolsutility/loot_table/blocks/tank.json` | the block's drop |
-| `assets/rftoolsutility/lang/en_us.json` (5 keys) | the block name, the tab title, upstream's tooltip lines |
+| `assets/rftoolsutility/lang/en_us.json` (12 keys) | the blocks' names, the tab title, upstream's tooltip lines (including the tiers' "up to 4/8 recipes at once") |
 
 ## Patched, because 1.21.1 → 26.3 differs
 
@@ -49,7 +54,8 @@ of the RFTools Utility jar, re-spelled only where 26.3 differs.
 | the recipe | `{"item": X}` → `"X"`, `{"tag": T}` → `"#T"` (26.3's ingredient form; the 1.21.1 object form is an unknown ingredient) |
 | `loot_table/blocks/tank.json` | the entry's `copy_components` function is removed (it names mcjtylib's `item_fluid` components, which this port does not register — see the gap list); `copy_name` stays, and **no** `condition` key is added: the jar's pool has none, and 26.3 reads a pool's condition as singular and drops an absent one unconditionally |
 | `tank_inventory.json` | `rftoolsbase:block/base/…` → `rftoolsutility:block/base/…` (the base textures travel in this package) |
-| `models/block/crafter1.json`, `models/block/spawner.json` | the same re-point of the jar's own cube models (`rftoolsbase:block/base/…` → `rftoolsutility:block/base/…`) |
+| `models/block/crafter1.json`, `crafter2.json`, `crafter3.json`, `models/block/spawner.json` | the same re-point of the jar's own cube models (`rftoolsbase:block/base/…` → `rftoolsutility:block/base/…`) |
+| `recipe/crafter2.json`, `crafter3.json` | the `mcjtylib:copy_components` wrapper is **unwrapped** to its inner `minecraft:crafting_shaped` recipe (the component copy needs mcjtylib's recipe type, which this port does not register — see `notes.md` § Slice 5, deviations) |
 | the 70 mob recipes | **nothing**: the 1.21.1 `item1..3.object` ingredient forms (an item, a tag, and `item2`'s *list*) are never parsed as ingredients here, so the files travel exactly as the jar ships them |
 | the block model | the jar's `block/tank.json` is a custom model loader (`rftoolsutility:tankloader`), which the pin cannot run: it becomes nine cubes (`block/tank0.json` … `tank8.json`), each drawing `tank<level>` on the four sides and the machine top and bottom — the same six faces `TankBakedModel` draws |
 
@@ -58,15 +64,15 @@ of the RFTools Utility jar, re-spelled only where 26.3 differs.
 | File | What |
 |---|---|
 | `assets/rftoolsutility/blockstates/tank.json` | nine variants, `level=0` … `level=8` |
-| `assets/rftoolsutility/blockstates/crafter1.json`, `blockstates/spawner.json` | the jar's rotations for the four horizontal `facing` values (the front is the model's north face) |
-| `assets/rftoolsutility/items/crafter1.json`, `items/spawner.json` | the 26.3 item definitions (`minecraft:model` → `rftoolsutility:item/<name>`) |
+| `assets/rftoolsutility/blockstates/{crafter1,crafter2,crafter3}.json`, `blockstates/spawner.json` | the jar's rotations for the four horizontal `facing` values (the front is the model's north face) |
+| `assets/rftoolsutility/items/{crafter1,crafter2,crafter3}.json`, `items/spawner.json` | the 26.3 item definitions (`minecraft:model` → `rftoolsutility:item/<name>`) |
 | `assets/rftoolsutility/items/tank.json` | the 26.3 item definition (`minecraft:model` → `rftoolsutility:item/tank`) |
 | `data/rftoolsutility/horizon/block/tank.json` | the block: `minecraft:iron_block` template, hardness 2.0 / blast 2.0, correct tool, metal sound, full cube, and the declared `level` state (9 values, default 0) |
-| `data/rftoolsutility/horizon/block/crafter1.json` | the block: `minecraft:white_glazed_terracotta` template (a full cube whose four-way `facing` placement rule is measured on a content block), hardness 2.0 / blast 2.0, correct tool, metal sound |
+| `data/rftoolsutility/horizon/block/{crafter1,crafter2,crafter3}.json` | the blocks: `minecraft:white_glazed_terracotta` template (a full cube whose four-way `facing` placement rule is measured on a content block), hardness 2.0 / blast 2.0, correct tool, metal sound |
 | `data/rftoolsutility/horizon/block/spawner.json` | the block: `minecraft:white_glazed_terracotta` template (the crafter's measured four-way `facing`), the same iron properties |
-| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json` | `itemGroup.rftoolsutility`, the tank, the crafter and the spawner |
+| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json` | `itemGroup.rftoolsutility`, the tank, the three crafter tiers and the spawner |
 | `data/c/tags/item/{ingots/iron,glass_blocks,bones,rods/blaze,ender_pearls}.json` | the convention tags the recipes name (the prepared 26.3 root ships none) |
-| `data/minecraft/tags/block/{mineable/pickaxe,needs_iron_tool}.json` | the tank, the crafter and the spawner (upstream's `ironPickaxeTags()`) |
+| `data/minecraft/tags/block/{mineable/pickaxe,needs_iron_tool}.json` | the tank, the three crafter tiers and the spawner (upstream's `ironPickaxeTags()`) |
 
 ## What the content cannot do alone
 
@@ -77,6 +83,10 @@ of the RFTools Utility jar, re-spelled only where 26.3 differs.
   work as upstream's do.
 - **The advancement's `frame` criterion** names the same item; its
   `has_the_recipe` criterion still unlocks the recipe.
+- **A tier upgrade does not carry the machine's data.** The jar's `crafter2`/`crafter3` recipes
+  are `mcjtylib:copy_components` wrappers that copy the old machine's taught recipes, buffer and
+  energy onto the crafted one. This port carries the inner shaped recipe only, so the crafted
+  machine starts empty (the gap is mcjtylib's recipe type — see `notes.md` § Slice 5).
 - **The 70 mob recipes are not grid recipes.** Their `type` (`rftoolsutility:spawner`) is the
   port's own crafting kind: `matches` is false and `assemble` is empty, as upstream's own
   `SpawnerRecipe` answers, and the spawner block reads their `entity`, `power` and `item1..3`
