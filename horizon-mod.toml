@@ -1,6 +1,6 @@
 id = "rftoolsutility"
 name = "RFTools Utility"
-version = "0.2.4"
+version = "0.2.5"
 description = """A port of RFTools Utility for Horizon: the tank, a 32,000 mB fluid tank that holds
 one fluid at a time, takes and gives a bucket on a right click, exposes the fluid
 capability on every face and shows its fill level through the jar's own nine textures;

@@ -249,3 +249,54 @@ The game the legs ran on was built by the launcher from this source
 (`Compiling rftoolsutility (1 of 1)`). What each new phase asserts is the table in `notes.md`
 § "Slice 5 — the crafter tiers", and the trap the slice cost (`$CRAFTER` being a prefix of
 `$CRAFTER2` for the coverage tool's variable expansion) is recorded there.
+
+## Slice 6 — the tick's own dimension (2026-11-21, pin `0a875da`, package 0.2.5)
+
+The reviewer's correctness bug on PR #1643: the crafter and spawner resolved their tick's level by
+scanning for a level holding a matching block at the position, so the same machine at the same
+`x,y,z` in two dimensions made the tick act in the first dimension. Fix: `ticking_level` = the level
+in place (`LevelRef::in_place`); both helpers deleted. No unit test was added (the rule needs the
+game's level list; the fail-capable regression is the in-game leg below). Logs:
+`../_shared/evidence/rftoolsutility/slice6-*.log` and `../_shared/evidence/rftoolsutility-e2e/e2e-slice6*.log`.
+
+| # | Step | Command (inside the lease) | Result |
+|---|---|---|---|
+| 1 | red, in game | `tools/e2e.sh` (new phase AG) on the **0.2.4** export | **FAIL: the End's spawner spawned 0 zombie(s) at 202,101,19 in its own dimension, expected 1**, `EXIT:1` (`e2e-slice6-red.log`) |
+| 2 | unit | `cargo test --offline` | `62 passed; 0 failed` (`slice6-test.log`, `sdk-test.log`) |
+| 3 | fmt + clippy | `cargo fmt -- --check` + `cargo clippy --all-targets --offline -- -D warnings` | `FMT_CLEAN`, `CLIPPY_CLEAN`, 0 warnings (`slice6-clippy.log`) |
+| 4 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **112,059 B, SHA-256 `213695fc…`**, 152 entries, no `Cargo.lock` |
+| 5 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.5 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, `EXIT:0` |
+| 6 | fits the pin | `sha256sum` + `cargo horizon-mod fits … --build 0a875da` | `213695fc…  rftoolsutility.hmod`, `0a875da  made for`, `EXIT:0` |
+| 7 | fits another build | `sha256sum` + `cargo horizon-mod fits … --build 0b14f8a` | `213695fc…  rftoolsutility.hmod`, `0b14f8a  fits`, `EXIT:0` |
+| 8 | gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | **1/1** (`runtime byte-identical`, `no packed Cargo.lock`, 62 tests, 0 warnings) |
+| 9 | native build | `ports/tools/launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `built native-0a875da-2d419ffa479a` (`slice6-native-build.log`) |
+| 10 | in game, PASS | `build-slot.sh run --step e2e -- tools/e2e.sh` | **PASS**, `EXIT:0`, phases A–AG (`e2e-slice6.log`) |
+| 11 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: the tank item did not register**, `EXIT:1` |
+| 12 | in game, counterfactual | `SELFTEST=1 SELFTEST_AT=dimension` | **FAIL: the End's spawner spawned 1 zombie(s) in its own dimension, expected 0**, `EXIT:1` |
+| 13 | in game, the earlier legs | `SELFTEST_AT=fill|restore|craft|spawn|tiers` | each `FAIL:` + `EXIT:1` |
+| 14 | log checker | `python3 ports/tools/check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=24 ok=24 missing-exit=0 bad-exit=0`, `EXIT:0` |
+| 15 | skills | `python3 ports/tools/check-skills.py --notes ports/rftoolsutility` | `Skills line present`, `SKILLS GATE: PASS` |
+
+**The two-dimension assertion (phase AG), verbatim from the green run:**
+
+```
+  the fed End crafter: 36=minecraft:oak_planksx12, 0 FE left
+  the unfed Overworld twin: '-' in, '-' out, '-', 0 FE
+  zombies at 202,101,19: the End has 1, the Overworld twin has 0; the End spawner reads 0 FE and spawned=1
+  the End spawner acted in the End; the Overworld twin stayed empty
+```
+
+and the same three lines in the red run (0.2.4):
+
+```
+  the fed End crafter: 36=minecraft:oak_planksx12, 0 FE left
+  the unfed Overworld twin: '-' in, '-' out, '-', 0 FE
+  zombies at 202,101,19: the End has 0, the Overworld twin has 0; the End spawner reads 800 FE and spawned=0
+FAIL: the End's spawner spawned 0 zombie(s) at 202,101,19 in its own dimension, expected 1: []
+```
+
+**Harness fixes this slice needed** (recorded in `notes.md`, no assertion weakened): `held_item_line`
+now reads `/data get entity @s Inventory` instead of `SelectedItem` (a machine broken with a buffer
+drops its contents, `ctl collect` fills the hotbar, and the machine's item lands in the main
+inventory); `place_kept` copies the carried stack into hotbar slot 8 with
+`item replace entity @s hotbar.8 from entity @s container.<slot>`.

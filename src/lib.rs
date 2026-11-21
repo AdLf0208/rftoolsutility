@@ -444,24 +444,19 @@ fn max_stack(host: &dyn Host, item: &str) -> u32 {
         .unwrap_or(64)
 }
 
-/// The open level the machine at `pos` stands in, when the block there is `block` (a tick is
-/// not told its level, and a block entity is out of the world while it ticks).
-fn level_of(host: &dyn ServerHost, pos: [i32; 3], block: &str) -> Option<LevelRef> {
-    host.levels().list_levels().into_iter().find(|level| {
-        level
-            .block(host, pos)
-            .is_some_and(|here| here.id(host) == block)
-    })
-}
-
-/// The level a crafter of any tier stands in: its tick is told a position, not its level, and a
-/// block entity is out of the world while it ticks (`level_of`, for the three tier blocks).
-fn crafter_level_of(host: &dyn ServerHost, pos: [i32; 3]) -> Option<LevelRef> {
-    host.levels().list_levels().into_iter().find(|level| {
-        level
-            .block(host, pos)
-            .is_some_and(|here| CrafterTier::from_block(&here.id(host)).is_some())
-    })
+/// The level a block-entity tick runs in: the level the server ticks now (`LevelRef::in_place`).
+/// A tick is told a position, not its level, and a block entity is out of the world while it
+/// ticks. Resolving the level by looking for a level that holds *a block like this* at that
+/// position picks the first dimension in vanilla order, so with the same machine at the same
+/// coordinates in two dimensions the tick acted in the other one: the spawner paid from this
+/// block and spawned nothing (a level that is not in place refuses a spawn), and the crafter
+/// asked the wrong level's recipe table. The level in place *is* the tick's own dimension,
+/// whatever else is loaded and whatever stands at the same coordinates there.
+fn ticking_level(host: &dyn ServerHost) -> Option<LevelRef> {
+    host.levels()
+        .list_levels()
+        .into_iter()
+        .find(|level| level.in_place(host))
 }
 
 /// One crafting operation (`CrafterBaseTE.craftOneItem`): take one item per cell of the recipe's
@@ -587,7 +582,7 @@ fn crafter_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>)
         }
         return;
     }
-    let Some(level) = crafter_level_of(&*host, event.pos) else {
+    let Some(level) = ticking_level(&*host) else {
         if !changed {
             *event.reply = BlockEntityTickReply::Unchanged;
         }
@@ -892,7 +887,7 @@ fn spawner_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>)
         *event.reply = BlockEntityTickReply::Unchanged;
         return;
     };
-    let Some(level) = level_of(&*host, pos, SPAWNER) else {
+    let Some(level) = ticking_level(&*host) else {
         *event.reply = BlockEntityTickReply::Unchanged;
         return;
     };

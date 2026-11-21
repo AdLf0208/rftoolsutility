@@ -80,6 +80,10 @@
 #     counterfactual): only its two recipes are taught, only their two products appear
 #  AF a survival break of the taught crafter3 drops an item carrying all eight recipes in
 #     `minecraft:block_entity_data`, and placing it back keeps them and its buffer
+#  AG the same crafter and spawner stand at the same x,y,z in the End and in the Overworld;
+#     only the End pair is fed, and only the End pair acts: its three logs become twelve
+#     planks for 300 FE, its 800 FE spawns one zombie at its own spawn point, and the
+#     unfed Overworld twin keeps its buffer, its energy and its spawn point empty
 #
 # SELFTEST=1 flips B's assertion (the tank must still read 0 mB), proving the
 # scenario can fail: it prints FAIL and exits non-zero.
@@ -91,6 +95,8 @@
 # nothing and spent nothing), which is slice 4's own fail-capable leg.
 # SELFTEST=1 SELFTEST_AT=tiers flips AC's assertion (the crafter3 must have crafted
 # nothing and spent nothing), which is slice 5's own fail-capable leg.
+# SELFTEST=1 SELFTEST_AT=dimension flips AG's assertion (the End spawner must have spawned
+# nothing at its own spawn point), which is slice 6's own fail-capable leg.
 #
 # CONTROL=1 runs the same scenario on the Nightly WITHOUT this package
 # (CONTROL_GAME, exported by launcher-game.sh): the tank item is not there, so A
@@ -129,6 +135,8 @@ TIER2_BLOCK=rftoolsutility:crafter2
 TIER3_BLOCK=rftoolsutility:crafter3
 SPAWNER_BLOCK=rftoolsutility:spawner
 SZ=3   # the spawner's z in the arena: clear of the tank's and the crafter's cells
+ZC2=16  # slice 6: the two-dimension phase's crafter twins (the arena floor runs to z=20)
+ZS2=18  # ... its spawner twins, facing south so the spawn point is z=19
 
 [ -x "$CTL" ] || { echo "missing horizon-ctl: $CTL" >&2; exit 1; }
 [ -n "$CTL" ] || { echo "set CTL= to the horizon-ctl of this pin (launcher-game.sh env)" >&2; exit 1; }
@@ -267,6 +275,26 @@ try_place() { # try_place ITEM X Y Z
     fail "ctl place $item at $x,$y,$z was refused three times: $(ctl inventory | jq -c '{hotbar,main}')"
 }
 
+# `ctl place --item` places from the hotbar only, and a machine broken while its buffer holds
+# items drops those beside it, so `ctl collect` can fill the hotbar and leave the machine's own
+# item in the main inventory (AF hit exactly that). Free the last hotbar slot and put the carried
+# stack there with the game's own `item` command: `container.<slot>` names a player's raw
+# inventory slot, and `from` copies, which is all a placement needs.
+hold_carried() { # hold_carried ITEM
+    local item=$1 slot
+    if ctl inventory | jq -e "[.hotbar[] | select(.item == \"$item\")] | length >= 1" >/dev/null 2>&1; then
+        return 0
+    fi
+    slot=$(ctl inventory | jq -r --arg i "$item" '[.main[] | select(.item == $i)][0].slot // empty')
+    [ -n "$slot" ] || fail "the carried $item is in no inventory slot: $(ctl inventory | jq -c '{hotbar,main}')"
+    ctl command "item replace entity @s hotbar.8 with minecraft:air" >/dev/null
+    ctl wait 4 >/dev/null
+    ctl command "item replace entity @s hotbar.8 from entity @s container.$slot" >/dev/null
+    ctl wait 6 >/dev/null
+    ctl inventory | jq -e "[.hotbar[] | select(.item == \"$item\")] | length >= 1" >/dev/null \
+        || fail "the carried $item did not reach the hotbar: $(ctl inventory | jq -c '{hotbar,main}')"
+}
+
 # Place ITEM from the player's hand at X Y Z (the player stands two blocks west).
 place_block() { # place_block ITEM X Y Z
     local item=$1 x=$2 y=$3 z=$4
@@ -315,15 +343,16 @@ break_block() { # break_block X Y Z TOOL
     [ "$got" = "minecraft:air" ] || fail "the block at $x,$y,$z is '$got' after the break, expected air"
 }
 
-# The chat line `/data get entity @s SelectedItem` replies for the tank in hand:
-# its own tag, components included. (A selector over dropped items would also
-# catch the arena's ambient ender pearls.)
-held_item_line() {
-    ctl select "${1:-$BLOCK}" >/dev/null
-    ctl wait 4 >/dev/null
-    ctl command "data get entity @s SelectedItem" >/dev/null
+# The chat line `/data get entity @s Inventory` replies for everything the player carries: an
+# item's own components ride with it, in whichever slot picked it up. (`SelectedItem` reads the
+# hotbar only, and a collected drop can land in the main inventory — that flaked AF once, where
+# the line read back as the iron pickaxe the break held.)
+held_item_line() { # held_item_line [ITEM]
+    local item=${1:-$BLOCK} line
+    ctl command "data get entity @s Inventory" >/dev/null
     ctl wait 6 >/dev/null
-    ctl messages 8 | jq -r '.chat[]' | grep -m1 'has the following entity data' || true
+    line=$(ctl messages 8 | jq -r '.chat[]' | grep -m1 'has the following entity data' || true)
+    if [[ "$line" == *"id: \"$item\""* ]]; then printf '%s\n' "$line"; fi
 }
 
 # Collect the drop (`ctl collect` walks to it), then stand on its block as a fallback.
@@ -345,6 +374,7 @@ place_kept() { # place_kept X Y Z [ITEM]
     local x=$1 y=$2 z=$3 item=${4:-$BLOCK}
     ctl command "execute in minecraft:the_end run tp @s $((x - 2)).5 101 $z.5" >/dev/null
     ctl wait 6 >/dev/null
+    hold_carried "$item"
     try_place "$item" "$x" "$y" "$z"
     ctl wait 6 >/dev/null
     [ "$(block_name "$x" "$y" "$z")" = "$item" ] || fail "the carried $item did not place at $x,$y,$z"
@@ -1038,4 +1068,108 @@ expect_recipes "$TIER_EIGHT"
     || fail "the placed crafter3 lost its buffer: $C_IN"
 echo "  the placed crafter3 still knows $C_RECIPES and keeps its buffer: $C_IN"
 
-echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it; a spawner placed from its item knows no mob and 70 mob recipes are in force; a mob no recipe names is refused while minecraft:zombie is set from its own 800 FE recipe with its own matter amounts; with no energy it spawns nothing; 800 FE spawns exactly one zombie within 5 blocks for that 800 FE and leaves 0; minecraft:blaze costs its own 1,000 FE and spawns one blaze; a broken spawner's item carries its mob and numbers, which placing it back restores; a crafter3 keeps eight taught recipes and, stocked for eight cycles and charged 800 FE, runs exactly eight cycles with all eight products (0 FE left); a crafter2 keeps four recipes and refuses a fifth; the same eight teaches and the same stock on a crafter1 stop at its two recipes and craft only their two products; and a broken crafter3's item carries all eight recipes in minecraft:block_entity_data, which placing it back keeps"
+echo "== AG: the same machine at the same position in two dimensions acts in its own =="
+# The reviewer's regression on PR #1643: with a crafter (and a spawner) at the same x,y,z in
+# the End and in another dimension, the tick must act in the dimension it runs in. 0.2.4
+# resolved the tick's level by scanning the loaded levels for one holding a matching block at
+# the position, so it took the first in dimension order (the Overworld). The measured symptom:
+# the End spawner read its own energy, then asked the Overworld to spawn, which refuses a level
+# that is not in place, so it spawned nothing and paid nothing (the End had 0 zombies at 800 FE
+# with the twin next door). The crafter's recipe lookup tolerated the parked level, so it still
+# crafted. Only the End pair is fed here, and only the End pair may act. Coordinates are the
+# arena's own: the End pair stands on the arena floor, and the Overworld twin gets a sealed
+# stone room at the same y (the Overworld at y=101 can be ocean or mountain, which would drown
+# the twin or refuse a spawn).
+
+# The player's level is what `ctl block`, `ctl entities` and the mod's own readouts read, so
+# each twin is read from inside its own dimension: hop there, read, hop back.
+to_dim() { # to_dim DIM Z
+    ctl command "execute in $1 run tp @s $((X0 - 2)).5 101 $2.5" >/dev/null
+    ctl wait 10 >/dev/null
+}
+to_end() { to_dim minecraft:the_end 0; }
+
+# The End pair: the arena's own floor under them, both chunks forceloaded so they keep
+# ticking while the player reads the Overworld twin.
+ctl command "execute in minecraft:the_end run forceload add 194 8 210 28" >/dev/null
+ctl command "execute in minecraft:the_end run setblock $SX 101 $ZC2 $CRAFTER" >/dev/null
+ctl command "execute in minecraft:the_end run setblock $SX 101 $ZS2 $SPAWNER_BLOCK[facing=south]" >/dev/null
+# The Overworld pair: a solid cube with a carved room, so the twin stands in dry air whatever
+# the terrain there is, and its own spawn point (z=19) has a floor and room above it.
+ctl command "execute in minecraft:overworld run forceload add 194 8 210 28" >/dev/null
+ctl wait 6 >/dev/null
+ctl command "execute in minecraft:overworld run fill 194 96 8 210 111 28 minecraft:stone" >/dev/null
+ctl command "execute in minecraft:overworld run fill 198 101 12 204 108 24 minecraft:air" >/dev/null
+ctl command "execute in minecraft:overworld run kill @e[type=!player]" >/dev/null 2>&1 || true
+ctl command "execute in minecraft:overworld run setblock $SX 101 $ZC2 $CRAFTER" >/dev/null
+ctl command "execute in minecraft:overworld run setblock $SX 101 $ZS2 $SPAWNER_BLOCK[facing=south]" >/dev/null
+ctl wait 10 >/dev/null
+
+[ "$(block_name "$SX" 101 "$ZC2")" = "$CRAFTER" ] \
+    || fail "the End crafter twin is not at $SX 101 $ZC2"
+[ "$(block_name "$SX" 101 "$ZS2")" = "$SPAWNER_BLOCK" ] \
+    || fail "the End spawner twin is not at $SX 101 $ZS2"
+to_dim minecraft:overworld "$ZS2"
+[ "$(block_name "$SX" 101 "$ZC2")" = "$CRAFTER" ] \
+    || fail "the Overworld crafter twin is not at $SX 101 $ZC2"
+[ "$(block_name "$SX" 101 "$ZS2")" = "$SPAWNER_BLOCK" ] \
+    || fail "the Overworld spawner twin is not at $SX 101 $ZS2"
+echo "  twins: crafter and spawner at $SX,101,$ZC2 and $SX,101,$ZS2 in the End and the Overworld" >&2
+to_end
+
+# Only the End crafter is fed: one taught recipe, three logs and 300 FE for three operations.
+teach "$SX" 101 "$ZC2" 0 minecraft:oak_planks
+[[ "$REPLY" == *"crafts minecraft:oak_planks"* ]] \
+    || fail "teaching the End twin's crafter did not answer: $REPLY"
+set_slot "$SX" 101 "$ZC2" 10 minecraft:oak_log 3
+set_energy "$SX" 101 "$ZC2" 0
+set_energy "$SX" 101 "$ZC2" 300
+ctl wait 60 >/dev/null
+crafter "$SX" 101 "$ZC2"
+expect_energy 0
+expect_recipes minecraft:oak_planks
+expect_in -
+expect_out 36=minecraft:oak_planksx12
+echo "  the fed End crafter: $C_OUT, $C_ENERGY FE left" >&2
+
+# The unfed twin must be untouched: same position, same block, no buffer, no energy.
+to_dim minecraft:overworld "$ZS2"
+crafter "$SX" 101 "$ZC2"
+expect_energy 0
+expect_recipes -
+expect_in -
+expect_out -
+echo "  the unfed Overworld twin: '$C_IN' in, '$C_OUT' out, '$C_RECIPES', $C_ENERGY FE" >&2
+to_end
+
+# Now the same for the spawner: only the End one is fed, and its mob must appear at its own
+# spawn point in its own dimension.
+kill_mobs
+set_mob "$SX" 101 "$ZS2" minecraft:zombie
+[[ "$REPLY" == *"spawns minecraft:zombie for 800 FE"* ]] \
+    || fail "the End twin's zombie was not set from its 800 FE recipe: $REPLY"
+set_energy "$SX" 101 "$ZS2" 800
+ctl wait 60 >/dev/null
+spawner "$SX" 101 "$ZS2"
+expect_mob minecraft:zombie
+END_ZOMBIES=$(near minecraft:zombie "$SX" 101 $((ZS2 + 1)) 5)
+to_dim minecraft:overworld "$ZS2"
+TWIN_ZOMBIES=$(near minecraft:zombie "$SX" 101 $((ZS2 + 1)) 5)
+to_end
+echo "  zombies at $SX,101,$((ZS2 + 1)): the End has $END_ZOMBIES, the Overworld twin has \
+$TWIN_ZOMBIES; the End spawner reads $S_ENERGY FE and spawned=$S_SPAWNED" >&2
+if [ "$SELFTEST" = 1 ] && [ "$SELFTEST_AT" = dimension ]; then
+    echo "(selftest: asserting the End's spawner spawned nothing at its own spawn point)"
+    [ "$END_ZOMBIES" = 0 ] \
+        || fail "the End's spawner spawned $END_ZOMBIES zombie(s) in its own dimension, expected 0"
+else
+    [ "$END_ZOMBIES" = 1 ] || fail "the End's spawner spawned $END_ZOMBIES zombie(s) at \
+$SX,101,$((ZS2 + 1)) in its own dimension, expected 1: $(ctl entities 32 minecraft:zombie | jq -c '.entities')"
+fi
+[ "$TWIN_ZOMBIES" = 0 ] || fail "the End's spawner put $TWIN_ZOMBIES zombie(s) at the Overworld \
+twin's spawn point: the tick acted in the wrong dimension"
+[ "$S_ENERGY" = 0 ] || fail "the End's spawner still holds $S_ENERGY FE after 60 ticks, expected 0"
+[ "$S_SPAWNED" = 1 ] || fail "the End's spawner has spawned $S_SPAWNED mob(s), expected 1"
+echo "  the End spawner acted in the End; the Overworld twin stayed empty" >&2
+
+echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it; a spawner placed from its item knows no mob and 70 mob recipes are in force; a mob no recipe names is refused while minecraft:zombie is set from its own 800 FE recipe with its own matter amounts; with no energy it spawns nothing; 800 FE spawns exactly one zombie within 5 blocks for that 800 FE and leaves 0; minecraft:blaze costs its own 1,000 FE and spawns one blaze; a broken spawner's item carries its mob and numbers, which placing it back restores; a crafter3 keeps eight taught recipes and, stocked for eight cycles and charged 800 FE, runs exactly eight cycles with all eight products (0 FE left); a crafter2 keeps four recipes and refuses a fifth; the same eight teaches and the same stock on a crafter1 stop at its two recipes and craft only their two products; a broken crafter3's item carries all eight recipes in minecraft:block_entity_data, which placing it back keeps; and with the same crafter and spawner at the same x,y,z in the End and the Overworld, only the fed End pair acts — twelve planks for 300 FE and one zombie at its own spawn point — while the unfed Overworld twin keeps its buffer, its energy and its spawn point empty"

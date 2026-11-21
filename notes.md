@@ -1,11 +1,13 @@
-# RFTools Utility — port notes (slices 1–5: the tank, the crafter tiers and the spawner)
+# RFTools Utility — port notes (slices 1–6: the tank, the crafter tiers and the spawner)
 
-> **Current state (2026-11-21): slice 5, package 0.2.4 at pin
+> **Current state (2026-11-21): slice 6, package 0.2.5 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 5 — the crafter tiers (2026-11-21)`** first; it closes the crafter family
-> (`crafter2`/`crafter3`, 4 and 8 recipes), with its evidence and the traps it cost. Then
-> `## Slice 4 — the spawner`, `## Slice 3 — the crafter`, `## Slice 2` (the tank's contents on
-> its item) and the 2026-11-18 migration note that produced 0.2.0; everything after the
+> **`## Slice 6 — the tick's own dimension (2026-11-21)`** first: it fixes the correctness bug a
+> reviewer found on PR #1643 (a tick resolved its level by scanning for a matching block, so two
+> dimensions holding the same machine at the same position confused it), with its red, its fix and
+> its two-dimension evidence. Then **`## Slice 5 — the crafter tiers (2026-11-21)`** (the crafter
+> family), `## Slice 4 — the spawner`, `## Slice 3 — the crafter`, `## Slice 2` (the tank's
+> contents on its item) and the 2026-11-18 migration note that produced 0.2.0; everything after the
 > migration describes the retired `.hnmod` bundle.
 
 > **Format (2026-11-18): the port is a flat SDK `.hmod`.** Horizon's mod-API merge (#16941,
@@ -1187,3 +1189,154 @@ Built twice with `rm -f Cargo.lock` before each (`cmp` identical), **no packed `
 `fits --build 0b14f8a` → `fits`, `verify-sdk-package.py rftoolsutility` → **1/1**, and the
 launcher's `native-build` compiled the mod against the pin (`Compiling rftoolsutility (1 of 1)`)
 for the in-game legs.
+
+## Slice 6 — the tick's own dimension (2026-11-21)
+
+**Chosen from the reviewer's comment on PR #1643** (`levzzz5154`), verbatim:
+
+> Use the ticking machine's actual dimension. [The crafter and inherited spawner resolve a level by
+> scanning for any matching block at the coordinates](https://github.com/AdLf0208/rftoolsutility/blob/rftoolsutility-0.2.4/src/lib.rs#L447-L465).
+> With two dimensions containing the same machine at the same position, the tick can act on the
+> first dimension rather than its own; `spawner_tick` spends this block's energy and spawns in the
+> chosen level. Resolve from the tick's server context and check duplicate coordinates across two
+> levels.
+
+**Pin:** Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, horizon-mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, mod API `0.2`, game 26.3. **Version 0.2.5.**
+
+### What it was (root cause, measured in game — not read from the Java)
+
+`level_of(host, pos, block)` and `crafter_level_of(host, pos)` walked `host.levels().list_levels()`
+and took the **first** level whose block at `pos` had the machine's id (or any crafter tier's id).
+`list_levels` answers "in vanilla dimension order", so the Overworld always came before the End:
+with the same machine at the same `x,y,z` in both, the End machine's tick acted on the Overworld's
+level. Both ticks paid from *this* block entity's saved compound (the tick's `event.entity` is the
+right one) and then used the *wrong* level for everything else.
+
+Two-dimension leg on 0.2.4 (phase AG, `e2e-slice6-red.log`), the twin unfed in the Overworld:
+
+| family | what the wrong level did | observed on 0.2.4 |
+|---|---|---|
+| spawner | `facing_of` + `level.spawn_mob` on the Overworld | **nothing** — `LevelRef::spawn_mob` refuses "a level not in place", so the tick returned `Unchanged`: the End spawner kept its 800 FE, `spawned=0`, and no zombie existed in either dimension |
+| crafter | `level.recipe_for` on the Overworld | crafted normally (recipes are server-wide, and the lookup tolerated the parked level): 3 logs → 12 planks for 300 FE, so the wrong level was **harmless for the crafter at this API** — but it was the same wrong choice |
+
+The reviewer's wording ("spawns in the chosen level") is bounded by the API: a parked level refuses
+the spawn instead. The user-visible defect is the same class and sharper — **a spawner silently
+stops spawning (and stops paying) when an identical machine stands at the same coordinates in
+another loaded dimension.**
+
+### The fix
+
+`ticking_level(host)` — the level the server ticks now (`LevelRef::in_place`), which is the tick's
+own dimension whatever else is loaded and whatever stands at the same coordinates there. It is the
+same resolution `bigreactors`, `computercraft` and `actuallyadditions` use for a tick that is told a
+position and not a level. `crafter_tick` and `spawner_tick` now call it; `level_of` and
+`crafter_level_of` are gone. The tick path has no block-matching level loop left:
+
+```
+$ grep -n "level_of\|list_levels" ports/rftoolsutility/src/lib.rs
+457:        .list_levels()          # ticking_level: .find(|level| level.in_place(host))
+1523:            .list_levels()      # the command path: `.find(|level| level.dimension() == invocation.dimension)`
+```
+
+The only `list_levels` in the tick path is `ticking_level`'s; the second is the command path, which
+resolves by the invocation's own dimension and was never a scan for a block.
+
+### Red → green (in game, verbatim)
+
+Red, the same scenario on the 0.2.4 package (`e2e-slice6-red.log`, `EXIT:1`):
+
+```
+  the fed End crafter: 36=minecraft:oak_planksx12, 0 FE left
+  the unfed Overworld twin: '-' in, '-' out, '-', 0 FE
+  zombies at 202,101,19: the End has 0, the Overworld twin has 0; the End spawner reads 800 FE and spawned=0
+FAIL: the End's spawner spawned 0 zombie(s) at 202,101,19 in its own dimension, expected 1: []
+```
+
+Green, the same script on 0.2.5 (`e2e-slice6.log`, `EXIT:0`):
+
+```
+  the fed End crafter: 36=minecraft:oak_planksx12, 0 FE left
+  the unfed Overworld twin: '-' in, '-' out, '-', 0 FE
+  zombies at 202,101,19: the End has 1, the Overworld twin has 0; the End spawner reads 0 FE and spawned=1
+  the End spawner acted in the End; the Overworld twin stayed empty
+```
+
+**No new unit test, deliberately.** The rule needs the game's level list; a hand-written
+`ServerHost` double would have to answer `list_levels`/`in_place` itself — it would test the mock,
+not the game. The fail-capable regression is the in-game leg above, plus
+`SELFTEST_AT=dimension` (below), which is the campaign's TDD pipeline for a glue rule: the rule is
+exercised red against the previous package and green after.
+
+Unit suite unchanged at **62 passed; 0 failed** (`slice6-test.log`), fmt clean, clippy
+`-D warnings` 0 warnings (`slice6-clippy.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+| log | verdict |
+|---|---|
+| `e2e-slice6-red.log` | **FAIL: the End's spawner spawned 0 zombie(s) at 202,101,19 in its own dimension, expected 1**, `EXIT:1` — the 0.2.4 package, the failing assertion |
+| `e2e-slice6.log` | **PASS**, `EXIT:0` — phases A–AG |
+| `e2e-slice6-control.log` | **FAIL: the tank item did not register**, `EXIT:1` (the unmodded Nightly) |
+| `e2e-slice6-selftest-dimension.log` | **FAIL: the End's spawner spawned 1 zombie(s) in its own dimension, expected 0**, `EXIT:1` (AG inverted) |
+| `e2e-slice6-fill.log`, `-restore.log`, `-selftest-craft.log`, `-selftest-spawn.log`, `-selftest-tiers.log` | each `EXIT:1` with its own `FAIL:` (B, K, Q, Z, AC inverted) — the earlier legs still fail as designed |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=24 ok=24 missing-exit=0 bad-exit=0`.
+
+**Phase AG** (the two-dimension regression, the exact scenario the reviewer asked for):
+
+- the crafter and the spawner are placed at `202,101,16` and `202,101,18` **in the End** (the
+  arena floor) and at the **same `x,y,z` in the Overworld**, inside a sealed stone room carved out
+  of a filled cube (the Overworld at `y=101` can be ocean or mountain); both chunks are
+  `forceload`ed so both dimensions keep ticking while the player reads one of them;
+- **only the End pair is fed**: the End crafter is taught `minecraft:oak_planks`, stocked with 3
+  oak logs and charged 300 FE; the End spawner is set to `minecraft:zombie` from its own 800 FE
+  recipe and charged 800 FE;
+- asserted: the End crafter reads `energy=0/50000 … recipes=minecraft:oak_planks in=- out=36=minecraft:oak_planksx12`
+  (its buffer fell, its output appeared); the Overworld twin reads `energy=0`, `recipes=-`,
+  `in=-`, `out=-`; the End holds **1** zombie at `202,101,19` with `energy=0`, `spawned=1`; the
+  Overworld twin holds **0**;
+- read back by hopping into each dimension (`ctl block`, `ctl entities` and the mod's own commands
+  read the player's level) — the transcript above is from that read; `SELFTEST_AT=dimension`
+  inverts the End count and fails as designed.
+
+### Measured traps this slice cost
+
+1. **`LevelRef::spawn_mob` refuses "a level not in place".** That is why the 0.2.4 spawner did
+   nothing rather than spawning next door; it also means the fix cannot be "spawn in the level I
+   picked" — the only correct level for a spawn from a tick is the in-place one.
+2. **`ctl place --item` places from the hotbar only.** A machine broken while its buffer holds
+   items drops those beside it, so `ctl collect` can fill the hotbar and leave the machine's own
+   item in the main inventory — AF failed on exactly that (its `/data get … SelectedItem` then read
+   the iron pickaxe it had broken with). Two harness fixes: `held_item_line` reads
+   `data get entity @s Inventory` (the item's components ride with it in any slot), and
+   `place_kept` copies the carried stack into the hotbar with
+   `item replace entity @s hotbar.8 from entity @s container.<slot>` (`container.<n>` is a
+   player's raw inventory slot, and `from` copies, which is all a placement needs). An
+   `open-inventory`/`click-slot` route was tried first and one `ctl` call in it failed under load;
+   the command route has no screen dependency.
+3. **The End chunk must stay forceloaded while the player reads the other dimension**, or the
+   machine under test stops ticking and the read is meaningless. The End arena is loaded by the
+   player only, so AG forceloads it explicitly.
+
+### Coverage of the tick's level (after slice 6)
+
+| Family | Status | Evidence / why not |
+|---|---|---|
+| `block_entity` | tested | AG (slice 6): the fed End crafter (3 logs → 12 planks, 300 FE) and the fed End spawner (800 FE → 1 zombie at `202,101,19`) both act at their own `x,y,z` with identical, unfed twins in the Overworld — the twins keep `energy=0`, `recipes=-`, `in=-`, `out=-` and 0 zombies; `SELFTEST_AT=dimension` inverts the End count and fails. The tick resolves its level from `LevelRef::in_place`, never by scanning for a block. The tank's tick never resolved a level (it writes at `event.pos`), and phases A–I/J–M are still green |
+
+Skills: superpowers/using-superpowers, systematic-debugging, test-driven-development, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 112,059 B | `213695fc2d98491ee0a99dfd38ceaa4bb3ee9b591d41fa7921a19d9fca2ee4fb` | 152 |
+
+Built twice with `rm -f Cargo.lock` before each (`cmp` identical), **no packed `Cargo.lock`**,
+`check` green (`rftoolsutility 0.2.5 (native-mod, format
+native-1/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/e59da9094f0c2fdda6c627fe9eff22dec6a906f0, for
+26.3)`), `fits --build 0a875da` → `0a875da  made for`, `fits --build 0b14f8a` → `0b14f8a  fits`
+(both logs print the artifact's sha first), `verify-sdk-package.py rftoolsutility` → **1/1**, and
+the launcher's `native-build` compiled the mod against the pin (`Compiling rftoolsutility (1 of 1)`,
+`built native-0a875da-2d419ffa479a`) for the in-game legs.
