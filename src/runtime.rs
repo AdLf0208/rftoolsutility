@@ -457,6 +457,68 @@ pub fn placements(
     Some(slots)
 }
 
+// ---------------------------------------------------------------------------
+// Slice 4: the spawner (`SpawnerTileEntity`, `SpawnerConfiguration`, `SpawnerRecipes`)
+// ---------------------------------------------------------------------------
+
+/// `SpawnerConfiguration.SPAWNER_MAXENERGY`: the spawner's energy buffer.
+pub const SPAWNER_CAPACITY: i32 = 200_000;
+/// `SpawnerConfiguration.SPAWNER_RECEIVEPERTICK`: the most one call may fill.
+pub const SPAWNER_RECEIVE: i32 = 2_000;
+
+/// One mob's spawner recipe (`SpawnerRecipes.MobData`): the entity it spawns, the RF one
+/// spawn costs (`spawnRf`), and the three matter amounts it wants (`item1..3`).
+///
+/// Upstream keys its table by entity id (`SpawnerRecipes.mobData`, filled from the
+/// `rftoolsutility:spawner` recipe files), so the mob a machine spawns is the recipe's own
+/// entity: the setting is which recipe the machine holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MobRecipe {
+    /// `minecraft:zombie`, the recipe's `entity`.
+    pub entity: String,
+    /// The recipe's `power`: FE one spawn costs.
+    pub power: i32,
+    /// The recipe's `item1..3` amounts: the matter one spawn consumes. The matter system
+    /// (its three tanks and the beamers that fill them) is not part of this slice; the
+    /// numbers are carried and read so the recipe is the machine's own data.
+    pub matter: [f32; 3],
+}
+
+/// The recipe that spawns `mob` (`SpawnerRecipes.getMobData`, a lookup by entity id).
+#[must_use]
+pub fn recipe_for<'a>(recipes: &'a [MobRecipe], mob: &str) -> Option<&'a MobRecipe> {
+    recipes.iter().find(|recipe| recipe.entity == mob)
+}
+
+/// What one spawn leaves in the buffer (`SpawnerTileEntity.tickServer`: the buffer must
+/// cover the recipe's `power`, and the spawn is paid for once).
+///
+/// None when the machine has no cost to charge — a mob with no recipe, or data a hand-made
+/// item wrote — so a machine cannot spawn for free; every carried recipe costs 100 FE or
+/// more.
+#[must_use]
+pub fn spawn_once(energy: i32, cost: i32) -> Option<i32> {
+    (cost > 0 && energy >= cost).then(|| energy - cost)
+}
+
+/// Where a spawn from `pos` facing `facing` puts the mob: the neighbouring block in that
+/// direction, centred on x and z (`SpawnerTileEntity.tickServer`: the `facing` block state's
+/// `getNormal()` offset, then `moveTo(sx + 0.5, sy, sz + 0.5)`).
+///
+/// None for a direction the port's four-way facing does not have.
+#[must_use]
+pub fn spawn_at(pos: [i32; 3], facing: &str) -> Option<[f64; 3]> {
+    let [x, y, z] = pos;
+    let (x, z) = match facing {
+        "north" => (x, z - 1),
+        "south" => (x, z + 1),
+        "east" => (x + 1, z),
+        "west" => (x - 1, z),
+        _ => return None,
+    };
+    Some([f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,5 +1017,88 @@ mod tests {
             result_range(CraftMode::Ext),
             BUFFER_OUT..BUFFER_OUT + BUFFER_OUT_SLOTS
         );
+    }
+
+    // -- the spawner (slice 4) -------------------------------------------------
+
+    fn mob(entity: &str, power: i32) -> MobRecipe {
+        MobRecipe {
+            entity: entity.to_owned(),
+            power,
+            matter: [0.1, 0.2, 20.0],
+        }
+    }
+
+    #[test]
+    fn a_recipe_is_found_by_the_mob_it_spawns() {
+        let zombie = mob("minecraft:zombie", 800);
+        let blaze = MobRecipe {
+            entity: "minecraft:blaze".to_owned(),
+            power: 1_000,
+            matter: [0.1, 0.5, 30.0],
+        };
+        let recipes = [zombie, blaze];
+        assert_eq!(
+            recipe_for(&recipes, "minecraft:blaze").map(|recipe| recipe.power),
+            Some(1_000),
+            "the table is keyed by entity id, not by file name"
+        );
+        assert_eq!(recipe_for(&recipes, "minecraft:zombie"), Some(&recipes[0]));
+        assert_eq!(
+            recipe_for(&recipes, "minecraft:not_a_mob"),
+            None,
+            "a mob no recipe names cannot be spawned"
+        );
+        assert_eq!(recipe_for(&[], "minecraft:zombie"), None);
+    }
+
+    #[test]
+    fn a_spawn_costs_the_recipes_own_power_once() {
+        assert_eq!(spawn_once(800, 800), Some(0), "exact pay is a spawn");
+        assert_eq!(spawn_once(5_000, 800), Some(4_200));
+        assert_eq!(
+            spawn_once(799, 800),
+            None,
+            "one FE short is no spawn, and nothing is spent"
+        );
+        assert_eq!(spawn_once(0, 800), None);
+        assert_eq!(
+            spawn_once(1_000, 1_000),
+            Some(0),
+            "a blaze costs its own 1,000"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_known_cost_spawns_nothing() {
+        assert_eq!(
+            spawn_once(200_000, 0),
+            None,
+            "a machine with no recipe cost must not spawn for free"
+        );
+        assert_eq!(spawn_once(200_000, -1), None);
+        assert_eq!(
+            spawn_once(0, 0),
+            None,
+            "an empty buffer with no cost is still no spawn"
+        );
+    }
+
+    #[test]
+    fn a_spawn_lands_on_the_neighbour_the_facing_names() {
+        assert_eq!(
+            spawn_at([200, 101, 0], "north"),
+            Some([200.5, 101.0, -0.5]),
+            "north is -z, and x/z are centred as `moveTo` centres them"
+        );
+        assert_eq!(spawn_at([200, 101, 0], "south"), Some([200.5, 101.0, 1.5]));
+        assert_eq!(spawn_at([200, 101, 0], "east"), Some([201.5, 101.0, 0.5]));
+        assert_eq!(spawn_at([200, 101, 0], "west"), Some([199.5, 101.0, 0.5]));
+        assert_eq!(
+            spawn_at([200, 101, 0], "up"),
+            None,
+            "the port's four-way facing has no up: the block cannot be turned up"
+        );
+        assert_eq!(spawn_at([200, 101, 0], ""), None);
     }
 }

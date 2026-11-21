@@ -1,8 +1,11 @@
 {
   "block.rftoolsutility.crafter1": "Crafter Tier 1",
+  "block.rftoolsutility.spawner": "Spawner",
   "block.rftoolsutility.tank": "Tank",
   "itemGroup.rftoolsutility": "RFTools Utility",
   "message.rftoolsutility.shiftmessage": "<Press Shift>",
+  "message.rftoolsutility.spawner.gold": "Infusing bonus: reduced power usage",
+  "message.rftoolsutility.spawner.header": "This block can spawn creatures. It needs a syringe of the appropriate type, RF power and also it needs beams of energized matter",
   "message.rftoolsutility.tank.contents": "Contents: ",
   "message.rftoolsutility.tank.header": "A tank for fluids with support for filtering"
 }

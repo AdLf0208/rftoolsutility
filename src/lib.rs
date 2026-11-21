@@ -1,25 +1,28 @@
-//! RFTools Utility — the tank, as one `impl Hooks` at the crate root.
+//! RFTools Utility — the tank, the crafter and the spawner, as one `impl Hooks` at the crate
+//! root.
 //!
-//! The carried content is this package's own `assets/` and `data/` (`rftoolsutility:tank`, its
-//! item, the nine fill models and the recipe); the behaviour is here: a [`BlockEntityPart`] on
-//! the tank declares its block entity and ticks on the server to mirror the tank's contents into
-//! the block's `level` state; `use_item_on_block` takes a bucket click (the port moves the bucket
-//! itself, and hands a container it does not model to the engine's [`fluid_util`]); `block_drops`
-//! puts the tank's contents on its own item, which `TankItemPart` clamps back when placed; and
-//! `/rftoolsutility info|tank` serves the harness.
+//! The carried content is this package's own `assets/` and `data/`; the behaviour is here.
+//! [`TankPart`] and [`TankItemPart`] are the tank: a block entity whose tick mirrors its one
+//! 32,000 mB tank into the block's `level` state, a bucket click the port performs itself, and
+//! the contents travelling on the item. [`CrafterPart`] is the crafter: 41 slots, 50,000 FE and
+//! a tick that runs taught 3x3 recipes from its buffer. [`SpawnerPart`] is the spawner:
+//! 200,000 FE and a tick that spawns the mob its own recipe names, for that recipe's RF cost;
+//! [`SpawnerRecipeKind`] is the `rftoolsutility:spawner` recipe kind its 70 carried mob recipes
+//! need. `/rftoolsutility info|tank|crafter|recipe|buffer|energy|setting|spawner|mob|recipes`
+//! serves the harness, because upstream's controls are its GUIs.
 //!
-//! The numbers — the capacity, the fill level, one fluid at a time, what a bucket click does —
-//! are in [`runtime`], a plain module with no `mod_api` types, byte-identical to the retired
-//! `.hnmod` bundle's `runtime.rs`, so `cargo test` alone proves them.
+//! The numbers — the capacity, the fill level, what a bucket click does, the craft loop, the
+//! spawn cost — are in [`runtime`], a plain module with no `mod_api` types, so `cargo test`
+//! alone proves them.
 use mod_api::{
     self, BlockClick, BlockDropsEvent, BlockEntityPart, BlockEntityRef, BlockEntityTickEvent,
     BlockEntityTickReply, BlockEntityTicksEvent, BlockPart, Command, CommandArgumentValue,
-    CommandSource, Compound, Direction, Flow, FluidResource, FluidStack, Hand, Hooks, Host,
-    HostSide, HostTransaction, ITEM_FLUIDS, Identifier, InteractionResult, ItemKey, ItemPart,
-    ItemPlace, ItemStack, LevelHost, LevelRef, ModContainer, ModEnergyBuffer, ModFluidTanks,
-    OnBlockPlacedByEvent, PlayerRef, RecipeInput, RegisterCommandsEvent, Registrar,
-    RegistrationContext, RunModCommandEvent, ServerHost, ServerTickEvent, Tag, Text,
-    UseItemOnBlockEvent, UsePhase, fluid_util,
+    CommandSource, Compound, CraftingGrid, CraftingRecipeCodec, CraftingRecipeKind, Direction,
+    Flow, FluidResource, FluidStack, Hand, Hooks, Host, HostBlockStates, HostSide, HostTransaction,
+    ITEM_FLUIDS, Identifier, InteractionResult, ItemKey, ItemPart, ItemPlace, ItemStack, LevelHost,
+    LevelRef, ModContainer, ModEnergyBuffer, ModFluidTanks, OnBlockPlacedByEvent, PlayerRef,
+    RecipeInput, RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent,
+    ServerHost, ServerTickEvent, SpawnReason, Tag, Text, UseItemOnBlockEvent, UsePhase, fluid_util,
 };
 use std::sync::{Mutex, OnceLock};
 
@@ -27,8 +30,9 @@ pub mod runtime;
 
 use runtime::{
     BUCKET, BUFFER_IN, BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY,
-    CRAFTER_RECEIVE, CRAFTER_SLOTS, Click, CraftMode, GHOST_INPUT, GHOST_RESULT, Speed, Tank,
-    bucket_click, carried, clamped, fill_level, placements, plan, result_range, spend, steps,
+    CRAFTER_RECEIVE, CRAFTER_SLOTS, Click, CraftMode, GHOST_INPUT, GHOST_RESULT, MobRecipe,
+    SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, Tank, bucket_click, carried, clamped, fill_level,
+    placements, plan, recipe_for, result_range, spawn_at, spawn_once, spend, steps,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -73,6 +77,37 @@ const KEY_KEEP: &str = "keep";
 
 /// A crafter's item, resolved once in `register` for the same reason as the tank's.
 static CRAFTER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// The spawner (slice 4)
+// ---------------------------------------------------------------------------
+
+/// The spawner block and its item (`SpawnerModule.SPAWNER`).
+const SPAWNER: &str = "rftoolsutility:spawner";
+/// The block entity type the port declares for it (`EntityBlock.newBlockEntity`).
+const SPAWNER_TYPE: &str = "spawner";
+/// The type id a `minecraft:block_entity_data` payload on a spawner's item carries
+/// (`TypedEntityData.loadInto`).
+const SPAWNER_TYPE_ID: &str = "rftoolsutility:spawner";
+/// The recipe type the jar's 70 mob recipes name (`SpawnerModule.SPAWNER_RECIPE_TYPE_ID`).
+const SPAWNER_RECIPE_TYPE: &str = "rftoolsutility:spawner";
+/// The serializer name this port registers for it; `register_crafting_recipe_serializer` files
+/// it under the mod's own namespace (`rftoolsutility:spawner`, the type the files name) and
+/// under the `minecraft:crafting` recipe type, which is the only kind the API has.
+const SPAWNER_KIND: &str = "spawner";
+/// The spawner's saved keys beside the engine's own: the mob it spawns (`SpawnerData.mob`) and
+/// the recipe numbers read for it (its `spawnRf` and its three matter amounts), so a tick needs
+/// no recipe-table walk. `energy` is the engine's int, as the crafter's is.
+const KEY_MOB: &str = "mob";
+const KEY_COST: &str = "cost";
+const KEY_NEEDS: &str = "needs";
+const KEY_SPAWNED: &str = "spawned";
+/// The block's own placement state, which picks the side a spawn appears on
+/// (`OrientationTools.getOrientation`).
+const KEY_FACING: &str = "facing";
+
+/// A spawner's item, resolved once in `register` for the same reason as the tank's.
+static SPAWNER_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -203,6 +238,29 @@ fn entity_patch(saved: &Compound, type_id: &str) -> Compound {
     patch
 }
 
+/// Put the broken machine's own saved data on its drop (`collectImplicitComponents`): vanilla's
+/// `minecraft:block_entity_data` is what `BlockItem.updateCustomBlockEntityTag` applies on
+/// placement, so the head of the machine (a crafter's recipes, a spawner's mob) comes back.
+fn carry_machine(
+    level: &dyn LevelHost,
+    event: &mut BlockDropsEvent<'_>,
+    item: ItemKey,
+    type_id: &str,
+) {
+    let Some(entity) = event.block_entity else {
+        return;
+    };
+    let Some(saved) = level.block_entity_data(entity) else {
+        return;
+    };
+    let patch = entity_patch(&saved, type_id);
+    for drop in event.drops.iter_mut() {
+        if drop.stack.item() == item {
+            let _ = drop.stack.apply_components(&patch);
+        }
+    }
+}
+
 /// What `/rftoolsutility info` prints. The shape is the harness's contract
 /// (`tools/parse_info.py`), so the end-to-end scenario can parse it.
 fn readout(
@@ -269,6 +327,36 @@ fn read_text(nbt: &Compound, name: &str) -> Option<String> {
         Some(Tag::String(value)) => Some(value.to_string_lossy()),
         _ => None,
     }
+}
+
+/// The three float amounts under `name` (`SpawnerData.matter0..2`). NBT carries a float as its
+/// bits (`Tag::Float(u32)`), so the round trip is explicit.
+fn read_matter(nbt: &Compound, name: &str) -> Option<[f32; 3]> {
+    let Some(Tag::List(entries)) = tag(nbt, name) else {
+        return None;
+    };
+    let mut matter = [0.0f32; 3];
+    for (slot, entry) in matter.iter_mut().zip(entries) {
+        let Tag::Float(bits) = entry else {
+            return None;
+        };
+        *slot = f32::from_bits(*bits);
+    }
+    Some(matter)
+}
+
+/// Save three float amounts, replacing any value of another kind under the same name.
+fn write_matter(nbt: &mut Compound, name: &str, matter: [f32; 3]) {
+    put(
+        nbt,
+        name,
+        Tag::List(
+            matter
+                .iter()
+                .map(|amount| Tag::Float(amount.to_bits()))
+                .collect(),
+        ),
+    );
 }
 
 /// The crafter's taught recipes (`CrafterData.recipes`), in the order they are crafted.
@@ -363,13 +451,13 @@ fn max_stack(host: &dyn Host, item: &str) -> u32 {
         .unwrap_or(64)
 }
 
-/// The open level the crafter at `pos` stands in (a tick is not told its level, and a block
-/// entity is out of the world while it ticks).
-fn level_of(host: &dyn ServerHost, pos: [i32; 3]) -> Option<LevelRef> {
+/// The open level the machine at `pos` stands in, when the block there is `block` (a tick is
+/// not told its level, and a block entity is out of the world while it ticks).
+fn level_of(host: &dyn ServerHost, pos: [i32; 3], block: &str) -> Option<LevelRef> {
     host.levels().list_levels().into_iter().find(|level| {
         level
             .block(host, pos)
-            .is_some_and(|block| block.id(host) == CRAFTER)
+            .is_some_and(|here| here.id(host) == block)
     })
 }
 
@@ -496,7 +584,7 @@ fn crafter_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>)
         }
         return;
     }
-    let Some(level) = level_of(&*host, event.pos) else {
+    let Some(level) = level_of(&*host, event.pos, CRAFTER) else {
         if !changed {
             *event.reply = BlockEntityTickReply::Unchanged;
         }
@@ -623,6 +711,263 @@ impl BlockEntityPart for CrafterPart {
     /// One server tick of the craft loop.
     fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
         crafter_tick(host, event);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The spawner: its recipes, its saved state, its tick and its readout
+// ---------------------------------------------------------------------------
+
+/// One `rftoolsutility:spawner` recipe as it crosses the API boundary: plain data, so its
+/// encoding is a `Wire` value and not a game type.
+#[derive(Clone, Debug, PartialEq, mod_api::Wire)]
+struct SpawnerValue {
+    /// The mob it spawns (`SpawnerRecipe.entity`).
+    entity: String,
+    /// The recipe's `power`: FE one spawn costs.
+    power: i32,
+    /// The recipe's `item1..3` amounts.
+    matter: [f32; 3],
+}
+
+impl SpawnerValue {
+    /// The machine's own copy of the recipe's rules.
+    fn recipe(&self) -> MobRecipe {
+        MobRecipe {
+            entity: self.entity.clone(),
+            power: self.power,
+            matter: self.matter,
+        }
+    }
+}
+
+/// Reads one `rftoolsutility:spawner` recipe file (`SpawnerRecipeSerializer`): the entity it
+/// spawns, its `power`, and the three `item1..3` amounts. The engine hands this the object with
+/// its `type` removed, so an absent type is accepted and a wrong one refused.
+///
+/// Only the `amount` of each `item1..3` is read. Their `object` is upstream's matter
+/// *ingredient* — an item, a tag, or a list of either — which this port never parses as an
+/// ingredient: `machine_recipe_ingredient`'s 1.21.1 forms are the only shape upstream's own
+/// codec knows, and turning them into 26.3 ingredients would change what a recipe means.
+fn spawner_recipe(json: &mod_api::serde_json::Value) -> Result<SpawnerValue, String> {
+    use mod_api::serde_json::Value;
+    if let Some(kind) = json.get("type").and_then(Value::as_str)
+        && kind != SPAWNER_RECIPE_TYPE
+    {
+        return Err(format!("{kind} is not a {SPAWNER_RECIPE_TYPE} recipe"));
+    }
+    let entity = json
+        .get("entity")
+        .and_then(Value::as_str)
+        .filter(|entity| !entity.is_empty())
+        .ok_or("a spawner recipe needs an entity")?;
+    let power = json
+        .get("power")
+        .and_then(|power| {
+            power
+                .as_i64()
+                .or_else(|| power.as_f64().map(|power| power as i64))
+        })
+        .ok_or("a spawner recipe needs a power")?;
+    let power =
+        i32::try_from(power).map_err(|_| format!("a spawner power of {power} does not fit"))?;
+    // A recipe's amount is a float (`SpawnerData` keeps them as `Codec.FLOAT`), so the
+    // machine's copy is f32; an amount a pack leaves out is zero, as upstream's codec requires
+    // the field and this one is lenient.
+    let amount = |index: usize| {
+        json.get(format!("item{}", index + 1))
+            .and_then(|item| item.get("amount"))
+            .and_then(Value::as_f64)
+            .map_or(0.0, |amount| amount as f32)
+    };
+    Ok(SpawnerValue {
+        entity: entity.to_owned(),
+        power,
+        matter: [amount(0), amount(1), amount(2)],
+    })
+}
+
+/// Writes the value back as the recipe file it came from, for the client's copy of the table.
+fn write_spawner(value: &SpawnerValue) -> String {
+    mod_api::serde_json::json!({
+        "type": SPAWNER_RECIPE_TYPE,
+        "entity": value.entity.as_str(),
+        "power": value.power,
+        "item1": { "amount": value.matter[0] },
+        "item2": { "amount": value.matter[1] },
+        "item3": { "amount": value.matter[2] },
+    })
+    .to_string()
+}
+
+/// The registered `rftoolsutility:spawner` kind: a data table, not a grid recipe. Upstream's
+/// `SpawnerRecipe` answers false to `matches` and `ItemStack.EMPTY` to `assemble`, and the
+/// spawner block is what reads the values.
+struct SpawnerRecipeKind;
+
+impl CraftingRecipeKind for SpawnerRecipeKind {
+    type Value = SpawnerValue;
+
+    fn codec(&self) -> Option<CraftingRecipeCodec<Self::Value>> {
+        Some(CraftingRecipeCodec::wire())
+    }
+
+    fn decode(&self, json: &str) -> Result<Self::Value, String> {
+        let value: mod_api::serde_json::Value =
+            mod_api::serde_json::from_str(json).map_err(|error| error.to_string())?;
+        spawner_recipe(&value)
+    }
+
+    fn write(&self, value: &Self::Value) -> Result<String, String> {
+        Ok(write_spawner(value))
+    }
+
+    /// A spawner recipe is not craftable in a grid (`SpawnerRecipe.canCraftInDimensions` is
+    /// false and `matches` always refuses).
+    fn matches(&self, _: &Self::Value, _: CraftingGrid) -> bool {
+        false
+    }
+
+    /// …and makes nothing (`SpawnerRecipe.assemble` returns `ItemStack.EMPTY`).
+    fn assemble(&self, _: &Self::Value, _: CraftingGrid) -> Option<ItemStack> {
+        None
+    }
+}
+
+/// The mob recipes in force (`SpawnerRecipes.loadRecipes`), in table order.
+///
+/// The files' `type` names this port's kind, which the pin files under `minecraft:crafting`, so
+/// they are read from that table; the type's own table is read as well because the API says a
+/// file's type field "can differ from the reported recipe kind". A recipe is counted once, by
+/// id.
+fn spawner_recipes(host: &dyn Host) -> Vec<MobRecipe> {
+    let mut found: Vec<(String, MobRecipe)> = Vec::new();
+    for kind in [RECIPE_TYPE, SPAWNER_RECIPE_TYPE] {
+        for recipe in host.recipes_of_type(kind).iter() {
+            if recipe.json.get("type").and_then(|kind| kind.as_str()) != Some(SPAWNER_RECIPE_TYPE) {
+                continue;
+            }
+            if found.iter().any(|(id, _)| *id == recipe.id) {
+                continue;
+            }
+            let Ok(value) = spawner_recipe(&recipe.json) else {
+                continue;
+            };
+            found.push((recipe.id.clone(), value.recipe()));
+        }
+    }
+    found.into_iter().map(|(_, recipe)| recipe).collect()
+}
+
+/// The side a spawn appears on: the block's own `facing` state.
+fn facing_of(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> Option<String> {
+    let state = level.block_state(host, pos)?;
+    let states = host.block_states();
+    state
+        .property(&states, KEY_FACING)
+        .ok()
+        .flatten()
+        .map(str::to_owned)
+}
+
+/// One server tick of the spawner (`SpawnerTileEntity.tickServer`): with a mob set and its
+/// recipe's `power` in the buffer, pay the cost and spawn one mob on the block's facing side.
+///
+/// Upstream returns early until all three matter amounts are stored; the matter system (its
+/// three tanks and the matter beamers that fill them) is not part of this slice, so this tick
+/// spends energy only. The recipe's own amounts are still read and kept on the machine
+/// (`KEY_NEEDS`) and printed by the readout.
+fn spawner_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let Some(mob) = read_text(&event.entity.nbt, KEY_MOB) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    let cost = read_int(&event.entity.nbt, KEY_COST);
+    let energy = read_int(&event.entity.nbt, KEY_ENERGY).clamp(0, SPAWNER_CAPACITY);
+    let Some(left) = spawn_once(energy, cost) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    let Some(level) = level_of(&*host, pos, SPAWNER) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    let Some(facing) = facing_of(&*host, level, pos) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    let Some(at) = spawn_at(pos, &facing) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    // `EntityType.spawn` with the `SPAWNER` reason: the type makes the mob, finalizes it and
+    // adds it to the level. A refusal spawns nothing, and nothing is paid.
+    if level
+        .spawn_mob(host, &mob, at, SpawnReason::Spawner)
+        .is_none()
+    {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    }
+    write_int(&mut event.entity.nbt, KEY_ENERGY, left);
+    let spawned = read_int(&event.entity.nbt, KEY_SPAWNED).saturating_add(1);
+    write_int(&mut event.entity.nbt, KEY_SPAWNED, spawned);
+}
+
+/// What `/rftoolsutility spawner` prints. The shape is the harness's contract
+/// (`tools/parse_spawner.py`), so the end-to-end scenario can parse it.
+fn spawner_readout(pos: [i32; 3], nbt: &Compound, nonce: Option<&str>) -> String {
+    let energy = read_int(nbt, KEY_ENERGY).clamp(0, SPAWNER_CAPACITY);
+    let mob = read_text(nbt, KEY_MOB).unwrap_or_else(|| "none".to_owned());
+    let cost = read_int(nbt, KEY_COST);
+    let cost = if cost > 0 {
+        cost.to_string()
+    } else {
+        "-".to_owned()
+    };
+    let needs = read_matter(nbt, KEY_NEEDS).map_or_else(
+        || "-".to_owned(),
+        |needs| format!("{},{},{}", needs[0], needs[1], needs[2]),
+    );
+    let spawned = read_int(nbt, KEY_SPAWNED).max(0);
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "Spawner at {pos:?}: energy={energy}/{SPAWNER_CAPACITY} mob={mob} cost={cost} \
+         needs={needs} spawned={spawned}{suffix}"
+    )
+}
+
+/// The spawner's energy domain (`GenericEnergyStorage(this, true, 200,000, 2,000)`): a fill
+/// only, on every face. The amount is the `energy` int in the saved compound.
+fn spawner_energy() -> ModEnergyBuffer {
+    ModEnergyBuffer {
+        capacity: SPAWNER_CAPACITY,
+        max_insert: SPAWNER_RECEIVE,
+        max_extract: 0,
+        insert_faces: [true; 6],
+        extract_faces: [false; 6],
+    }
+}
+
+/// The spawner's Part: its block entity and its spawn tick. No container and no menu: the mob
+/// setting is the syringe slot upstream fills, and this slice has no syringe, so the harness
+/// writes the setting instead.
+struct SpawnerPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for SpawnerPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for SpawnerPart {
+    /// The spawner ticks on the server (`EntityBlock.getTicker`).
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    /// One server tick: spawn one mob if the buffer pays for it.
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        spawner_tick(host, event);
     }
 }
 
@@ -900,6 +1245,22 @@ impl Hooks for Mod {
         }
         r.block_container(&crafter, crafter_container());
         r.block_energy(&crafter, crafter_energy());
+
+        let spawner = r.block_key(SPAWNER);
+        let spawner_item = r.item_key(SPAWNER);
+        let _ = SPAWNER_ITEM.set(spawner_item);
+        let spawner_kind = r.block_entity_type(SPAWNER_TYPE).blocks(&[SPAWNER]).build();
+        if let Err(error) = r.block_entity_part(&spawner_kind, SpawnerPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the spawner part was refused: {error}"
+            ));
+            return;
+        }
+        r.block_energy(&spawner, spawner_energy());
+        // The 70 `rftoolsutility:spawner` mob recipes are this kind's data
+        // (`SpawnerModule.SPAWNER_SERIALIZER`); without it the files are not in force and the
+        // spawner would have no mob to spawn.
+        r.register_crafting_recipe_serializer(SPAWNER_KIND, SpawnerRecipeKind);
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -1005,20 +1366,14 @@ impl Hooks for Mod {
     fn block_drops(&self, level: &dyn LevelHost, event: &mut BlockDropsEvent<'_>) -> Flow {
         let block = level.state_block(event.state);
         if block == Some(CRAFTER) {
-            let Some(entity) = event.block_entity else {
-                return Flow::Continue;
-            };
-            let Some(saved) = level.block_entity_data(entity) else {
-                return Flow::Continue;
-            };
-            let Some(item) = CRAFTER_ITEM.get() else {
-                return Flow::Continue;
-            };
-            let patch = entity_patch(&saved, CRAFTER_TYPE_ID);
-            for drop in event.drops.iter_mut() {
-                if drop.stack.item() == *item {
-                    let _ = drop.stack.apply_components(&patch);
-                }
+            if let Some(item) = CRAFTER_ITEM.get() {
+                carry_machine(level, event, *item, CRAFTER_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
+        if block == Some(SPAWNER) {
+            if let Some(item) = SPAWNER_ITEM.get() {
+                carry_machine(level, event, *item, SPAWNER_TYPE_ID);
             }
             return Flow::Continue;
         }
@@ -1077,6 +1432,16 @@ impl Hooks for Mod {
             "rftoolsutility setting <pos:block_pos> <key:word> <value:word>",
             2,
         ));
+        event.commands.push(Command::new(
+            "rftoolsutility spawner <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility mob <pos:block_pos> <mob:id>",
+            2,
+        ));
+        event
+            .commands
+            .push(Command::new("rftoolsutility recipes [nonce:word]"));
     }
 
     /// Run the `/rftoolsutility` commands a player types.
@@ -1091,16 +1456,50 @@ impl Hooks for Mod {
             literals.as_slice(),
             [
                 "rftoolsutility",
-                "info" | "tank" | "crafter" | "recipe" | "buffer" | "energy" | "setting"
+                "info"
+                    | "tank"
+                    | "crafter"
+                    | "recipe"
+                    | "buffer"
+                    | "energy"
+                    | "setting"
+                    | "spawner"
+                    | "mob"
+                    | "recipes"
             ]
         );
         if !known {
             return Flow::Continue;
         }
+        // `recipes` names no machine: it counts the mob recipes the game loaded, so the
+        // harness can prove the carried family is in force (upstream has no such command; its
+        // GUI lists them).
+        if literals.as_slice() == ["rftoolsutility", "recipes"] {
+            let nonce = match invocation.argument("nonce") {
+                Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                _ => None,
+            };
+            let recipes = spawner_recipes(&*host);
+            let cost = |mob: &str| {
+                recipe_for(&recipes, mob)
+                    .map_or_else(|| "none".to_owned(), |recipe| recipe.power.to_string())
+            };
+            let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+            feedback(
+                host,
+                &format!(
+                    "/rftoolsutility: {} spawner recipes, zombie={} blaze={}{suffix}",
+                    recipes.len(),
+                    cost("minecraft:zombie"),
+                    cost("minecraft:blaze")
+                ),
+            );
+            return Flow::Cancel;
+        }
         let Some(CommandArgumentValue::BlockPos(pos)) = invocation.argument("pos") else {
             feedback(
                 host,
-                "Usage: /rftoolsutility info|tank|crafter|recipe|buffer|energy|setting <pos> …",
+                "Usage: /rftoolsutility info|tank|crafter|recipe|buffer|energy|setting|spawner|mob <pos> …",
             );
             return Flow::Cancel;
         };
@@ -1256,6 +1655,36 @@ impl Hooks for Mod {
                 let line = set_setting(host, level, pos, key, value);
                 feedback(host, &line);
             }
+            ["rftoolsutility", "spawner"] => {
+                let Some(entity) = machine_at(&*host, level, pos, SPAWNER) else {
+                    feedback(host, "No spawner there.");
+                    return Flow::Cancel;
+                };
+                let Some(data) = entity.data(&*host) else {
+                    feedback(host, "No spawner there.");
+                    return Flow::Cancel;
+                };
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let line = spawner_readout(pos, &data, nonce);
+                feedback(host, &line);
+            }
+            ["rftoolsutility", "mob"] => {
+                // `<mob:id>` is a free identifier, which the engine delivers as a `String`
+                // (the same finding the tank command recorded); accept either form.
+                let mob = match invocation.argument("mob") {
+                    Some(CommandArgumentValue::String(mob)) => mob.clone(),
+                    Some(CommandArgumentValue::Id(mob)) => mob.to_string(),
+                    _ => {
+                        feedback(host, "Usage: /rftoolsutility mob <pos> <mob>");
+                        return Flow::Cancel;
+                    }
+                };
+                let line = set_mob(host, level, pos, &mob);
+                feedback(host, &line);
+            }
             _ => return Flow::Continue,
         }
         Flow::Cancel
@@ -1266,13 +1695,22 @@ impl Hooks for Mod {
 // The crafter's harness controls
 // ---------------------------------------------------------------------------
 
+/// The machine of `kind` at `pos`, when the block there is that machine.
+fn machine_at(
+    host: &dyn Host,
+    level: LevelRef,
+    pos: [i32; 3],
+    kind: &str,
+) -> Option<BlockEntityRef> {
+    let block = level.block(host, pos)?;
+    (block.id(host) == kind)
+        .then(|| host.block_entity(level, pos))
+        .flatten()
+}
+
 /// The crafter's block entity at `pos`, when the block there is ours.
 fn crafter_at(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> Option<BlockEntityRef> {
-    let block = level.block(host, pos)?;
-    if block.id(host) != CRAFTER {
-        return None;
-    }
-    host.block_entity(level, pos)
+    machine_at(host, level, pos, CRAFTER)
 }
 
 /// The crafter's 41 slots, read one by one (`block_entity_item_slot`). A slot the entity cannot
@@ -1479,20 +1917,55 @@ fn set_slot(
     }
 }
 
-/// `/rftoolsutility energy`: set the crafter's buffer, clamped to its capacity.
+/// `/rftoolsutility energy`: set a machine's buffer, clamped to its own capacity. The crafter
+/// and the spawner both keep their FE in the engine's `energy` int, so one command serves both.
 fn set_energy(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], amount: i32) -> String {
-    let Some(entity) = crafter_at(host, level, pos) else {
-        return "No crafter there.".to_owned();
+    let (entity, capacity, name) = if let Some(entity) = crafter_at(&*host, level, pos) {
+        (entity, CRAFTER_CAPACITY, "crafter")
+    } else if let Some(entity) = machine_at(&*host, level, pos, SPAWNER) {
+        (entity, SPAWNER_CAPACITY, "spawner")
+    } else {
+        return "No machine there.".to_owned();
     };
     let Some(mut data) = entity.data(&*host) else {
-        return "No crafter there.".to_owned();
+        return "No machine there.".to_owned();
     };
-    let amount = amount.clamp(0, CRAFTER_CAPACITY);
+    let amount = amount.clamp(0, capacity);
     write_int(&mut data, KEY_ENERGY, amount);
     if entity.replace_data(host, data).is_err() {
-        return "No crafter there.".to_owned();
+        return "No machine there.".to_owned();
     }
-    format!("/rftoolsutility: the crafter at {pos:?} holds {amount}/{CRAFTER_CAPACITY} FE.")
+    format!("/rftoolsutility: the {name} at {pos:?} holds {amount}/{capacity} FE.")
+}
+
+/// `/rftoolsutility mob`: set the mob the spawner spawns (`SpawnerData.mob`), from the recipe
+/// table. The recipe is the machine's own data, so the id it does not name is refused, and the
+/// recipe's `power` and matter amounts are kept beside the mob (upstream's `MobData`, read once
+/// per table load).
+fn set_mob(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], mob: &str) -> String {
+    let Some(entity) = machine_at(&*host, level, pos, SPAWNER) else {
+        return "No spawner there.".to_owned();
+    };
+    let recipes = spawner_recipes(&*host);
+    let Some(recipe) = recipe_for(&recipes, mob) else {
+        return format!(
+            "/rftoolsutility: no spawner recipe for {mob} ({} recipes are loaded).",
+            recipes.len()
+        );
+    };
+    let Some(mut data) = entity.data(&*host) else {
+        return "No spawner there.".to_owned();
+    };
+    write_text(&mut data, KEY_MOB, &recipe.entity);
+    write_int(&mut data, KEY_COST, recipe.power);
+    write_matter(&mut data, KEY_NEEDS, recipe.matter);
+    if entity.replace_data(host, data).is_err() {
+        return "No spawner there.".to_owned();
+    }
+    format!(
+        "/rftoolsutility: the spawner at {pos:?} spawns {} for {} FE.",
+        recipe.entity, recipe.power
+    )
 }
 
 /// `/rftoolsutility setting`: the crafter's speed, craft mode or keep mode.
@@ -1880,5 +2353,132 @@ mod tests {
             BUFFER_OUT + BUFFER_OUT_SLOTS,
             "the last slot is the filter module slot"
         );
+    }
+
+    // -- the spawner's glue (slice 4) ------------------------------------------
+
+    /// The jar's `minecraft_zombie.json`, as the engine hands it to the decoder (type removed
+    /// by the caller, item1's object in 1.21.1's single form and item2's in its list form).
+    fn zombie_recipe() -> mod_api::serde_json::Value {
+        mod_api::serde_json::json!({
+            "entity": "minecraft:zombie",
+            "id": "rftoolsutility:minecraft_zombie",
+            "item1": { "amount": 0.1, "object": { "item": "minecraft:rotten_flesh" } },
+            "item2": { "amount": 0.2, "object": [
+                { "item": "minecraft:dirt" },
+                { "item": "minecraft:gravel" },
+                { "item": "minecraft:sand" }
+            ] },
+            "item3": { "amount": 20.0, "object": [] },
+            "power": 800
+        })
+    }
+
+    #[test]
+    fn a_spawner_file_reads_its_entity_power_and_matter() {
+        let value = spawner_recipe(&zombie_recipe()).expect("the jar's own recipe reads");
+        assert_eq!(value.entity, "minecraft:zombie");
+        assert_eq!(value.power, 800);
+        assert_eq!(value.matter, [0.1, 0.2, 20.0]);
+        assert_eq!(
+            value.recipe(),
+            MobRecipe {
+                entity: "minecraft:zombie".to_owned(),
+                power: 800,
+                matter: [0.1, 0.2, 20.0],
+            }
+        );
+        // A file the engine has already stripped of its type reads the same as one naming the
+        // kind, which is how it arrives (the fixture above is the stripped form).
+        let mut typed = zombie_recipe();
+        typed["type"] = mod_api::serde_json::json!("rftoolsutility:spawner");
+        assert_eq!(spawner_recipe(&typed), Ok(value));
+    }
+
+    #[test]
+    fn a_spawner_file_without_an_entity_or_power_is_refused() {
+        let mut no_entity = zombie_recipe();
+        no_entity["entity"] = mod_api::serde_json::json!(null);
+        assert_eq!(
+            spawner_recipe(&no_entity),
+            Err("a spawner recipe needs an entity".to_owned())
+        );
+        let mut empty = zombie_recipe();
+        empty["entity"] = mod_api::serde_json::json!("");
+        assert!(spawner_recipe(&empty).is_err());
+        let mut no_power = zombie_recipe();
+        no_power.as_object_mut().expect("an object").remove("power");
+        assert_eq!(
+            spawner_recipe(&no_power),
+            Err("a spawner recipe needs a power".to_owned())
+        );
+        let mut other = zombie_recipe();
+        other["type"] = mod_api::serde_json::json!("minecraft:crafting_shaped");
+        assert!(
+            spawner_recipe(&other).is_err(),
+            "a file of another type is not this kind's recipe"
+        );
+    }
+
+    #[test]
+    fn a_spawner_value_writes_back_as_the_recipe_it_came_from() {
+        let value = spawner_recipe(&zombie_recipe()).expect("the jar's own recipe reads");
+        let written = write_spawner(&value);
+        let back: mod_api::serde_json::Value =
+            mod_api::serde_json::from_str(&written).expect("the write is JSON");
+        assert_eq!(
+            spawner_recipe(&back),
+            Ok(value),
+            "the client's copy decodes to the same rules"
+        );
+    }
+
+    #[test]
+    fn the_matter_amounts_round_trip() {
+        let mut nbt = Compound::new();
+        write_matter(&mut nbt, KEY_NEEDS, [0.1, 0.5, 30.0]);
+        assert_eq!(read_matter(&nbt, KEY_NEEDS), Some([0.1, 0.5, 30.0]));
+        assert_eq!(read_matter(&nbt, "nothing"), None);
+        let mut short = Compound::new();
+        put(
+            &mut short,
+            KEY_NEEDS,
+            Tag::List(vec![Tag::Int(1), Tag::Float(2.0f32.to_bits())]),
+        );
+        assert_eq!(
+            read_matter(&short, KEY_NEEDS),
+            None,
+            "an amount that is not a float is not a recipe's matter"
+        );
+    }
+
+    #[test]
+    fn the_mob_readout_is_the_line_the_harness_parses() {
+        let mut nbt = Compound::new();
+        write_text(&mut nbt, KEY_MOB, "minecraft:zombie");
+        write_int(&mut nbt, KEY_COST, 800);
+        write_matter(&mut nbt, KEY_NEEDS, [0.1, 0.2, 20.0]);
+        write_int(&mut nbt, KEY_ENERGY, 800);
+        write_int(&mut nbt, KEY_SPAWNED, 1);
+        assert_eq!(
+            spawner_readout([202, 101, 3], &nbt, Some("7")),
+            "Spawner at [202, 101, 3]: energy=800/200000 mob=minecraft:zombie cost=800 \
+             needs=0.1,0.2,20 spawned=1 nonce=7"
+        );
+        assert_eq!(
+            spawner_readout([1, 2, 3], &Compound::new(), None),
+            "Spawner at [1, 2, 3]: energy=0/200000 mob=none cost=- needs=- spawned=0",
+            "a fresh spawner knows no mob and no cost"
+        );
+    }
+
+    #[test]
+    fn a_spawner_takes_energy_on_every_face_and_gives_none_out() {
+        let buffer = spawner_energy();
+        assert_eq!(buffer.capacity, SPAWNER_CAPACITY);
+        assert_eq!(buffer.max_insert, SPAWNER_RECEIVE);
+        assert_eq!(buffer.max_extract, 0, "upstream's spawner only consumes");
+        assert!(buffer.insert_faces.iter().all(|face| *face));
+        assert!(buffer.extract_faces.iter().all(|face| !*face));
     }
 }

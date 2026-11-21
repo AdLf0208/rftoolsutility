@@ -179,3 +179,38 @@ cycles). The first in-game failure this slice produced was a real defect of the 
 and `placements` number their own slice, and the glue used those indices as world slots, so the
 product was written into the ghost slots; it is fixed and pinned by
 `the_ghost_grid_shows_one_item_per_filled_cell`.
+
+## Slice 4 — the spawner (2026-11-21, pin `0a875da`, package 0.2.3)
+
+One lease per step, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`, no `--target-dir`. Logs:
+`../_shared/evidence/rftoolsutility/{slice4-red,slice4-runtime-green,slice4-glue-green,sdk-test,sdk-clippy,sdk-check,sdk-fits,sdk-fits-other,sdk-package-gate}.log`
+(each `sdk-*` log prints the `rftoolsutility.hmod` sha256 and size it ran against) and
+`../_shared/evidence/rftoolsutility-e2e/e2e-slice4*.log` (the game legs). The 0.2.2 logs are
+under `../_shared/evidence/rftoolsutility/retired-0.2.2/`.
+
+| # | Step | Command (inside the lease) | Result |
+|---|---|---|---|
+| 1 | red, unit | the four new `runtime` rules stubbed `todo!()`, `cargo test` | `FAILED. 48 passed; 4 failed`, each at `not yet implemented` (`slice4-red.log`) |
+| 2 | green, runtime | `cargo test` after the four bodies | **52 passed; 0 failed** (`slice4-runtime-green.log`) |
+| 3 | green, glue | `cargo test` with the six spawner glue tests | **58 passed; 0 failed** (`slice4-glue-green.log`, `sdk-test.log`) |
+| 4 | fmt | `cargo fmt --check` | clean |
+| 5 | clippy | `cargo clippy --all-targets --offline -- -D warnings` | `Finished`, 0 warnings (`sdk-clippy.log`) |
+| 6 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice from the final sources | `cmp` identical; **103,488 B**, SHA-256 `d12c3646abde71c541adc707add6a044a934a77ce375a301d4de1a46e52c27b7`, 134 entries, no `Cargo.lock` |
+| 7 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.3 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)` **EXIT 0** (`sdk-check.log`) |
+| 8 | fits the pin | `cargo horizon-mod fits rftoolsutility.hmod --build 0a875da` | `0a875da  made for` **EXIT 0** (a tautology, reported as the brief asks; `sdk-fits.log`) |
+| 9 | fits another build | `cargo horizon-mod fits rftoolsutility.hmod --build 0b14f8a` | `0b14f8a  fits` **EXIT 0** (`sdk-fits-other.log`) |
+| 10 | gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | **1/1** (58 passed, 0 clippy warnings, `no packed Cargo.lock`, 134 entries, skills PASS) |
+| 11 | native compile | `launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)` — the mod compiled against the pin, then exported |
+| 12 | in game, PASS | `build-slot.sh run --step e2e -- tools/e2e.sh` | **PASS**, `EXIT:0` — phases A–AB (`e2e-slice4.log`) |
+| 13 | in game, c/f | `SELFTEST=1 SELFTEST_AT=spawn` | **FAIL: the spawner holds 0 FE, expected 800**, `EXIT:1` |
+| 14 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: the tank item did not register**, `EXIT:1` |
+| 15 | log gate | `python3 ports/tools/check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=11 ok=11 missing-exit=0 bad-exit=0`, exit 0 |
+| 16 | coverage | `python3 ports/tools/check-coverage.py rftoolsutility --no-upstream` | `families=12 tested=7 declared=5 missing=0` (the whole-jar inventory still lists the unported families, as a `ported-partial` port should) |
+| 17 | skills | `python3 ports/tools/check-skills.py --notes ports/rftoolsutility` | `SKILLS GATE: PASS` |
+
+The package's identical builds are `8c836e61…` (pre-fix source), `a55d4e5f…` (after the reply
+fix) and `d12c3646…` (the final source); the in-game legs above ran on a game the launcher built
+from that final source (`native-0a875da-878276d6ae1e`), which it compiled itself
+(`Compiling rftoolsutility (1 of 1)`). What each new phase asserts is the table in `notes.md`
+§ "Slice 4 — the spawner", and the two traps the slice cost (a control reply's leading slash,
+an entity blocking `ctl place`) are recorded there.

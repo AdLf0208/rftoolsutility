@@ -1,6 +1,7 @@
 {
   "values": [
     "rftoolsutility:tank",
-    "rftoolsutility:crafter1"
+    "rftoolsutility:crafter1",
+    "rftoolsutility:spawner"
   ]
 }

@@ -1,11 +1,11 @@
-# RFTools Utility — port notes (slices 1–3: the tank and the crafter)
+# RFTools Utility — port notes (slices 1–4: the tank, the crafter and the spawner)
 
-> **Current state (2026-11-21): slice 3, package 0.2.2 at pin
+> **Current state (2026-11-21): slice 4, package 0.2.3 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 3 — the crafter (2026-11-21)`** first; it is the current behaviour, its evidence
-> and the measured traps it cost. Then `## Slice 2` (the tank's contents on its item) and the
-> 2026-11-18 migration note that produced 0.2.0; everything after the migration describes the
-> retired `.hnmod` bundle.
+> **`## Slice 4 — the spawner (2026-11-21)`** first; it is the current behaviour, its evidence
+> and the traps it cost. Then `## Slice 3 — the crafter`, `## Slice 2` (the tank's contents on
+> its item) and the 2026-11-18 migration note that produced 0.2.0; everything after the
+> migration describes the retired `.hnmod` bundle.
 
 > **Format (2026-11-18): the port is a flat SDK `.hmod`.** Horizon's mod-API merge (#16941,
 > launcher ≥ 0.2.70) retired the `.hnmod` container; this port's submission (PR **#904**) was
@@ -199,8 +199,12 @@ this slice does not implement. Recorded so slice 2 does not carry it:
 - **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`,
   `digit`, `logic`, `invchecker`, `redstone_transmitter/receiver`,
   `redstone_information`.
-- **Environmental controller** and its 23 modules; the **spawner** with its 100
-  mob recipes; `syringe`.
+- **Environmental controller** and its 23 modules; ~~the **spawner** with its 100
+  mob recipes~~ — **the spawner is done in slice 4** (the block, its 200,000 FE buffer, the
+  mob setting from the recipe table and the spawn tick, with the jar's **70** mob recipes
+  carried — the jar ships 70, not 100: `unzip -l | grep -c 'recipe/minecraft_'`). Remaining
+  there: the three matter types and the matter beamers that fill them, the syringe that
+  sets the mob in upstream's GUI, the GUI, and six-way facing; `syringe`.
 - **LAN guests:** the bucket swap is re-sent for the world's own player (the
   window client); a LAN guest's resend goes through the same hub record but is
   untested here.
@@ -766,3 +770,236 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
 Built twice with `rm -f Cargo.lock` before each (`cmp` identical), **no packed `Cargo.lock`**,
 `check` green (`native-1/0a875da…/e59da909…, for 26.3`), `fits --build 0a875da` → `made for`,
 `fits --build 0b14f8a` → `fits`, `verify-sdk-package.py rftoolsutility` → **1/1**.
+
+## Slice 4 — the spawner (2026-11-21)
+
+**Chosen from the port's own gap list** — `## Gaps (the rest of the mod)`, verbatim:
+
+> **Environmental controller** and its 23 modules; the **spawner** with its 100
+> mob recipes; `syringe`.
+
+and `FINDINGS.md` §3 ("the spawner and its 100 mob recipes"). It is the last single machine in
+the `machines` tier with a loop that closes without a screen: a block entity with an energy
+buffer, a mob setting, a server tick that spawns the mob, and the jar's own mob recipes as the
+family's data. Its whole rule is readable through `horizon-ctl` (`/rftoolsutility spawner`
+prints the energy, the mob and the recipe's numbers; `/rftoolsutility recipes` counts the
+table), so no menu is needed.
+
+**Pin:** Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, horizon-mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, mod API `0.2`, game 26.3. **Version 0.2.3.**
+
+**Read for this slice** (analysis only; the clone was deleted after): `modules/spawner/blocks/
+SpawnerTileEntity.java` (`tickServer`, `testSyringe`, `addMatter`, `collectImplicitComponents`),
+`modules/spawner/recipes/{SpawnerRecipe,SpawnerRecipes,SpawnerRecipeSerializer}.java` (the
+custom recipe type, the entity-keyed table, `MobSpawnAmount`), `modules/spawner/
+SpawnerConfiguration.java` (`SPAWNER_MAXENERGY` 200,000, `SPAWNER_RECEIVEPERTICK` 2,000,
+`maxMatterStorage` 6,400), `modules/spawner/data/SpawnerData.java` and `SpawnerModule.java`
+(registration, `orientedBlock`, the loot table's `ITEM_SPAWNER_DATA`), and
+`DataGenHelper.getDefaultMobData` (the 70 mobs).
+
+**The count is 70, not the campaign's 100** — `unzip -l <jar> | grep -c 'recipe/minecraft_'`
+says 70, every one with `"type": "rftoolsutility:spawner"`, `entity`, `power` and `item1..3`;
+the jar's datagen list is the same 70. The artefact wins, and all 70 are carried.
+
+### What it does
+
+- **The block.** `rftoolsutility:spawner` on the **`minecraft:white_glazed_terracotta`**
+  template (the crafter's measured full-cube, no-block-entity, no-menu template with a
+  four-way horizontal `facing`), the jar's own front texture on the north face and the machine
+  base top/bottom/sides, on McJtyLib's `STANDARD_IRON` properties.
+- **The energy.** 200,000 FE (`SpawnerConfiguration.SPAWNER_MAXENERGY`), at most 2,000 a call
+  (`SPAWNER_RECEIVEPERTICK`) on every face, in the engine's `energy` int — the same shape the
+  crafter uses. The spawner only consumes (`max_extract: 0`).
+- **The mob setting, from the recipe table.** The jar's 70 `rftoolsutility:spawner` recipes are
+  registered as a **crafting kind** (`CraftingRecipeKind` + `Registrar::
+  register_crafting_recipe_serializer`), because the pin has no separate recipe-serializer
+  route a mod may take: `register_crafting_recipe_serializer(name, kind)` files `<mod>:<name>`
+  under `minecraft:crafting`, and the files' `type` names exactly that id. Upstream's recipe is
+  a data table, so the kind answers `matches` → false and `assemble` → none, as its own
+  `SpawnerRecipe` does; the spawner block is what reads the values. `/rftoolsutility mob <pos>
+  <id>` resolves the mob's recipe and keeps its `power` and its three `item1..3` amounts on the
+  machine (upstream's `MobData`, read once per table load); an id no recipe names is refused.
+- **The spawn tick.** With a mob and its cost in the buffer, the tick pays the cost once and
+  calls `LevelRef::spawn_mob(host, mob, pos, SpawnReason::Spawner)` — `EntityType.spawn` with
+  the `SPAWNER` reason, which finalizes the mob as vanilla's own spawner does — on the block's
+  facing side, centred on x/z (upstream's `getNormal()` offset and `moveTo(sx + 0.5, sy, sz +
+  0.5)`). A refused spawn pays nothing.
+- **The item carries the machine.** A broken spawner's own item takes the block entity's saved
+  compound as vanilla's `minecraft:block_entity_data`, so the mob, its numbers and the energy
+  come back on placement (upstream's `collectImplicitComponents`).
+- **The readout.** `/rftoolsutility spawner <pos> [nonce]` prints
+  `energy=<held>/200000 mob=<id|none> cost=<FE|-> needs=<a,b,c|-> spawned=<n>`;
+  `/rftoolsutility recipes [nonce]` prints the table's size and two of its costs. `tools/
+  parse_spawner.py` parses the first.
+
+### Numbers and where they came from
+
+| Number | Value | Source |
+|---|---:|---|
+| energy buffer | 200,000 FE | `SpawnerConfiguration.SPAWNER_MAXENERGY` |
+| fill per call | 2,000 FE | `SpawnerConfiguration.SPAWNER_RECEIVEPERTICK` |
+| matter storage (not ported) | 6,400 | `SpawnerConfiguration.maxMatterStorage` (`64 * 100`) |
+| zombie's spawn cost | 800 FE | `data/rftoolsutility/recipe/minecraft_zombie.json` (`power`) |
+| blaze's spawn cost | 1,000 FE | `data/rftoolsutility/recipe/minecraft_blaze.json` (`power`) |
+| zombie's matter amounts | 0.1, 0.2, 20.0 | the same file's `item1..3.amount` |
+| blaze's matter amounts | 0.1, 0.5, 30.0 | the same |
+| mob recipes | **70** | `unzip -l` lists 70 `data/rftoolsutility/recipe/minecraft_*.json` |
+| block properties | hardness 2.0, blast 2.0, correct tool, metal sound | `BlockBuilder.STANDARD_IRON`, the tank's and the crafter's row |
+| the spawner's own recipe | redstone/rotten flesh/ender pearl/blaze rod/bone around a machine frame | `data/rftoolsutility/recipe/spawner.json` (carried) |
+| facing | four horizontal directions | upstream's `orientedBlock` is six-way; the content template gives four (the crafter's deviation) |
+
+### Red → green (unit, verbatim)
+
+The four new runtime rules were written behind `todo!()` bodies first (`slice4-red.log`):
+
+```
+failures:
+---- runtime::tests::a_machine_with_no_known_cost_spawns_nothing stdout ----
+thread 'runtime::tests::a_machine_with_no_known_cost_spawns_nothing' (3062707) panicked at src/runtime.rs:501:5:
+not yet implemented
+---- runtime::tests::a_recipe_is_found_by_the_mob_it_spawns stdout ----
+thread 'runtime::tests::a_recipe_is_found_by_the_mob_it_spawns' (3062710) panicked at src/runtime.rs:490:5:
+not yet implemented
+---- runtime::tests::a_spawn_costs_the_recipes_own_power_once stdout ----
+thread 'runtime::tests::a_spawn_costs_the_recipes_own_power_once' (3062711) panicked at src/runtime.rs:501:5:
+not yet implemented
+---- runtime::tests::a_spawn_lands_on_the_neighbour_the_facing_names stdout ----
+thread 'runtime::tests::a_spawn_lands_on_the_neighbour_the_facing_names' (3062712) panicked at src/runtime.rs:511:5:
+not yet implemented
+
+test result: FAILED. 48 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Green: **52 passed; 0 failed** (`slice4-runtime-green.log`), then **58 passed; 0 failed** with the
+six glue tests (`slice4-glue-green.log`, `sdk-test.log`): 25 runtime tests (21 tank + 4 spawner),
+27 glue tests (10 tank + 5 crafter + 6 spawner) and 6 crafter runtime tests. fmt clean, clippy
+`-D warnings` 0 warnings (`sdk-clippy.log`).
+
+One test expectation was wrong on the first green run — the south neighbour of `[200,101,0]` is
+`z = 1`, centred `1.5`, and the test asserted `0.5`; the implementation was right and the
+expectation was corrected (the red leg above is the before-implementation run).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e.sh` phases A–AB, one lease per leg, every log ends with its exit:
+
+| log | verdict |
+|---|---|
+| `e2e-slice4.log` | **PASS**, `EXIT:0` — A–AB |
+| `e2e-slice4-selftest-spawn.log` | **FAIL: the spawner holds 0 FE, expected 800**, `EXIT:1` |
+| `e2e-slice4-control.log` | **FAIL: the tank item did not register**, `EXIT:1` (the unmodded Nightly) |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=11 ok=11 missing-exit=0 bad-exit=0`.
+
+The slice's phases, each asserting a parsed value (the transcript is in the log):
+
+| phase | what it asserts (observed) |
+|---|---|
+| **W** | a spawner placed from its item reads `energy=0/200000 mob=none cost=- needs=- spawned=0`, has `facing=west`, and `/rftoolsutility recipes` answers `/rftoolsutility: 70 spawner recipes, zombie=800 blaze=1000 nonce=28` |
+| **X** | `minecraft:not_a_mob` is refused (`no spawner recipe for minecraft:not_a_mob (70 recipes are loaded).`) and changes nothing; `minecraft:zombie` is set from its own recipe (`spawns minecraft:zombie for 800 FE.`), and the readout then reads `cost=800 needs=0.1,0.2,20` |
+| **Y** | at **0 FE** 60 ticks spawn nothing: `spawned=0`, `energy=0`, and no zombie within 8 blocks (the counterfactual for Z) |
+| **Z** | 800 FE spawns **exactly one** `minecraft:zombie` with `kind:"mob"` within 5 blocks of the spawner, and the readout goes `energy=800` → `energy=0`, `spawned=1` — the recipe's own 800 FE |
+| **AA** | `minecraft:blaze` costs its own recipe's 1,000 FE (`needs=0.1,0.5,30`), and 1,000 FE spawns exactly one blaze, leaving 0 and `spawned=2` |
+| **AB** | a survival break drops a spawner whose item carries `minecraft:block_entity_data` `{needs: [0.1f, 0.5f, 30.0f], spawned: 2, mob: "minecraft:blaze", cost: 1000, id: "rftoolsutility:spawner", energy: 0}`, and placing it back reads the same mob, cost and count |
+
+Counterfactuals: **Y** is the same machine at 0 FE (no mob, no spend) against **Z**'s 800 FE (one
+mob, 800 spent), and **X**'s two ids differ only in whether the recipe table names them;
+`SELFTEST_AT=spawn` inverts Z and the leg fails as designed, so Z can fail; `CONTROL=1` runs the
+same script on the unmodded Nightly, where the package's items do not exist.
+
+### Measured traps this slice cost (engine and harness)
+
+1. **A control's reply must start with `/rftoolsutility`.** `control()` picks its answer with
+   `grep -m1 '/rftoolsutility'`; the new `recipes` line began `rftoolsutility: …` and the phase
+   read an empty `REPLY` while the game log showed the right line. The readout now spells the
+   slash like every other control reply.
+2. **`ctl place` is refused by an entity standing on the target** ("the block did not change
+   (blocked by an entity, or the item cannot be placed)"). It cost the slice-3 crafter phase on
+   the *second* run of this slice: the End's endermen wander onto the arena floor over a
+   ten-minute leg. `try_place` now clears the two blocks around the target (`kill @e[type=!player,
+   x=…,y=…,z=…,distance=..2]`) between attempts; the assertion still reads the block that ends up
+   there.
+3. **A zombie or a blaze beside a survival player is a failed leg.** A mob spawns one block from
+   the block, and the player stands two blocks west: the spawner phases run in creative (no
+   damage, and mobs do not target a creative player), and AB switches back to survival only for
+   its break.
+4. **The recipe's `item1..3.object` is an ingredient form this port must not parse.** The files
+   carry 1.21.1's `{"item": …}`, a tag, and in `item2` a *list* of items; 26.3's ingredient
+   parser rejects both forms. This port reads only each `item`'s `amount`, so the files travel
+   **verbatim** and no rewrite applies — which is why the family is carried byte for byte.
+5. **The kind is what makes the files in force.** Without
+   `register_crafting_recipe_serializer("spawner", …)` the 70 files name a type nothing claims;
+   with it, `/rftoolsutility recipes` counts all 70 in game (W), and the same call is what
+   `fits`/`check` see.
+6. **`LevelRef::spawn_mob` works from a block-entity tick.** The pin documents `EntityType.spawn`
+   with a `SpawnReason`; a spawner's own tick is the same shape as vanilla's spawner block, and Z
+   proved it in game (one zombie per 800 FE, none at 0).
+
+### Deviations and content adaptations
+
+- **The matter gate is not ported.** Upstream returns early until all three matter amounts are
+  stored, and fills them from matter beamers (`MatterBeamerTileEntity`, 200,000 FE and 1,000 a
+  tick each) and from the syringe's `SpawnerData`. This slice spends energy only; the recipe's
+  three amounts are read and kept on the machine (and printed), so a later slice that adds the
+  beamers has the data in place.
+- **The mob is set by a command, not a syringe slot.** Upstream's `SLOT_SYRINGE` takes a syringe
+  whose `SyringeData` names a mob at the configured injection level; this slice has no syringe
+  item and no menu, so `/rftoolsutility mob` writes the same `mob` the syringe would.
+- **Four-way facing, not six.** The content schema takes a block's states and placement rule
+  from its vanilla template; the spawner borrows the crafter's measured four-way template, so a
+  spawner cannot be turned up or down (upstream's `orientedBlock` has six).
+- **No GUI, no filter, no comparator, no TOP/Jade, no tooltip** — the same gaps the tank and the
+  crafter carry.
+- **The carried recipe is not crafted in game.** Its middle ingredient is
+  `rftoolsbase:machine_frame`, which only the parent port registers (the tank's and the
+  crafter's own gap); the e2e gives the block instead. Its `c:bones`, `c:rods/blaze` and
+  `c:ender_pearls` tags are declared by the assembler with the honest vanilla memberships.
+
+### Upstream defects fixed
+
+- **The spawner pays before it knows it can spawn.** `SpawnerTileEntity.tickServer` checks the
+  matter, then `energyStorage.consumeEnergy(rf)`, clears the three matter amounts with
+  `setData(...)`, and *then* resolves the entity type:
+  `EntityType<?> type = Tools.getEntity(mobId); if (type == null) { Logging.logError(…); return; }`
+  — a recipe whose mob this game does not have (a pack's recipe for an absent mod's mob, or a
+  mob removed by an update) costs the full RF and all three matter amounts for a spawn that never
+  happens. **The port pays only after `spawn_mob` answered** (`spawner_tick`: `None` leaves the
+  buffer and the count untouched), so a failed spawn costs nothing. All 70 carried recipes name
+  `minecraft:` mobs, so no carried content behaves differently; a pack's own recipe does. Worth a
+  small upstream report; not filed (the orchestrator decides).
+- **Not a defect, recorded as a deviation:** `SpawnerRecipes.loadRecipes` caches the whole table
+  in a `static` map and only loads it when the map is empty, so a `/reload` that adds or changes
+  a spawner recipe is not seen until the world restarts. The port reads the table when the mob is
+  set, which is the same "read once, keep on the machine" shape with the same staleness.
+
+### Coverage of the spawner family (after slice 4)
+
+| Family | Status | Evidence / why not |
+|---|---|---|
+| `rftoolsutility:spawner` | tested | W: placed, read back, `facing` state; AB: the item carries the machine |
+| `block_entity` | tested | A–AB (the tank's, the crafter's and the spawner's) |
+| `loot_table` | tested | V: the iron-tool gate; J, U and AB: the drop and the data it carries |
+| `recipe:rftoolsutility:spawner` | tested | W: all 70 in force; X/Y/Z/AA: zombie 800 and blaze 1000 exercised end to end. The other 68 are carried and decoded by the same reader; the count in W is what proves they loaded, and a row per file would prove nothing the count does not |
+| `recipe:minecraft:crafting_shaped` | blocked(`rftoolsbase:machine_frame`) | the tank's, the crafter's and the spawner's own recipes need the parent port's item; the e2e gives the blocks instead |
+| `tag:item` | not ported | the jar's `rftoolsutility:living/*` yield tags belong to the matter system; the `c:` tags the recipes name are declared by the assembler |
+| `command` | tested | all ten subcommands are called and their parsed replies asserted (A–AB) |
+| the matter gate (three matter types) | not ported | the beamers and the syringe are a different machine family; the recipe amounts are carried and printed (`needs=`) |
+| the syringe item and its injection levels | not ported | no item and no menu in this slice; `/rftoolsutility mob` writes the same setting |
+| the GUI (`GuiSpawner`) | not ported | no menu in this slice |
+| six-way facing | not ported | four-way template (the crafter's deviation) |
+| the infusing power discount | not ported | needs `rftoolsbase`'s infusable path (the crafter's gap) |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 103,488 B | `d12c3646abde71c541adc707add6a044a934a77ce375a301d4de1a46e52c27b7` | 134 |
+
+Built twice with `rm -f Cargo.lock` before each (`cmp` identical: `8c836e61…` for the pre-fix
+source, `a55d4e5f…` after the reply fix and `d12c3646…` for the final, documented source), **no packed `Cargo.lock`**, `check` green
+(`native-1/0a875da…/e59da909…, for 26.3`), `fits --build 0a875da` → `made for`,
+`fits --build 0b14f8a` → `fits`, `verify-sdk-package.py rftoolsutility` → **1/1**, and the
+launcher's `native-build` compiled the mod against the pin (`Compiling rftoolsutility (1 of 1)`)
+for the in-game legs.

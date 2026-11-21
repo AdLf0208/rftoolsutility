@@ -63,7 +63,20 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/crafter1.json",
     "data/rftoolsutility/recipe/crafter1.json",
     "data/rftoolsutility/loot_table/blocks/crafter1.json",
+    # Slice 4: the spawner (its front texture, item model, recipe, advancement and loot table;
+    # its block model is re-pointed below, like the crafter's).
+    "assets/rftoolsutility/models/item/spawner.json",
+    "assets/rftoolsutility/textures/block/machinespawner.png",
+    "data/rftoolsutility/advancement/recipes/misc/spawner.json",
+    "data/rftoolsutility/recipe/spawner.json",
+    "data/rftoolsutility/loot_table/blocks/spawner.json",
 ]
+# Slice 4: the jar's mob recipes (`SpawnerModule`'s datagen), carried **byte for byte**. Their
+# `type` is `rftoolsutility:spawner`, a type the port's own crafting kind reads; the 1.21.1
+# `item1..3.object` forms are upstream's matter *ingredients* and are never parsed as
+# ingredients here (only the `amount` of each is read), so 26.3's ingredient form does not apply
+# and rewriting them would change the file the licence evidence points at.
+MOB_RECIPE_PREFIX = "data/rftoolsutility/recipe/minecraft_"
 # The tank's own block models name RFToolsBase's machine base textures; the port
 # ships them under its own namespace so the one `.hnmod` needs no other content.
 BASE_TEXTURES = [
@@ -76,6 +89,8 @@ BASE_TEXTURES = [
 INVENTORY_MODEL = "assets/rftoolsutility/models/block/tank_inventory.json"
 # The crafter's own cube model, re-pointed the same way.
 CRAFTER_MODEL = "assets/rftoolsutility/models/block/crafter1.json"
+# The spawner's own cube model, re-pointed the same way.
+SPAWNER_MODEL = "assets/rftoolsutility/models/block/spawner.json"
 
 # `TankTE.createBlock` on McJtyLib's `BlockBuilder.STANDARD_IRON`: strength 2.0,
 # correct tool for drops, metal sound. `minecraft:iron_block` is a full cube
@@ -101,7 +116,7 @@ BLOCK = {
 TAB = {
     "title": "itemGroup.rftoolsutility",
     "icon": f"{MOD}:tank",
-    "items": [f"{MOD}:tank", f"{MOD}:crafter1"],
+    "items": [f"{MOD}:tank", f"{MOD}:crafter1", f"{MOD}:spawner"],
 }
 
 # `CrafterBlock` on McJtyLib's `BlockBuilder.STANDARD_IRON` with `ironPickaxeTags()`: strength
@@ -132,6 +147,26 @@ CRAFTER_FACINGS = {
     "west": {"y": 270},
 }
 
+# `SpawnerTileEntity.createBlock` on McJtyLib's `BlockBuilder.STANDARD_IRON`: the tank's and the
+# crafter's own properties. Upstream orients the block in six directions
+# (`orientedBlock`), and the content schema takes a block's states and placement rule from its
+# vanilla template, so the spawner borrows the crafter's measured full-cube, no-block-entity,
+# no-menu template with a four-way horizontal `facing`.
+SPAWNER_BLOCK = {
+    "template": "minecraft:white_glazed_terracotta",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "item": True,
+}
+
+# The jar's own blockstate rotations (`spawner.json`), kept for the four horizontal facings.
+SPAWNER_FACINGS = CRAFTER_FACINGS
+
 # The jar's recipes name `c:` convention tags the prepared 26.3 root does not
 # ship (it ships `minecraft` tags only), and an unknown tag is an empty
 # ingredient. These are the smallest honest memberships, the same ones this
@@ -139,16 +174,23 @@ CRAFTER_FACINGS = {
 CONVENTION_TAGS = {
     "ingots/iron": ["minecraft:iron_ingot"],
     "glass_blocks": ["minecraft:glass", "minecraft:tinted_glass"],
+    # Slice 4, the spawner's own recipe (`data/rftoolsutility/recipe/spawner.json`).
+    "bones": ["minecraft:bone"],
+    "rods/blaze": ["minecraft:blaze_rod"],
+    "ender_pearls": ["minecraft:ender_pearl"],
 }
 
-# The jar's lang lines for the tank and the crafter, verbatim.
+# The jar's lang lines for the tank, the crafter and the spawner, verbatim.
 LANG_KEYS = [
     "itemGroup.rftoolsutility",
     "block.rftoolsutility.tank",
     "block.rftoolsutility.crafter1",
+    "block.rftoolsutility.spawner",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
+    "message.rftoolsutility.spawner.header",
+    "message.rftoolsutility.spawner.gold",
 ]
 
 
@@ -233,6 +275,15 @@ def main() -> None:
             target.write_bytes(raw)
         inventory = json.loads(jar.read(INVENTORY_MODEL))
         crafter_model = json.loads(jar.read(CRAFTER_MODEL))
+        spawner_model = json.loads(jar.read(SPAWNER_MODEL))
+        # Slice 4: the 70 mob recipes, byte for byte (see `MOB_RECIPE_PREFIX`).
+        mob_recipes = [
+            name for name in jar.namelist() if name.startswith(MOB_RECIPE_PREFIX) and name.endswith(".json")
+        ]
+        for name in sorted(mob_recipes):
+            target = CONTENT / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(jar.read(name))
     inventory["textures"] = {
         key: value.replace("rftoolsbase:", f"{MOD}:")
         for key, value in inventory["textures"].items()
@@ -243,6 +294,11 @@ def main() -> None:
         for key, value in crafter_model["textures"].items()
     }
     dump(assets / "models" / "block" / "crafter1.json", crafter_model)
+    spawner_model["textures"] = {
+        key: value.replace("rftoolsbase:", f"{MOD}:")
+        for key, value in spawner_model["textures"].items()
+    }
+    dump(assets / "models" / "block" / "spawner.json", spawner_model)
 
     with zipfile.ZipFile(BASE_JAR) as base:
         base_data = BASE_JAR.read_bytes()
@@ -275,23 +331,40 @@ def main() -> None:
             }
         },
     )
+    dump(
+        assets / "items" / "spawner.json",
+        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/spawner"}},
+    )
+    dump(
+        assets / "blockstates" / "spawner.json",
+        {
+            "variants": {
+                f"facing={facing}": {"model": f"{MOD}:block/spawner", **rotation}
+                for facing, rotation in SPAWNER_FACINGS.items()
+            }
+        },
+    )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
     dump(data_dir / "horizon" / "block" / "crafter1.json", CRAFTER_BLOCK)
+    dump(data_dir / "horizon" / "block" / "spawner.json", SPAWNER_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
     dump(
         CONTENT / "data" / "minecraft" / "tags" / "block" / "mineable" / "pickaxe.json",
-        {"values": [f"{MOD}:tank", f"{MOD}:crafter1"]},
+        {"values": [f"{MOD}:tank", f"{MOD}:crafter1", f"{MOD}:spawner"]},
     )
     dump(
         CONTENT / "data" / "minecraft" / "tags" / "block" / "needs_iron_tool.json",
-        {"values": [f"{MOD}:tank", f"{MOD}:crafter1"]},
+        {"values": [f"{MOD}:tank", f"{MOD}:crafter1", f"{MOD}:spawner"]},
     )
 
-    print(f"assembled assets/ and data/ under {CONTENT} from {JAR.name}")
+    print(
+        f"assembled assets/ and data/ under {CONTENT} from {JAR.name} "
+        f"({len(mob_recipes)} mob recipes)"
+    )
 
 
 if __name__ == "__main__":

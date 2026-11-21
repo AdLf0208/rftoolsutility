@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # In-game check for RFTools Utility: the tank fills and drains a whole bucket at
 # a time, holds 32,000 mB of one fluid, shows its contents as the jar's own fill
-# level, and its contents travel on the block's item when it is broken (slice 2).
+# level, and its contents travel on the block's item when it is broken (slice 2);
+# the crafter runs a taught recipe from its buffer and chains one result into the
+# next (slice 3); and the spawner spawns the mob its carried recipe names, for that
+# recipe's own RF cost (slice 4).
 #
 # Every mod command is typed with `ctl chat "/cmd"`: the chat path reaches the
 # command dispatcher the SDK's `register_commands`/`run_mod_command` register into
@@ -56,6 +59,19 @@
 #     own item, and placing it back restores them
 #  V  the crafter's loot table is gated by `minecraft:needs_iron_tool`: a wooden
 #     pickaxe breaks it and drops nothing, an iron pickaxe drops it (the control)
+#  W  a spawner placed from its item knows no mob and holds no FE, has the
+#     template's horizontal facing state, and the 70 carried spawner recipes are in
+#     force (the `recipes` readout)
+#  X  a mob no recipe names is refused, and `minecraft:zombie` is set from its own
+#     recipe: 800 FE a spawn and the recipe's three matter amounts
+#  Y  with no energy the spawner spawns nothing and its buffer does not change (the
+#     counterfactual for Z)
+#  Z  800 FE spawns exactly one zombie within 5 blocks of the spawner for that
+#     recipe's 800 FE, and the buffer reads 0
+#  AA `minecraft:blaze` costs its own recipe's 1,000 FE, and 1,000 FE spawns exactly
+#     one blaze
+#  AB a broken spawner's item carries its mob and its numbers, and placing it back
+#     restores them
 #
 # SELFTEST=1 flips B's assertion (the tank must still read 0 mB), proving the
 # scenario can fail: it prints FAIL and exits non-zero.
@@ -63,6 +79,8 @@
 # must read 0 mB), which is slice 2's own fail-capable leg.
 # SELFTEST=1 SELFTEST_AT=craft flips Q's assertion (the crafter must have made
 # nothing and spent nothing), which is slice 3's own fail-capable leg.
+# SELFTEST=1 SELFTEST_AT=spawn flips Z's assertion (the spawner must have spawned
+# nothing and spent nothing), which is slice 4's own fail-capable leg.
 #
 # CONTROL=1 runs the same scenario on the Nightly WITHOUT this package
 # (CONTROL_GAME, exported by launcher-game.sh): the tank item is not there, so A
@@ -79,6 +97,9 @@ CTL=${CTL:-}
 GAME=${GAME:-}   # a launcher-built game carrying this package (see the header)
 RES=${RES:-${HORIZON_RES:-/home/adlf/Desktop/horizon/.local/horizon-client/26.3}}
 SOCK=${SOCK:-/tmp/opencode/rftoolsutility-e2e.sock}
+# `/tmp` is a 7.5 GB tmpfs on the campaign box; the launcher's export sets `E2E_TMP` to a
+# folder on /home, so the scratch home goes there when it is set.
+SCRATCH_ROOT=${E2E_TMP:-/tmp/opencode}
 SELFTEST=${SELFTEST:-0}
 SELFTEST_AT=${SELFTEST_AT:-fill}
 CONTROL=${CONTROL:-0}
@@ -94,6 +115,8 @@ LAVA_BUCKET=minecraft:lava_bucket
 EMPTY_BUCKET=minecraft:bucket
 CAULDRON=minecraft:cauldron
 CRAFTER=rftoolsutility:crafter1
+SPAWNER_BLOCK=rftoolsutility:spawner
+SZ=3   # the spawner's z in the arena: clear of the tank's and the crafter's cells
 
 [ -x "$CTL" ] || { echo "missing horizon-ctl: $CTL" >&2; exit 1; }
 [ -n "$CTL" ] || { echo "set CTL= to the horizon-ctl of this pin (launcher-game.sh env)" >&2; exit 1; }
@@ -105,7 +128,7 @@ fi
 [ -x "$GAME" ] || { echo "missing horizon-client: $GAME" >&2; exit 1; }
 [ -d "$RES/assets" ] || { echo "missing prepared resources: $RES" >&2; exit 1; }
 
-SCRATCH=$(mktemp -d /tmp/opencode/rftoolsutility-home.XXXXXX)
+SCRATCH=$(mktemp -d "$SCRATCH_ROOT/rftoolsutility-home.XXXXXX")
 export HORIZON_HOME=$SCRATCH/game
 export HORIZON_LAUNCHER_HOME=$SCRATCH/launcher
 export XDG_DATA_HOME=$SCRATCH/data
@@ -205,6 +228,16 @@ hold() { # hold ITEM [COUNT]
 # Click ITEM from the hand down onto the floor under X Y Z. Retries the click twice: the
 # client's selection and aim settle a tick or two after a teleport, and a `place` that lands
 # before that is refused by the server (seen once, on the tank's doctored-item phase).
+# `ctl place` refuses a target a mob or a dropped item stands on ("the block did not
+# change (blocked by an entity, or the item cannot be placed)"). Clear the two blocks around
+# the target and try again: the arena's own floor lets the End's endermen wander in over a
+# long run, which cost a run here.
+clear_at() { # clear_at X Y Z [RADIUS]
+    ctl command "execute in minecraft:the_end run kill @e[type=!player,x=$1,y=$2,z=$3,distance=..${4:-2}]" \
+        >/dev/null 2>&1 || true
+    ctl wait 4 >/dev/null
+}
+
 try_place() { # try_place ITEM X Y Z
     local item=$1 x=$2 y=$3 z=$4 attempt reply=""
     for attempt in 1 2 3; do
@@ -216,6 +249,7 @@ try_place() { # try_place ITEM X Y Z
             return 0
         fi
         echo "  place attempt $attempt refused: $(tr -d '\n' <<<"$reply" | cut -c1-240)" >&2
+        clear_at "$x" "$y" "$z" 2
         ctl wait 10 >/dev/null
     done
     fail "ctl place $item at $x,$y,$z was refused three times: $(ctl inventory | jq -c '{hotbar,main}')"
@@ -337,6 +371,7 @@ teach() { control recipe "$@"; }
 set_slot() { control buffer "$@"; }
 set_energy() { control energy "$@"; }
 set_setting() { control setting "$@"; }
+set_mob() { control mob "$@"; }
 
 expect_energy() { [ "$C_ENERGY" = "$1" ] || fail "the crafter holds $C_ENERGY FE, expected $1"; }
 expect_recipes() { [ "$C_RECIPES" = "$1" ] || fail "the crafter's recipes read '$C_RECIPES', expected '$1'"; }
@@ -349,6 +384,51 @@ in_total() { # in_total ITEM
         | awk '{sum += $1} END {print sum + 0}'
 }
 in_has() { [[ "$C_IN" == *"$1"* ]] || fail "the crafter's buffer '$C_IN' does not hold '$1'"; }
+
+
+# ---------------------------------------------------------------------------
+# The spawner (slice 4): its readout, its mob setting and the mobs it spawns
+# ---------------------------------------------------------------------------
+
+# `/rftoolsutility spawner X Y Z`, parsed into S_ENERGY/S_CAP/S_MOB/S_COST/S_NEEDS/
+# S_SPAWNED/S_NONCE.
+spawner() { # spawner X Y Z
+    NONCE=$((NONCE + 1))
+    say "rftoolsutility spawner $1 $2 $3 $NONCE"
+    ctl wait 12 >/dev/null
+    local line
+    line=$(ctl messages 20 | jq -r '.chat[]' | grep -m1 "nonce=$NONCE" || true)
+    [ -n "$line" ] || fail "no fresh /rftoolsutility spawner reply for nonce $NONCE: $(ctl messages 8 | jq -c '.chat')"
+    eval "$(python3 "$PORT/tools/parse_spawner.py" "$line")"
+    [ "${ok:-0}" = 1 ] || fail "the spawner line did not parse: $line"
+    echo "  $line" >&2
+}
+
+expect_spawn_energy() { [ "$S_ENERGY" = "$1" ] || fail "the spawner holds $S_ENERGY FE, expected $1"; }
+expect_mob() { [ "$S_MOB" = "$1" ] || fail "the spawner's mob reads '$S_MOB', expected '$1'"; }
+expect_cost() { [ "$S_COST" = "$1" ] || fail "the spawner's cost reads '$S_COST', expected '$1'"; }
+expect_needs() { [ "$S_NEEDS" = "$1" ] || fail "the spawner's matter needs read '$S_NEEDS', expected '$1'"; }
+expect_spawned() { [ "$S_SPAWNED" = "$1" ] || fail "the spawner has spawned $S_SPAWNED mobs, expected $1"; }
+expect_spawner_state() { # expect_spawner_state X Y Z
+    local got
+    got=$(ctl block "$1" "$2" "$3" | jq -r '.state // empty')
+    echo "  block state $got" >&2
+    case "$got" in
+        *facing=north*|*facing=south*|*facing=east*|*facing=west*) ;;
+        *) fail "the spawner has no horizontal facing state: $got" ;;
+    esac
+}
+
+# How many mobs of TYPE are within RADIUS blocks of X Y Z, counted from the parsed
+# `ctl entities` reply (`pos` per entity, so the distance is to the spawner, not to the player).
+near() { # near TYPE X Y Z RADIUS
+    ctl entities 32 "$1" | jq --arg t "$1" --argjson x "$2" --argjson y "$3" --argjson z "$4" --argjson r "$5" \
+        '[.entities[] | select(.type == $t and .kind == "mob")
+          | select(((.pos[0]-$x) * (.pos[0]-$x) + (.pos[1]-$y) * (.pos[1]-$y)
+                    + (.pos[2]-$z) * (.pos[2]-$z)) <= ($r * $r))] | length'
+}
+
+kill_mobs() { ctl command "execute in minecraft:the_end run kill @e[type=!player]" >/dev/null; ctl wait 10 >/dev/null; }
 
 echo "== launch (The End arena, the package's own content and code) =="
 launch
@@ -684,4 +764,112 @@ break_block "$SX" 101 18 minecraft:iron_pickaxe
 pick_up "$SX" 101 18 "$CRAFTER"
 echo "  an iron pickaxe broke the same block and the item came back"
 
-echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it"
+
+echo "== W: a spawner placed from its item knows no mob, and the 70 recipes are in force =="
+# Creative from here: a zombie or a blaze within two blocks of the player would otherwise
+# hit a survival player during the 60-tick waits, and no phase below needs survival until AB.
+ctl command "gamemode creative" >/dev/null
+ctl wait 10 >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 6 >/dev/null
+place_block "$SPAWNER_BLOCK" "$SX" 101 "$SZ"
+spawner "$SX" 101 "$SZ"
+[ "$S_CAP" = 200000 ] || fail "the spawner's capacity reads $S_CAP, expected 200000"
+expect_spawn_energy 0
+expect_mob none
+expect_cost -
+expect_needs -
+expect_spawned 0
+expect_spawner_state "$SX" 101 "$SZ"
+NONCE=$((NONCE + 1))
+control recipes "$NONCE"
+[[ "$REPLY" == *"nonce=$NONCE"* ]] || fail "no fresh /rftoolsutility recipes reply for nonce $NONCE: $REPLY"
+[[ "$REPLY" == *"70 spawner recipes"* ]] || fail "the carried mob recipes are not in force: $REPLY"
+[[ "$REPLY" == *"zombie=800"* ]] || fail "minecraft:zombie's recipe does not read 800 FE: $REPLY"
+[[ "$REPLY" == *"blaze=1000"* ]] || fail "minecraft:blaze's recipe does not read 1000 FE: $REPLY"
+echo "  the machine knows no mob; $REPLY"
+
+echo "== X: a mob no recipe names is refused, and the zombie is set from its own recipe =="
+set_mob "$SX" 101 "$SZ" minecraft:not_a_mob
+[[ "$REPLY" == *"no spawner recipe for minecraft:not_a_mob"* ]] || fail "an unknown mob was not refused: $REPLY"
+spawner "$SX" 101 "$SZ"
+expect_mob none
+set_mob "$SX" 101 "$SZ" minecraft:zombie
+[[ "$REPLY" == *"spawns minecraft:zombie for 800 FE"* ]] || fail "the zombie was not set from its recipe's 800 FE: $REPLY"
+spawner "$SX" 101 "$SZ"
+expect_mob minecraft:zombie
+expect_cost 800
+expect_needs 0.1,0.2,20
+expect_spawn_energy 0
+expect_spawned 0
+echo "  the refused id changed nothing; the zombie's recipe gives 800 FE and $S_NEEDS"
+
+echo "== Y: with no energy the spawner spawns nothing and spends nothing (Z's counterfactual) =="
+ctl wait 60 >/dev/null
+spawner "$SX" 101 "$SZ"
+expect_spawn_energy 0
+expect_spawned 0
+ZOMBIES=$(near minecraft:zombie "$SX" 101 "$SZ" 8)
+[ "$ZOMBIES" = 0 ] || fail "the spawner spawned $ZOMBIES zombie(s) with no energy"
+echo "  0 FE, 60 ticks: no zombie, the machine spawned $S_SPAWNED and holds $S_ENERGY FE"
+
+echo "== Z: 800 FE spawns exactly one zombie for the recipe's own 800 FE =="
+set_energy "$SX" 101 "$SZ" 800
+ctl wait 60 >/dev/null
+spawner "$SX" 101 "$SZ"
+if [ "$SELFTEST" = 1 ] && [ "$SELFTEST_AT" = spawn ]; then
+    echo "(selftest: asserting the spawner spawned nothing and spent nothing)"
+    expect_spawn_energy 800
+    expect_spawned 0
+    ZOMBIES=$(near minecraft:zombie "$SX" 101 "$SZ" 5)
+    [ "$ZOMBIES" = 0 ] || fail "the spawner spawned $ZOMBIES zombie(s), expected 0"
+else
+    expect_spawn_energy 0
+    expect_spawned 1
+    ZOMBIES=$(near minecraft:zombie "$SX" 101 "$SZ" 5)
+    [ "$ZOMBIES" = 1 ] \
+        || fail "the spawner spawned $ZOMBIES zombie(s) within 5 blocks of $SX,101,$SZ, expected 1: $(ctl entities 32 minecraft:zombie | jq -c '.entities')"
+fi
+echo "  800 FE spent: $ZOMBIES zombie within 5 blocks, $S_ENERGY FE left, spawned=$S_SPAWNED"
+kill_mobs
+
+echo "== AA: minecraft:blaze costs its own recipe's 1,000 FE =="
+set_mob "$SX" 101 "$SZ" minecraft:blaze
+[[ "$REPLY" == *"spawns minecraft:blaze for 1000 FE"* ]] || fail "the blaze was not set from its recipe's 1000 FE: $REPLY"
+spawner "$SX" 101 "$SZ"
+expect_mob minecraft:blaze
+expect_cost 1000
+expect_needs 0.1,0.5,30
+set_energy "$SX" 101 "$SZ" 1000
+ctl wait 60 >/dev/null
+spawner "$SX" 101 "$SZ"
+expect_spawn_energy 0
+expect_spawned 2
+BLAZES=$(near minecraft:blaze "$SX" 101 "$SZ" 5)
+[ "$BLAZES" = 1 ] \
+    || fail "the spawner spawned $BLAZES blaze(s) within 5 blocks of $SX,101,$SZ, expected 1: $(ctl entities 32 minecraft:blaze | jq -c '.entities')"
+echo "  1,000 FE spent: $BLAZES blaze within 5 blocks, $S_ENERGY FE left, spawned=$S_SPAWNED"
+kill_mobs
+
+echo "== AB: a broken spawner's item carries its mob and its numbers, and placing it back restores them =="
+ctl command "gamemode survival" >/dev/null
+ctl wait 20 >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 6 >/dev/null
+break_block "$SX" 101 "$SZ" minecraft:iron_pickaxe
+pick_up "$SX" 101 "$SZ" "$SPAWNER_BLOCK"
+DROP_LINE=$(held_item_line "$SPAWNER_BLOCK")
+[ -n "$DROP_LINE" ] || fail "no /data get reply for the picked-up spawner: $(ctl messages 8 | jq -c '.chat')"
+[[ "$DROP_LINE" == *"minecraft:block_entity_data"* ]] \
+    || fail "the dropped spawner carries no block-entity data: $DROP_LINE"
+echo "  $DROP_LINE" >&2
+place_kept "$SX" 101 "$SZ" "$SPAWNER_BLOCK"
+spawner "$SX" 101 "$SZ"
+expect_mob minecraft:blaze
+expect_cost 1000
+expect_needs 0.1,0.5,30
+expect_spawned 2
+expect_spawn_energy 0
+echo "  the placed spawner still spawns $S_MOB for $S_COST FE (spawned=$S_SPAWNED)"
+
+echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it; a spawner placed from its item knows no mob and 70 mob recipes are in force; a mob no recipe names is refused while minecraft:zombie is set from its own 800 FE recipe with its own matter amounts; with no energy it spawns nothing; 800 FE spawns exactly one zombie within 5 blocks for that 800 FE and leaves 0; minecraft:blaze costs its own 1,000 FE and spawns one blaze; and a broken spawner's item carries its mob and numbers, which placing it back restores"
