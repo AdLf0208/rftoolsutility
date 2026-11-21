@@ -1,15 +1,15 @@
-# RFTools Utility for Horizon — slices 1–5: the tank, the crafter tiers and the spawner
+# RFTools Utility for Horizon — slices 1–7: the tank, the crafter tiers and the spawner
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–5, the tank, the crafter tiers and the spawner.** One flat SDK package
-(`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the models and
-textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 5 — the crafter tiers",
-§ "Slice 4 — the spawner", § "Slice 3 — the crafter" and § "Slice 2 — the tank's contents
-travel with its item".
+**Status: slices 1–7, the tank, the crafter tiers, the spawner and its matter gate.** One flat
+SDK package (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the models and
+textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 7 — the spawner's matter
+gate", § "Slice 6 — the tick's own dimension", § "Slice 5 — the crafter tiers", § "Slice 4 — the
+spawner", § "Slice 3 — the crafter" and § "Slice 2 — the tank's contents travel with its item".
 
 ## What works
 
@@ -43,22 +43,25 @@ travel with its item".
   side, for **that mob's own carried recipe's** RF cost: `minecraft:zombie` 800 FE,
   `minecraft:blaze` 1,000 FE. The mob is set from the jar's **70** `rftoolsutility:spawner`
   recipes — a crafting kind this package registers, so the files are in force — and an id
-  no recipe names is refused. The recipe's own matter amounts are read and kept on the
-  machine (`needs=…`); a broken spawner's item carries the mob and its numbers.
+  no recipe names is refused. A spawn also needs **that recipe's three matter amounts** in the
+  machine's three stores (`maxMatterStorage` 6,400 each; `/rftoolsutility matter` writes what a
+  matter beamer's send would add): 800 FE with empty stores spawns nothing and keeps its FE, one
+  type one unit short is a refusal, and a spawn spends each store by its own amount. A new mob
+  clears the stores, and a broken spawner's item carries the mob, its numbers and its matter.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
   <count>`, `energy <pos> <amount>` and `setting <pos> speed|mode|keep <value>`
   for the crafter (and `energy` for the spawner too); `/rftoolsutility spawner <pos>
-  [nonce]`, `mob <pos> <id>` and `recipes [nonce]` for the spawner and its table.
+  [nonce]`, `mob <pos> <id>`, `matter <pos> <m0> <m1> <m2>` and `recipes [nonce]` for the
+  spawner, its stores and its table.
 
 ## What does not (yet)
 
 Teleporters, screens and their 30 modules, the logic blocks, the environmental
 controller and its modules, the tank's GUI and filter slot, the
-fluid quad inside its window, the crafter's GUI, the spawner's GUI, its three matter
-types and the beamers and syringe that feed them, six-way facing, the item tooltips, and
-the infusing power discount. The full list, with the reason for each, is in
+fluid quad inside its window, the crafter's GUI, the spawner's GUI, the matter beamers and
+the syringe that feed it, six-way facing, the item tooltips, and the infusing power discount. The full list, with the reason for each, is in
 [`notes.md`](notes.md).
 
 ## Building and checking

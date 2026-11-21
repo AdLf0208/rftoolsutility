@@ -1,14 +1,14 @@
-# RFTools Utility — port notes (slices 1–6: the tank, the crafter tiers and the spawner)
+# RFTools Utility — port notes (slices 1–7: the tank, the crafter tiers, the spawner and its matter)
 
-> **Current state (2026-11-21): slice 6, package 0.2.5 at pin
+> **Current state (2026-11-22): slice 7, package 0.2.6 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 6 — the tick's own dimension (2026-11-21)`** first: it fixes the correctness bug a
-> reviewer found on PR #1643 (a tick resolved its level by scanning for a matching block, so two
-> dimensions holding the same machine at the same position confused it), with its red, its fix and
-> its two-dimension evidence. Then **`## Slice 5 — the crafter tiers (2026-11-21)`** (the crafter
-> family), `## Slice 4 — the spawner`, `## Slice 3 — the crafter`, `## Slice 2` (the tank's
-> contents on its item) and the 2026-11-18 migration note that produced 0.2.0; everything after the
-> migration describes the retired `.hnmod` bundle.
+> **`## Slice 7 — the spawner's matter gate (2026-11-22)`** first: the spawner now returns early
+> until all three matter amounts its recipe names are in store, spends them with the energy once
+> the mob exists, and carries them on its item. Then **`## Slice 6 — the tick's own dimension`**
+> (the reviewer's correctness bug on PR #1643), `## Slice 5 — the crafter tiers`,
+> `## Slice 4 — the spawner`, `## Slice 3 — the crafter`, `## Slice 2` (the tank's contents on its
+> item) and the 2026-11-18 migration note that produced 0.2.0; everything after the migration
+> describes the retired `.hnmod` bundle.
 
 > **Format (2026-11-18): the port is a flat SDK `.hmod`.** Horizon's mod-API merge (#16941,
 > launcher ≥ 0.2.70) retired the `.hnmod` container; this port's submission (PR **#904**) was
@@ -205,8 +205,9 @@ this slice does not implement. Recorded so slice 2 does not carry it:
   mob recipes~~ — **the spawner is done in slice 4** (the block, its 200,000 FE buffer, the
   mob setting from the recipe table and the spawn tick, with the jar's **70** mob recipes
   carried — the jar ships 70, not 100: `unzip -l | grep -c 'recipe/minecraft_'`). Remaining
-  there: the three matter types and the matter beamers that fill them, the syringe that
-  sets the mob in upstream's GUI, the GUI, and six-way facing; `syringe`.
+  there: ~~the three matter types~~ — **the matter gate is done in slice 7** (three stores, the
+  per-type check, the spend and the item carry); the **matter beamers** that fill them, the
+  syringe that sets the mob in upstream's GUI, the GUI, and six-way facing; `syringe`.
 - **LAN guests:** the bucket swap is re-sent for the world's own player (the
   window client); a LAN guest's resend goes through the same hub record but is
   untested here.
@@ -986,7 +987,8 @@ same script on the unmodded Nightly, where the package's items do not exist.
 | `recipe:minecraft:crafting_shaped` | blocked(`rftoolsbase:machine_frame`) | the tank's, the crafter's and the spawner's own recipes need the parent port's item; the e2e gives the blocks instead |
 | `tag:item` | not ported | the jar's `rftoolsutility:living/*` yield tags belong to the matter system; the `c:` tags the recipes name are declared by the assembler |
 | `command` | tested | all ten subcommands are called and their parsed replies asserted (A–AB) |
-| the matter gate (three matter types) | not ported | the beamers and the syringe are a different machine family; the recipe amounts are carried and printed (`needs=`) |
+| the matter gate (three matter types) | tested | Y1, Y2, Z, Z2, AA, AB, AG (slice 7): 800 FE with empty stores spawns nothing and keeps its FE; one type one unit short spawns nothing; exactly 0.1/0.2/20 spawns one zombie and empties the stores; 1.1/1.2/21 leaves exactly 1 in each; a new mob clears them; the item carries them; the unfed twin keeps `matter=0,0,0` |
+| the matter beamers (`MatterBeamerTileEntity`) | not ported | a different block family (200,000 FE, 1,000 matter a tick, the wrench-linked destination, the beamer's own infusing bonus); `/rftoolsutility matter` writes what a beamer's send would add (`add_matter` is the accumulation and the 6,400 cap, unit-tested and exercised in Y1/Y2) |
 | the syringe item and its injection levels | not ported | no item and no menu in this slice; `/rftoolsutility mob` writes the same setting |
 | the GUI (`GuiSpawner`) | not ported | no menu in this slice |
 | six-way facing | not ported | four-way template (the crafter's deviation) |
@@ -1340,3 +1342,220 @@ native-1/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/e59da9094f0c2fdda6c627fe9eff22
 (both logs print the artifact's sha first), `verify-sdk-package.py rftoolsutility` → **1/1**, and
 the launcher's `native-build` compiled the mod against the pin (`Compiling rftoolsutility (1 of 1)`,
 `built native-0a875da-2d419ffa479a`) for the in-game legs.
+
+## Slice 7 — the spawner's matter gate (2026-11-22)
+
+**Chosen from the port's own gap list** — `## Slice 4 — the spawner` → `### Deviations and content
+adaptations`, verbatim:
+
+> **The matter gate is not ported.** Upstream returns early until all three matter amounts are
+> stored, and fills them from matter beamers … This slice spends energy only; the recipe's
+> three amounts are read and kept on the machine (and printed), so a later slice that adds the
+> beamers has the data in place.
+
+and the slice-4 coverage row *"the matter gate (three matter types) — not ported"*. It is the
+behaviour the machine's own recipe table was already carrying (`needs=0.1,0.2,20`), it fits the
+**machines** tier exactly (three stores on the existing block entity and a spend on the existing
+tick — no GUI, no renderer, no new block), and its whole rule is readable through
+`/rftoolsutility spawner`, so no screen is needed to prove it.
+
+**Pin:** Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, horizon-mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, mod API `0.2`, game 26.3. **Version 0.2.6.**
+
+**Read for this slice** (analysis only; the clone was deleted after): `SpawnerTileEntity.java`
+(`tickServer`'s per-type check and its `withMatter(i, getMatter(i) - amount)`, `testSyringe`'s
+`clearMatter()` when the mob changes, `addMatter`'s `m * factor * 3 / (3 - infusion)` and its
+`maxMatterStorage` clamp, `collectImplicitComponents`), `SpawnerData.java` (the record: `matter0`,
+`matter1`, `matter2` floats and `mob`), `MatterBeamerTileEntity.java` (`addMatter(itemStack,
+numblocks, infusion)` on the receiving spawner), `SpawnerConfiguration.java`
+(`maxMatterStorage = 64 * 100`) and the 70 `data/rftoolsutility/recipe/minecraft_*.json` amounts.
+
+### The brief said three fluid tanks; the artefact says three floats
+
+The brief asked for "three fluid tanks on the existing block entity" and warned that a mod fluid
+cannot live in a block entity tank via `fluid_insert`. The artefact has **no fluid anywhere in the
+spawner module**:
+
+- `SpawnerData` is `record SpawnerData(float matter0, float matter1, float matter2, ResourceLocation
+  mob)` — matter is three floats in the machine's own data, not a tank;
+- `SpawnerTileEntity.addMatter(ItemStack stack, int m, float beamerInfusionFactor)` maps the beamed
+  **item** to one of the recipe's three `item1..3` ingredients (`mobData.getItem(i).match(stack)`) and
+  adds `m * factor * 3.0f / (3.0f - beamerInfusionFactor)`, clamped at `maxMatterStorage` (6,400);
+- `grep -rn "Fluid\|fluid" src/main/java/mcjty/rftoolsutility/modules/spawner/` → **0 matches**;
+- the jar ships no `data/*/fluid` file and no matter fluid texture
+  (`unzip -l <jar> | grep -i matter` → the four beamer/booster/transmitter/receiver blocks and their
+  recipes/loot/advancements only).
+
+So "three fluid tanks" would invent three fluids, a fluid tag and a fraction→mB scale the mod does
+not have — and would let a pipe feed a spawner, a mechanic upstream does not have. **The artefact
+wins** (campaign rule: a brief may not invent a mod's contents): the port keeps upstream's **three
+float stores in its own saved compound** (`matter`, beside the `needs` triple it already had) and
+`/rftoolsutility matter` writes what a beamer's send would add. This is **provenance, not an API
+gap**: the pin *does* expose `Registrar::declare_fluid` and `Registrar::block_fluids` (the tank
+slice uses the latter), so the fluid shape was expressible — it just is not this machine.
+
+### What it does
+
+- **The gate.** `runtime::spawn_cycle(energy, cost, needs, held)` is upstream's tick order: every
+  one of the three amounts must be in store (`matter_ready`), then the recipe's `power` must be in
+  the buffer (`spawn_once`); only then does it return what is left of **both**. A machine with the
+  FE but no matter keeps its FE (`Y1`), and one type one unit short is a refusal (`Y2`).
+- **The spend.** On a successful spawn the tick writes the energy and all three stores back
+  (`spend_matter`: each store minus **its own** amount), and only after `spawn_mob` answered — a
+  refused spawn pays neither (slice 4's defect fix, now covering the matter).
+- **The store.** Three floats in the block entity's saved compound (`KEY_MATTER = "matter"`, the
+  same `{a,b,c}` float list `needs` uses); they travel on the machine's item with the rest of the
+  compound (`block_entity_data`, `AB`).
+- **A new mob clears them.** `set_mob` writes zeros when the mob changes (`matter_after_mob_change`),
+  upstream's `testSyringe` `clearMatter()`; re-setting the same mob keeps them (`Z2`, `AA`).
+- **The feed rule.** `runtime::add_matter(held, units)` is the accumulation and the 6,400 cap
+  (`maxMatterStorage`); `/rftoolsutility matter <pos> <m0> <m1> <m2>` adds each amount to its store
+  (a negative one drains, which is how the harness states a phase's precondition). Upstream's beamer
+  multiplies by its item factor and its infusing bonus; this port carries neither (no beamer block,
+  no infusable path — the slice-3 gap), so the units arrive already scaled.
+- **The readout.** `/rftoolsutility spawner <pos>` gains `matter=<a>,<b>,<c>` beside `needs=`;
+  `tools/parse_spawner.py` parses it into `S_MATTER`.
+
+### Numbers and where they came from
+
+| Number | Value | Source |
+|---|---:|---|
+| one store's capacity | 6,400 | `SpawnerConfiguration.maxMatterStorage` (`64 * 100`) |
+| zombie's matter | 0.1, 0.2, 20.0 | `data/rftoolsutility/recipe/minecraft_zombie.json` (`item1..3.amount`) |
+| blaze's matter | 0.1, 0.5, 30.0 | `data/rftoolsutility/recipe/minecraft_blaze.json` |
+| a new mob clears the stores | yes | `SpawnerTileEntity.testSyringe` (`prevMobId` differs → `clearMatter()`) |
+| the gate's order | matter first, power second | `SpawnerTileEntity.tickServer` |
+| the spend | each store − its own amount | the same tick's `withMatter(i, …)` loop |
+
+### Red → green (unit, verbatim)
+
+The five new runtime rules were written behind `todo!()` bodies first (`slice7-red.log`):
+
+```
+failures:
+---- runtime::tests::a_spawn_needs_every_matter_type_the_recipe_names stdout ----
+thread 'runtime::tests::a_spawn_needs_every_matter_type_the_recipe_names' (3088119) panicked at src/runtime.rs:586:5:
+not yet implemented
+---- runtime::tests::a_spawn_pays_the_recipe_once_the_matter_is_there ...
+thread '...' (3088120) panicked at src/runtime.rs:608:5:
+not yet implemented
+---- runtime::tests::a_spawn_spends_each_matter_type_by_its_own_amount ...
+---- runtime::tests::a_spawn_with_power_but_no_matter_keeps_its_buffer ...
+---- runtime::tests::matter_accumulates_up_to_the_spawners_storage ...
+
+test result: FAILED. 62 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Green: **69 passed; 0 failed** (`sdk-test.log`) — 44 `runtime` tests (the tank's, the crafter's,
+the spawner's and the four new matter rules) and 25 glue tests in `src/lib.rs` (the tank's, the
+crafter's, the spawner's and the two new store rules: `a_new_mob_clears_the_matter_the_previous_one_was_fed`,
+`a_beamer_send_adds_to_each_store_and_caps_it`). fmt clean, clippy `-D warnings` 0 warnings
+(`slice7-clippy.log`, `sdk-clippy.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e.sh` phases A–AG, one lease per leg, every log ends with its exit:
+
+| log | verdict |
+|---|---|
+| `e2e-slice7-red.log` | **FAIL: the spawner line did not parse: … needs=- spawned=0** — the same script on the **0.2.5** package, whose readout has no `matter=` field and whose machine has no store at all (`EXIT:1`) |
+| `e2e-slice7.log` | **PASS**, `EXIT:0` — A–AG |
+| `e2e-slice7-selftest-gate.log` | **FAIL: the spawner holds 800 FE, expected 0**, `EXIT:1` (Y1 inverted: it must have spawned) |
+| `e2e-slice7-selftest-spawn.log` | **FAIL: the spawner holds 0 FE, expected 800**, `EXIT:1` (Z inverted) |
+| `e2e-slice7-selftest-dimension.log` | **FAIL: the End's spawner spawned 1 zombie(s) in its own dimension, expected 0**, `EXIT:1` (AG inverted; slice 6 stays green) |
+| `e2e-slice7-control.log` | **FAIL: the tank item did not register**, `EXIT:1` (the unmodded Nightly) |
+| `e2e-slice7-selftest-{fill,restore,craft,tiers}.log` | each `EXIT:1` with its own `FAIL:` (B, K, Q, AC inverted) — the earlier legs still fail as designed |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=34 ok=34 missing-exit=0 bad-exit=0`.
+
+The slice's phases, each asserting a parsed value (the transcript is in the log):
+
+| phase | what it asserts (observed) |
+|---|---|
+| **W** | a spawner placed from its item reads `energy=0/200000 mob=none cost=- needs=- matter=0,0,0 spawned=0`, has `facing=west`, and the 70 carried recipes are in force |
+| **Y1** | **800 FE with `matter=0,0,0`** for 60 ticks spawns **0** zombies, keeps `energy=800` and `matter=0,0,0`, `spawned=0` — 0.2.5 spent the FE and spawned here (`e2e-slice7-red.log` has no such phase; the selftest inverts it) |
+| **Y2** | `matter=0.1,0.2,19.9` of the zombie's `0.1/0.2/20` with 800 FE spawns nothing and leaves both the FE and the stores untouched |
+| **Z** | `matter=0.1,0.2,20` exactly + 800 FE → **one** zombie within 5 blocks, `energy=0`, `matter=0,0,0`, `spawned=1` |
+| **Z2** | `1.1/1.2/21` (one more than each amount) + 800 FE → one more zombie and `matter=1,1,1`: each store is short by **its own** amount; re-setting the same mob keeps `1,1,1` |
+| **AA** | `set_mob minecraft:blaze` reads `matter=0,0,0` (a new mob clears the zombie's stores) and `needs=0.1,0.5,30`; feeding those and 1,000 FE spawns one blaze, `energy=0`, `matter=0,0,0`, `spawned=3` |
+| **AB** | stores at `1.5/2.5/42` with 0 FE, a survival break drops a spawner whose item carries `minecraft:block_entity_data`; placing it back reads the same mob, cost, needs **and** `matter=1.5,2.5,42`, `spawned=3` |
+| **AG** | only the End spawner is given a mob, `matter=0.1,0.2,20` and 800 FE: it spawns one zombie at its own spawn point and reads `energy=0 matter=0,0,0 spawned=1`, while the Overworld twin reads `energy=0 spawned=0 matter=0,0,0` |
+
+Counterfactuals: **Y1** is the same machine at the same 800 FE as **Z** with one difference (the
+stores are empty), **Y2** is one unit short of **Z**, **Z2** is one unit over, **AA**'s new mob
+against **Z2**'s same mob differ only in whether the stores are cleared, and **AG**'s unfed twin
+differs only in what it was fed. `SELFTEST_AT=gate` inverts Y1 (the spawner must have spawned with no
+matter), `SELFTEST_AT=spawn` inverts Z (nothing spawned, nothing spent), `SELFTEST_AT=dimension`
+inverts AG; each leg fails as designed, so each assertion can fail. `CONTROL=1` runs the same script
+on the unmodded Nightly, where the package's items do not exist.
+
+### Measured traps this slice cost (harness and engine)
+
+1. **A readout taken after a feed is a spawn, not a read.** The tick runs between a command and the
+   readout's own 12-tick wait, so feeding matter into a machine that already holds the FE spawns
+   during the wait and the readout shows `energy=0, spawned=1` (Z failed on exactly this on the
+   first green run). Every phase now empties the buffer (`set_energy … 0`) **before** it feeds, and
+   asserts the stores, then charges.
+2. **A float leftover must be binary-exact to be asserted as a string.** `0.6 − 0.1` and
+   `0.7 − 0.2` round to `0.5` in f32, but that is a tie at the midpoint and one ULP away from
+   `0.49999997`; `1.1 − 0.1 = 1.0`, `1.2 − 0.2 = 1.0` and `21 − 20 = 1.0` are exact. Z2 therefore
+   feeds `1.1/1.2/21` and asserts `matter=1,1,1`.
+3. **`<m0:number>` is the argument kind.** The usage's `number` delivers
+   `CommandArgumentValue::Number(f64)` (the same kind `undergarden` uses); `word` would have
+   arrived as a `String` and needed its own parser.
+4. **A mod fluid is not the same as a stored float.** The pin can declare fluids
+   (`Registrar::declare_fluid`) and block tanks (`block_fluids`), so the brief's fluid shape was
+   expressible — the reason it is not used is that the artefact has no matter fluid (see above).
+
+### Deviations and content adaptations
+
+- **No fluid tanks, three float stores** (the section above): a user notices nothing — the machine
+  reads, spends and carries exactly the amounts its recipe names.
+- **The stores are filled by a command, not a beamer.** `MatterBeamerTileEntity` (200,000 FE, 1,000
+  matter a tick, the wrench-linked destination, `beamRfPerObject`) is a different block family and a
+  later slice; `/rftoolsutility matter` writes what its send would add. The beamer's item-match
+  factor and infusing bonus are carried as "already scaled", and the infusing path stays the
+  crafter's recorded `rftoolsbase` gap.
+- **The matter is not cleared when a syringe is pulled**, because there is no syringe item or slot
+  (slice 4's gap): the mob is set by `/rftoolsutility mob`, and a *changed* mob clears the stores.
+- No GUI, no comparator, no TOP/Jade, no tooltip — the family's standing gaps.
+
+### Upstream defects fixed
+
+None new: the tick pays energy and matter only after `spawn_mob` answered (slice 4's fix, now
+applied to the stores as well), and the gate's order is upstream's own. The slice-4 record
+(`SpawnerTileEntity` pays before it knows the mob exists) stands.
+
+### Coverage after slice 7
+
+| family | status |
+|---|---|
+| `rftoolsutility:spawner` | tested — W (place/read back/facing), AB (the item carries the machine) |
+| the matter gate (three stores, the per-type check, the spend) | tested — Y1, Y2, Z, Z2, AA, AB, AG |
+| the store's accumulation and 6,400 cap | unit-tested (`matter_accumulates_up_to_the_spawners_storage`) and exercised through `matter` in every phase |
+| the food/mob recipes as the gate's data | tested — `needs=0.1,0.2,20` (zombie) and `0.1,0.5,30` (blaze) drive Z/AA |
+| the matter beamers | not ported (a different block family; `/rftoolsutility matter` stands in) |
+| the syringe, the GUI, six-way facing, the infusing discount | not ported (slice 4's gaps) |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 115,039 B | `f476e13730dc1888e823c84002135ba4260f5cb4e19f4c64b48d5d5c6253bbcb` | 152 |
+
+Built twice with `rm -f Cargo.lock` before each (`cmp` identical), **no packed `Cargo.lock`**,
+`check` green (`rftoolsutility 0.2.6 (native-mod, format
+native-1/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/e59da9094f0c2fdda6c627fe9eff22dec6a906f0, for
+26.3)`), `fits --build 0a875da` → `0a875da  made for`, `fits --build 0b14f8a` → `0b14f8a  fits`
+(both logs print the artifact's sha first), `verify-sdk-package.py rftoolsutility` → **1/1**, and
+the launcher's `native-build` compiled the mod against the pin (`Compiling rftoolsutility (1 of 1)`,
+`native-0a875da-2600432bf5cd`) for the in-game legs.
+
+**Why the bytes are the second pair.** The first green 0.2.6 build (`0363a425…`, 114,875 B) was
+made before this section and the README's slice-7 text existed; `README.md` is packed inside the
+package, so adding it changed the artifact. The delivered package is the pair above, and **every
+in-game leg in the table was re-run on a game the launcher built from these bytes** (`Compiling
+rftoolsutility (1 of 1)` → `native-0a875da-2600432bf5cd`); the red leg alone ran on the previous
+(0.2.5) export, which is the point of it.

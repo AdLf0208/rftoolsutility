@@ -31,8 +31,9 @@ pub mod runtime;
 use runtime::{
     BUCKET, BUFFER_IN, BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY,
     CRAFTER_RECEIVE, CRAFTER_SLOTS, Click, CraftMode, CrafterTier, GHOST_INPUT, GHOST_RESULT,
-    MobRecipe, SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, Tank, bucket_click, carried, clamped,
-    fill_level, placements, plan, recipe_for, result_range, spawn_at, spawn_once, spend, steps,
+    MATTER_STORAGE, MobRecipe, SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, Tank, add_matter,
+    bucket_click, carried, clamped, fill_level, placements, plan, recipe_for, result_range,
+    spawn_at, spawn_cycle, spend, steps,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -94,6 +95,11 @@ const SPAWNER_KIND: &str = "spawner";
 const KEY_MOB: &str = "mob";
 const KEY_COST: &str = "cost";
 const KEY_NEEDS: &str = "needs";
+/// The three matter stores (`SpawnerData.matter0..2`), one per ingredient the recipe asks for.
+/// Upstream keeps them as three floats in the machine's own data and a matter beamer fills them;
+/// this port keeps the same three floats in its saved compound (the shape [`KEY_NEEDS`] already
+/// uses) and `/rftoolsutility matter` stands in for a beamer's send.
+const KEY_MATTER: &str = "matter";
 const KEY_SPAWNED: &str = "spawned";
 /// The block's own placement state, which picks the side a spawn appears on
 /// (`OrientationTools.getOrientation`).
@@ -868,13 +874,14 @@ fn facing_of(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> Option<String> 
         .map(str::to_owned)
 }
 
-/// One server tick of the spawner (`SpawnerTileEntity.tickServer`): with a mob set and its
-/// recipe's `power` in the buffer, pay the cost and spawn one mob on the block's facing side.
+/// One server tick of the spawner (`SpawnerTileEntity.tickServer`): with a mob set, its recipe's
+/// `power` in the buffer **and every one of its three matter amounts in store**, pay both and
+/// spawn one mob on the block's facing side.
 ///
-/// Upstream returns early until all three matter amounts are stored; the matter system (its
-/// three tanks and the matter beamers that fill them) is not part of this slice, so this tick
-/// spends energy only. The recipe's own amounts are still read and kept on the machine
-/// (`KEY_NEEDS`) and printed by the readout.
+/// Upstream returns early until all three matter amounts are stored (`for (i…)
+/// if (data.getMatter(i) < mobData.getItem(i).getAmount()) return;`) and clears them once the
+/// mob exists, so the matter is what gates the spawn; the port's stores are filled by
+/// `/rftoolsutility matter` (a matter beamer's send, whose block is a later slice).
 fn spawner_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
     let pos = event.pos;
     let Some(mob) = read_text(&event.entity.nbt, KEY_MOB) else {
@@ -883,7 +890,9 @@ fn spawner_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>)
     };
     let cost = read_int(&event.entity.nbt, KEY_COST);
     let energy = read_int(&event.entity.nbt, KEY_ENERGY).clamp(0, SPAWNER_CAPACITY);
-    let Some(left) = spawn_once(energy, cost) else {
+    let needs = read_matter(&event.entity.nbt, KEY_NEEDS).unwrap_or([0.0; 3]);
+    let matter = read_matter(&event.entity.nbt, KEY_MATTER).unwrap_or([0.0; 3]);
+    let Some((left, left_matter)) = spawn_cycle(energy, cost, needs, matter) else {
         *event.reply = BlockEntityTickReply::Unchanged;
         return;
     };
@@ -900,7 +909,8 @@ fn spawner_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>)
         return;
     };
     // `EntityType.spawn` with the `SPAWNER` reason: the type makes the mob, finalizes it and
-    // adds it to the level. A refusal spawns nothing, and nothing is paid.
+    // adds it to the level. A refusal spawns nothing, and neither the power nor the matter is
+    // paid (the slice-4 defect fix: upstream pays before it knows the mob exists).
     if level
         .spawn_mob(host, &mob, at, SpawnReason::Spawner)
         .is_none()
@@ -909,8 +919,18 @@ fn spawner_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>)
         return;
     }
     write_int(&mut event.entity.nbt, KEY_ENERGY, left);
+    write_matter(&mut event.entity.nbt, KEY_MATTER, left_matter);
     let spawned = read_int(&event.entity.nbt, KEY_SPAWNED).saturating_add(1);
     write_int(&mut event.entity.nbt, KEY_SPAWNED, spawned);
+}
+
+/// Three float amounts as the readout prints them: `a,b,c`, or `-` for an amount the machine
+/// does not hold at all.
+fn triple(amounts: Option<[f32; 3]>) -> String {
+    amounts.map_or_else(
+        || "-".to_owned(),
+        |amounts| format!("{},{},{}", amounts[0], amounts[1], amounts[2]),
+    )
 }
 
 /// What `/rftoolsutility spawner` prints. The shape is the harness's contract
@@ -924,15 +944,14 @@ fn spawner_readout(pos: [i32; 3], nbt: &Compound, nonce: Option<&str>) -> String
     } else {
         "-".to_owned()
     };
-    let needs = read_matter(nbt, KEY_NEEDS).map_or_else(
-        || "-".to_owned(),
-        |needs| format!("{},{},{}", needs[0], needs[1], needs[2]),
-    );
+    let needs = triple(read_matter(nbt, KEY_NEEDS));
+    // A store always exists, empty, so it prints its own zeros rather than a dash.
+    let matter = triple(Some(read_matter(nbt, KEY_MATTER).unwrap_or([0.0; 3])));
     let spawned = read_int(nbt, KEY_SPAWNED).max(0);
     let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
     format!(
         "Spawner at {pos:?}: energy={energy}/{SPAWNER_CAPACITY} mob={mob} cost={cost} \
-         needs={needs} spawned={spawned}{suffix}"
+         needs={needs} matter={matter} spawned={spawned}{suffix}"
     )
 }
 
@@ -1453,6 +1472,10 @@ impl Hooks for Mod {
             "rftoolsutility mob <pos:block_pos> <mob:id>",
             2,
         ));
+        event.commands.push(Command::op(
+            "rftoolsutility matter <pos:block_pos> <m0:number> <m1:number> <m2:number>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -1479,6 +1502,7 @@ impl Hooks for Mod {
                     | "setting"
                     | "spawner"
                     | "mob"
+                    | "matter"
                     | "recipes"
             ]
         );
@@ -1513,7 +1537,7 @@ impl Hooks for Mod {
         let Some(CommandArgumentValue::BlockPos(pos)) = invocation.argument("pos") else {
             feedback(
                 host,
-                "Usage: /rftoolsutility info|tank|crafter|recipe|buffer|energy|setting|spawner|mob <pos> …",
+                "Usage: /rftoolsutility info|tank|crafter|recipe|buffer|energy|setting|spawner|mob|matter <pos> …",
             );
             return Flow::Cancel;
         };
@@ -1697,6 +1721,25 @@ impl Hooks for Mod {
                     }
                 };
                 let line = set_mob(host, level, pos, &mob);
+                feedback(host, &line);
+            }
+            ["rftoolsutility", "matter"] => {
+                // `<m0:number>` arrives as a double (the SDK's `Number`); the machine keeps
+                // floats, the same width the recipe's own amounts use.
+                let (
+                    Some(CommandArgumentValue::Number(m0)),
+                    Some(CommandArgumentValue::Number(m1)),
+                    Some(CommandArgumentValue::Number(m2)),
+                ) = (
+                    invocation.argument("m0"),
+                    invocation.argument("m1"),
+                    invocation.argument("m2"),
+                )
+                else {
+                    feedback(host, "Usage: /rftoolsutility matter <pos> <m0> <m1> <m2>");
+                    return Flow::Cancel;
+                };
+                let line = feed_matter(host, level, pos, [*m0 as f32, *m1 as f32, *m2 as f32]);
                 feedback(host, &line);
             }
             _ => return Flow::Continue,
@@ -1974,7 +2017,9 @@ fn set_energy(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], amount:
 /// `/rftoolsutility mob`: set the mob the spawner spawns (`SpawnerData.mob`), from the recipe
 /// table. The recipe is the machine's own data, so the id it does not name is refused, and the
 /// recipe's `power` and matter amounts are kept beside the mob (upstream's `MobData`, read once
-/// per table load).
+/// per table load). A **new** mob clears the matter stores, as upstream's `testSyringe` does
+/// ("if the previously seen mob differs, `clearMatter()`"), so a zombie's matter cannot pay for
+/// a blaze.
 fn set_mob(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], mob: &str) -> String {
     let Some(entity) = machine_at(&*host, level, pos, SPAWNER) else {
         return "No spawner there.".to_owned();
@@ -1989,15 +2034,64 @@ fn set_mob(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], mob: &str)
     let Some(mut data) = entity.data(&*host) else {
         return "No spawner there.".to_owned();
     };
+    let held = read_matter(&data, KEY_MATTER).unwrap_or([0.0; 3]);
+    let matter =
+        matter_after_mob_change(read_text(&data, KEY_MOB).as_deref(), &recipe.entity, held);
     write_text(&mut data, KEY_MOB, &recipe.entity);
     write_int(&mut data, KEY_COST, recipe.power);
     write_matter(&mut data, KEY_NEEDS, recipe.matter);
+    write_matter(&mut data, KEY_MATTER, matter);
     if entity.replace_data(host, data).is_err() {
         return "No spawner there.".to_owned();
     }
     format!(
         "/rftoolsutility: the spawner at {pos:?} spawns {} for {} FE.",
         recipe.entity, recipe.power
+    )
+}
+
+/// The matter a spawner keeps when its mob is set to `mob` (`SpawnerTileEntity.testSyringe`:
+/// the stores survive a re-set of the same mob and are cleared by a different one).
+fn matter_after_mob_change(previous: Option<&str>, mob: &str, held: [f32; 3]) -> [f32; 3] {
+    if previous == Some(mob) {
+        held
+    } else {
+        [0.0; 3]
+    }
+}
+
+/// The stores after a beamer's send, one [`add_matter`] per type: the pure half of
+/// `/rftoolsutility matter`.
+fn matter_after_send(held: [f32; 3], amounts: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|index| add_matter(held[index], amounts[index]))
+}
+
+/// `/rftoolsutility matter`: what a matter beamer's successful send does
+/// (`SpawnerTileEntity.addMatter`) — add each amount to its own store, capped at
+/// `maxMatterStorage`. A negative amount drains a store, so the harness can empty one between
+/// phases; a player never types this (the beamer is the mod's own path, and its block is a later
+/// slice).
+fn feed_matter(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    amounts: [f32; 3],
+) -> String {
+    let Some(entity) = machine_at(&*host, level, pos, SPAWNER) else {
+        return "No spawner there.".to_owned();
+    };
+    let Some(mut data) = entity.data(&*host) else {
+        return "No spawner there.".to_owned();
+    };
+    let held = read_matter(&data, KEY_MATTER).unwrap_or([0.0; 3]);
+    let matter = matter_after_send(held, amounts);
+    write_matter(&mut data, KEY_MATTER, matter);
+    if entity.replace_data(host, data).is_err() {
+        return "No spawner there.".to_owned();
+    }
+    format!(
+        "/rftoolsutility: the spawner at {pos:?} holds matter {}, {}, {} (of {MATTER_STORAGE} each).",
+        matter[0], matter[1], matter[2]
     )
 }
 
@@ -2515,17 +2609,69 @@ mod tests {
         write_text(&mut nbt, KEY_MOB, "minecraft:zombie");
         write_int(&mut nbt, KEY_COST, 800);
         write_matter(&mut nbt, KEY_NEEDS, [0.1, 0.2, 20.0]);
+        write_matter(&mut nbt, KEY_MATTER, [0.5, 0.5, 0.5]);
         write_int(&mut nbt, KEY_ENERGY, 800);
         write_int(&mut nbt, KEY_SPAWNED, 1);
         assert_eq!(
             spawner_readout([202, 101, 3], &nbt, Some("7")),
             "Spawner at [202, 101, 3]: energy=800/200000 mob=minecraft:zombie cost=800 \
-             needs=0.1,0.2,20 spawned=1 nonce=7"
+             needs=0.1,0.2,20 matter=0.5,0.5,0.5 spawned=1 nonce=7"
         );
         assert_eq!(
             spawner_readout([1, 2, 3], &Compound::new(), None),
-            "Spawner at [1, 2, 3]: energy=0/200000 mob=none cost=- needs=- spawned=0",
-            "a fresh spawner knows no mob and no cost"
+            "Spawner at [1, 2, 3]: energy=0/200000 mob=none cost=- needs=- matter=0,0,0 spawned=0",
+            "a fresh spawner knows no mob and no cost, and its stores are empty"
+        );
+    }
+
+    #[test]
+    fn a_new_mob_clears_the_matter_the_previous_one_was_fed() {
+        assert_eq!(
+            matter_after_mob_change(
+                Some("minecraft:zombie"),
+                "minecraft:zombie",
+                [0.1, 0.2, 20.0]
+            ),
+            [0.1, 0.2, 20.0],
+            "setting the mob it already holds keeps its stores"
+        );
+        assert_eq!(
+            matter_after_mob_change(
+                Some("minecraft:zombie"),
+                "minecraft:blaze",
+                [0.1, 0.2, 20.0]
+            ),
+            [0.0, 0.0, 0.0],
+            "a different mob must not inherit the previous mob's matter"
+        );
+        assert_eq!(
+            matter_after_mob_change(None, "minecraft:zombie", [9.0, 9.0, 9.0]),
+            [0.0, 0.0, 0.0],
+            "a machine that knew no mob starts empty"
+        );
+    }
+
+    #[test]
+    fn a_beamer_send_adds_to_each_store_and_caps_it() {
+        assert_eq!(
+            matter_after_send([0.0, 0.0, 0.0], [0.1, 0.2, 20.0]),
+            [0.1, 0.2, 20.0],
+            "the recipe's own amounts land one per store"
+        );
+        assert_eq!(
+            matter_after_send([0.1, 0.2, 20.0], [0.5, 0.3, 1.0]),
+            [0.6, 0.5, 21.0],
+            "each store takes its own amount, not the first one"
+        );
+        assert_eq!(
+            matter_after_send([6_300.0, 6_300.0, 6_300.0], [200.0, 200.0, 200.0]),
+            [6_400.0, 6_400.0, 6_400.0],
+            "maxMatterStorage caps every store"
+        );
+        assert_eq!(
+            matter_after_send([1.0, 1.0, 1.0], [-1.0, -1.0, -1.0]),
+            [0.0, 0.0, 0.0],
+            "a negative send drains a store, and no further"
         );
     }
 

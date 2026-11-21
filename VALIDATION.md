@@ -300,3 +300,57 @@ now reads `/data get entity @s Inventory` instead of `SelectedItem` (a machine b
 drops its contents, `ctl collect` fills the hotbar, and the machine's item lands in the main
 inventory); `place_kept` copies the carried stack into hotbar slot 8 with
 `item replace entity @s hotbar.8 from entity @s container.<slot>`.
+
+## Slice 7 — the spawner's matter gate (2026-11-22, pin `0a875da`, package 0.2.6)
+
+The spawner now gates on the three matter amounts its own recipe names and spends them with the
+energy (`SpawnerTileEntity.tickServer`), keeps them across a break and carries them on its item.
+The stores are upstream's three floats in the machine's data — **not** three fluid tanks: the
+spawner module has no fluid at all (`SpawnerData` is `matter0/1/2` floats and
+`addMatter(ItemStack, int, float)` maps a beamed item to one of them), and the reason is recorded in
+`notes.md` § "Slice 7" § "The brief said three fluid tanks; the artefact says three floats".
+
+One lease per step, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`, no `--target-dir`, no bare cargo. Logs:
+`../_shared/evidence/rftoolsutility/{slice7-red,slice7-clippy,slice7-build-1,slice7-build-2,
+sdk-test,sdk-clippy,sdk-check,sdk-fits,sdk-fits-other,slice7-package-gate}.log` and
+`../_shared/evidence/rftoolsutility-e2e/e2e-slice7*.log` + `slice7-native-build.log`.
+
+| # | Step | Command (inside the lease) | Result |
+|---|---|---|---|
+| 1 | red, unit | the five new `runtime` rules stubbed `todo!()`, `cargo test` | `FAILED. 62 passed; 5 failed`, each at `not yet implemented` (`slice7-red.log`) |
+| 2 | green | `cargo test` | **69 passed; 0 failed** (`sdk-test.log`) |
+| 3 | fmt | `cargo fmt --check` | clean |
+| 4 | clippy | `cargo clippy --all-targets --offline -- -D warnings` | `Finished`, 0 warnings (`slice7-clippy.log`, `sdk-clippy.log`) |
+| 5 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **115,039 B**, SHA-256 `f476e137…bbcb`, 152 entries, no `Cargo.lock` |
+| 6 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.6 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)` **CHECK_EXIT:0** |
+| 7 | fits the pin | `sha256sum` + `cargo horizon-mod fits … --build 0a875da` | `f476e137…  rftoolsutility.hmod`, `0a875da  made for`, **FITS_EXIT:0** |
+| 8 | fits another build | `sha256sum` + `cargo horizon-mod fits … --build 0b14f8a` | `f476e137…  rftoolsutility.hmod`, `0b14f8a  fits`, **FITS_EXIT:0** |
+| 9 | gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | **1/1** (115,039 B, `runtime byte-identical`, 69 tests, 0 clippy warnings, no packed lock, 152 entries, skills PASS) |
+| 10 | native build | `ports/tools/launcher-game.sh build rftoolsutility --port ports/rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-2600432bf5cd` (`slice7-native-build.log`) |
+| 11 | in game, red | the new script on the **0.2.5** export | **FAIL: the spawner line did not parse** (0.2.5 has no `matter=` field), `EXIT:1` (`e2e-slice7-red.log`) |
+| 12 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e.sh` | **PASS**, `EXIT:0`, phases A–AG (`e2e-slice7.log`) |
+| 13 | in game, c/f | `SELFTEST=1 SELFTEST_AT=gate` | **FAIL: the spawner holds 800 FE, expected 0**, `EXIT:1` (`e2e-slice7-selftest-gate.log`) |
+| 14 | in game, c/f | `SELFTEST=1 SELFTEST_AT=spawn` | **FAIL: the spawner holds 0 FE, expected 800**, `EXIT:1` (`e2e-slice7-selftest-spawn.log`) |
+| 15 | in game, c/f | `SELFTEST=1 SELFTEST_AT=dimension` | **FAIL: the End's spawner spawned 1 zombie(s) in its own dimension, expected 0**, `EXIT:1` (`e2e-slice7-selftest-dimension.log`) |
+| 16 | in game, the earlier legs | `SELFTEST_AT=fill|restore|craft|tiers` | each `FAIL:` + `EXIT:1` (B, K, Q, AC inverted) |
+| 17 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: the tank item did not register**, `EXIT:1` (`e2e-slice7-control.log`) |
+| 18 | log gate | `python3 ports/tools/check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=34 ok=34 missing-exit=0 bad-exit=0`, exit 0 |
+| 19 | coverage | `python3 ports/tools/check-coverage.py rftoolsutility --no-upstream` | `families=15 tested=9 declared=6 missing_families=0 entries=92 named=92 missing=0`, exit 0 |
+| 20 | skills | `python3 ports/tools/check-skills.py --notes ports/rftoolsutility` | `SKILLS GATE: PASS` |
+
+**The gate's own transcript (from `e2e-slice7.log`):**
+
+```
+== Y1: 800 FE with no matter spawns nothing and pays nothing (the matter gate) ==
+  Spawner at [202, 101, 3]: energy=800/200000 mob=minecraft:zombie cost=800 needs=0.1,0.2,20 matter=0,0,0 spawned=0 nonce=33
+  800 FE and no matter: 0 zombie(s), 800 FE kept, matter=0,0,0, spawned=0
+== Y2: one matter type one unit short still spawns nothing ==
+  Spawner at [202, 101, 3]: energy=800/200000 mob=minecraft:zombie cost=800 needs=0.1,0.2,20 matter=0.1,0.2,19.9 spawned=0 nonce=35
+== Z: exactly the recipe's matter and its 800 FE spawn one zombie and spend both ==
+  Spawner at [202, 101, 3]: energy=0/200000 mob=minecraft:zombie cost=800 needs=0.1,0.2,20 matter=0,0,0 spawned=1 nonce=38
+== Z2: each store is short by exactly its own amount, not by one of them ==
+  Spawner at [202, 101, 3]: energy=0/200000 mob=minecraft:zombie cost=800 needs=0.1,0.2,20 matter=1,1,1 spawned=2 nonce=39
+```
+
+The two in-game defects this slice's first green run caught are in `notes.md` § "Measured traps"
+(a readout taken after a feed is a spawn; a float leftover must be binary-exact to be asserted).

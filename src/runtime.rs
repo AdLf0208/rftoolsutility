@@ -575,6 +575,54 @@ pub fn spawn_once(energy: i32, cost: i32) -> Option<i32> {
     (cost > 0 && energy >= cost).then(|| energy - cost)
 }
 
+/// `SpawnerConfiguration.maxMatterStorage` (`64 * 100`): the most one matter type holds
+/// (`addMatter` clamps a beamer's send to it).
+pub const MATTER_STORAGE: f32 = 6_400.0;
+
+/// Whether every one of the recipe's three matter amounts is in store
+/// (`SpawnerTileEntity.tickServer`: "Not enough material yet" for any type short).
+#[must_use]
+pub fn matter_ready(needs: [f32; 3], held: [f32; 3]) -> bool {
+    needs.iter().zip(held).all(|(need, held)| held >= *need)
+}
+
+/// What one spawn leaves in the three stores (`withMatter(i, getMatter(i) - item(i).amount)`).
+#[must_use]
+pub fn spend_matter(held: [f32; 3], needs: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|index| (held[index] - needs[index]).max(0.0))
+}
+
+/// What one spawn leaves in the machine — the energy and the three matter stores — or none
+/// when it cannot spawn yet.
+///
+/// Upstream checks the matter first and the power second, and spends neither until both are
+/// there (`SpawnerTileEntity.tickServer`), so a machine with the power but no matter keeps its
+/// buffer.
+#[must_use]
+pub fn spawn_cycle(
+    energy: i32,
+    cost: i32,
+    needs: [f32; 3],
+    held: [f32; 3],
+) -> Option<(i32, [f32; 3])> {
+    if !matter_ready(needs, held) {
+        return None;
+    }
+    let left = spawn_once(energy, cost)?;
+    Some((left, spend_matter(held, needs)))
+}
+
+/// What a matter beamer's send adds to one store (`SpawnerTileEntity.addMatter`), capped at
+/// [`MATTER_STORAGE`]; a negative amount drains the store.
+///
+/// Upstream adds `units * factor * 3 / (3 - infusion)` — the beamer's item match factor and its
+/// own infusing bonus. This port carries no beamer and no infusable path, so the units arrive
+/// already scaled: the rule here is the accumulation and the cap.
+#[must_use]
+pub fn add_matter(held: f32, units: f32) -> f32 {
+    (held + units).clamp(0.0, MATTER_STORAGE)
+}
+
 /// Where a spawn from `pos` facing `facing` puts the mob: the neighbouring block in that
 /// direction, centred on x and z (`SpawnerTileEntity.tickServer`: the `facing` block state's
 /// `getNormal()` offset, then `moveTo(sx + 0.5, sy, sz + 0.5)`).
@@ -1232,5 +1280,112 @@ mod tests {
             "the port's four-way facing has no up: the block cannot be turned up"
         );
         assert_eq!(spawn_at([200, 101, 0], ""), None);
+    }
+
+    #[test]
+    fn a_spawn_needs_every_matter_type_the_recipe_names() {
+        let needs = [0.1, 0.2, 20.0];
+        assert!(
+            !matter_ready(needs, [0.1, 0.2, 19.9]),
+            "one matter type one unit short is not enough"
+        );
+        assert!(
+            !matter_ready(needs, [0.0, 0.0, 0.0]),
+            "an empty store is not enough"
+        );
+        assert!(matter_ready(needs, needs), "exactly the amounts is enough");
+        assert!(
+            matter_ready(needs, [0.1, 0.2, 20.0]),
+            "the recipe's own floats are the bound"
+        );
+        assert!(
+            matter_ready(needs, [1.0, 1.0, 6_400.0]),
+            "a full store is enough"
+        );
+        assert!(
+            matter_ready([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            "a recipe that asks for no matter needs none"
+        );
+    }
+
+    #[test]
+    fn a_spawn_spends_each_matter_type_by_its_own_amount() {
+        let needs = [0.5, 0.25, 20.0];
+        assert_eq!(
+            spend_matter([0.5, 0.25, 20.0], needs),
+            [0.0, 0.0, 0.0],
+            "exactly the amounts leaves nothing"
+        );
+        assert_eq!(
+            spend_matter([1.0, 1.0, 24.0], needs),
+            [0.5, 0.75, 4.0],
+            "each store is short by its own amount, not by one of them"
+        );
+        assert_eq!(
+            spend_matter([0.1, 0.2, 20.0], [0.1, 0.2, 20.0]),
+            [0.0, 0.0, 0.0],
+            "the recipe's own floats cancel exactly"
+        );
+    }
+
+    #[test]
+    fn a_spawn_with_power_but_no_matter_keeps_its_buffer() {
+        let needs = [0.1, 0.2, 20.0];
+        assert_eq!(
+            spawn_cycle(800, 800, needs, [0.0, 0.0, 0.0]),
+            None,
+            "800 FE and no matter must not spend the FE"
+        );
+        assert_eq!(
+            spawn_cycle(800, 800, needs, [0.1, 0.2, 19.9]),
+            None,
+            "one type one unit short must not spend anything"
+        );
+    }
+
+    #[test]
+    fn a_spawn_pays_the_recipe_once_the_matter_is_there() {
+        let needs = [0.1, 0.2, 20.0];
+        assert_eq!(
+            spawn_cycle(800, 800, needs, needs),
+            Some((0, [0.0, 0.0, 0.0])),
+            "exactly the power and exactly the matter is one spawn"
+        );
+        assert_eq!(
+            spawn_cycle(1_000, 800, needs, [0.6, 0.7, 20.5]),
+            Some((200, [0.5, 0.5, 0.5])),
+            "the buffer keeps its change and each store is short by its own amount"
+        );
+        assert_eq!(
+            spawn_cycle(799, 800, needs, needs),
+            None,
+            "one FE short is no spawn, and the matter is not spent"
+        );
+        assert_eq!(
+            spawn_cycle(800, 0, needs, needs),
+            None,
+            "a machine with no recipe cost does not spawn for free"
+        );
+    }
+
+    #[test]
+    fn matter_accumulates_up_to_the_spawners_storage() {
+        assert_eq!(
+            add_matter(0.0, 0.1),
+            0.1,
+            "a beamer's send adds to the store"
+        );
+        assert_eq!(add_matter(0.1, 0.1), 0.2);
+        assert_eq!(
+            add_matter(6_300.0, 200.0),
+            MATTER_STORAGE,
+            "maxMatterStorage caps one store"
+        );
+        assert_eq!(add_matter(MATTER_STORAGE, 1.0), MATTER_STORAGE);
+        assert_eq!(
+            add_matter(0.5, -1.0),
+            0.0,
+            "a harness drain stops at an empty store"
+        );
     }
 }

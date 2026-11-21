@@ -6,7 +6,7 @@
 #
 # Cargo's name and version are not the mod's identity: horizon-mod.toml is.
 name = "rftoolsutility"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 license = "MIT"
 description = "RFTools Utility for Horizon: the tank, the crafter tiers and the spawner"

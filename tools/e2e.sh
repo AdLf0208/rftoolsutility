@@ -59,19 +59,25 @@
 #     own item, and placing it back restores them
 #  V  the crafter's loot table is gated by `minecraft:needs_iron_tool`: a wooden
 #     pickaxe breaks it and drops nothing, an iron pickaxe drops it (the control)
-#  W  a spawner placed from its item knows no mob and holds no FE, has the
-#     template's horizontal facing state, and the 70 carried spawner recipes are in
+#  W  a spawner placed from its item knows no mob, holds no FE and holds no matter, has
+#     the template's horizontal facing state, and the 70 carried spawner recipes are in
 #     force (the `recipes` readout)
 #  X  a mob no recipe names is refused, and `minecraft:zombie` is set from its own
 #     recipe: 800 FE a spawn and the recipe's three matter amounts
 #  Y  with no energy the spawner spawns nothing and its buffer does not change (the
 #     counterfactual for Z)
-#  Z  800 FE spawns exactly one zombie within 5 blocks of the spawner for that
-#     recipe's 800 FE, and the buffer reads 0
-#  AA `minecraft:blaze` costs its own recipe's 1,000 FE, and 1,000 FE spawns exactly
-#     one blaze
-#  AB a broken spawner's item carries its mob and its numbers, and placing it back
-#     restores them
+#  Y1 800 FE with the three matter stores **empty** spawns nothing and keeps its 800 FE:
+#     the matter gate (0.2.5 spent the FE and spawned without any matter)
+#  Y2 one matter type one unit short (0.1/0.2/19.9 of 0.1/0.2/20) still spawns nothing and
+#     spends neither the FE nor the matter
+#  Z  exactly the recipe's matter (0.1/0.2/20) and its 800 FE spawn exactly one zombie
+#     within 5 blocks, leave 0 FE and empty the three stores
+#  Z2 a surplus (1.1/1.2/21 of 0.1/0.2/20) spawns one more zombie and leaves exactly 1 in
+#     every store, so each is short by its own amount; re-setting the same mob keeps them
+#  AA `minecraft:blaze` costs its own recipe's 1,000 FE and its own matter (0.1/0.5/30),
+#     and setting a new mob clears the previous mob's matter
+#  AB a broken spawner's item carries its mob, its numbers and its matter, and placing it
+#     back restores them
 #  AC a crafter3 keeps eight recipes (an eighth taught, a ninth refused with the tier's
 #     count) and, stocked for eight cycles and charged exactly 800 FE, runs exactly eight
 #     cycles: all eight products present at 8x their craft count and 0 FE left
@@ -82,8 +88,9 @@
 #     `minecraft:block_entity_data`, and placing it back keeps them and its buffer
 #  AG the same crafter and spawner stand at the same x,y,z in the End and in the Overworld;
 #     only the End pair is fed, and only the End pair acts: its three logs become twelve
-#     planks for 300 FE, its 800 FE spawns one zombie at its own spawn point, and the
-#     unfed Overworld twin keeps its buffer, its energy and its spawn point empty
+#     planks for 300 FE, its 800 FE and its matter spawn one zombie at its own spawn point,
+#     and the unfed Overworld twin keeps its buffer, its energy, its matter and its spawn
+#     point empty
 #
 # SELFTEST=1 flips B's assertion (the tank must still read 0 mB), proving the
 # scenario can fail: it prints FAIL and exits non-zero.
@@ -92,11 +99,13 @@
 # SELFTEST=1 SELFTEST_AT=craft flips Q's assertion (the crafter must have made
 # nothing and spent nothing), which is slice 3's own fail-capable leg.
 # SELFTEST=1 SELFTEST_AT=spawn flips Z's assertion (the spawner must have spawned
-# nothing and spent nothing), which is slice 4's own fail-capable leg.
+# nothing and spent nothing, matter included), which is slice 4's own fail-capable leg.
 # SELFTEST=1 SELFTEST_AT=tiers flips AC's assertion (the crafter3 must have crafted
 # nothing and spent nothing), which is slice 5's own fail-capable leg.
 # SELFTEST=1 SELFTEST_AT=dimension flips AG's assertion (the End spawner must have spawned
 # nothing at its own spawn point), which is slice 6's own fail-capable leg.
+# SELFTEST=1 SELFTEST_AT=gate flips Y1's assertion (800 FE with no matter must have
+# spawned anyway), which is slice 7's own fail-capable leg.
 #
 # CONTROL=1 runs the same scenario on the Nightly WITHOUT this package
 # (CONTROL_GAME, exported by launcher-game.sh): the tank item is not there, so A
@@ -433,7 +442,7 @@ in_has() { [[ "$C_IN" == *"$1"* ]] || fail "the crafter's buffer '$C_IN' does no
 # ---------------------------------------------------------------------------
 
 # `/rftoolsutility spawner X Y Z`, parsed into S_ENERGY/S_CAP/S_MOB/S_COST/S_NEEDS/
-# S_SPAWNED/S_NONCE.
+# S_MATTER/S_SPAWNED/S_NONCE.
 spawner() { # spawner X Y Z
     NONCE=$((NONCE + 1))
     say "rftoolsutility spawner $1 $2 $3 $NONCE"
@@ -450,7 +459,22 @@ expect_spawn_energy() { [ "$S_ENERGY" = "$1" ] || fail "the spawner holds $S_ENE
 expect_mob() { [ "$S_MOB" = "$1" ] || fail "the spawner's mob reads '$S_MOB', expected '$1'"; }
 expect_cost() { [ "$S_COST" = "$1" ] || fail "the spawner's cost reads '$S_COST', expected '$1'"; }
 expect_needs() { [ "$S_NEEDS" = "$1" ] || fail "the spawner's matter needs read '$S_NEEDS', expected '$1'"; }
+expect_matter() { [ "$S_MATTER" = "$1" ] || fail "the spawner's matter reads '$S_MATTER', expected '$1'"; }
 expect_spawned() { [ "$S_SPAWNED" = "$1" ] || fail "the spawner has spawned $S_SPAWNED mobs, expected $1"; }
+
+# `/rftoolsutility matter X Y Z a b c`: what a matter beamer's successful send adds to the
+# three stores (`SpawnerTileEntity.addMatter`), capped at `maxMatterStorage`; a negative amount
+# drains a store. The beamer block itself is a later slice, so this is the harness's route to
+# the store the gate reads.
+feed_matter() { control matter "$@"; }
+
+# Empty the three stores before a phase states its own precondition: the command adds, so a
+# drain past empty leaves 0.
+matter_reset() { # matter_reset X Y Z
+    feed_matter "$1" "$2" "$3" -7000 -7000 -7000
+    spawner "$1" "$2" "$3"
+    expect_matter 0,0,0
+}
 expect_spawner_state() { # expect_spawner_state X Y Z
     local got
     got=$(ctl block "$1" "$2" "$3" | jq -r '.state // empty')
@@ -821,6 +845,7 @@ expect_spawn_energy 0
 expect_mob none
 expect_cost -
 expect_needs -
+expect_matter 0,0,0
 expect_spawned 0
 expect_spawner_state "$SX" 101 "$SZ"
 NONCE=$((NONCE + 1))
@@ -842,6 +867,7 @@ spawner "$SX" 101 "$SZ"
 expect_mob minecraft:zombie
 expect_cost 800
 expect_needs 0.1,0.2,20
+expect_matter 0,0,0
 expect_spawn_energy 0
 expect_spawned 0
 echo "  the refused id changed nothing; the zombie's recipe gives 800 FE and $S_NEEDS"
@@ -850,12 +876,61 @@ echo "== Y: with no energy the spawner spawns nothing and spends nothing (Z's co
 ctl wait 60 >/dev/null
 spawner "$SX" 101 "$SZ"
 expect_spawn_energy 0
+expect_matter 0,0,0
 expect_spawned 0
 ZOMBIES=$(near minecraft:zombie "$SX" 101 "$SZ" 8)
 [ "$ZOMBIES" = 0 ] || fail "the spawner spawned $ZOMBIES zombie(s) with no energy"
 echo "  0 FE, 60 ticks: no zombie, the machine spawned $S_SPAWNED and holds $S_ENERGY FE"
 
-echo "== Z: 800 FE spawns exactly one zombie for the recipe's own 800 FE =="
+echo "== Y1: 800 FE with no matter spawns nothing and pays nothing (the matter gate) =="
+# The gap slice 4 recorded, closed here: upstream's tick returns early until all three matter
+# amounts are stored, and 0.2.5 spent the energy and spawned without them. Same machine, same
+# 800 FE as Z, one difference: the stores are empty.
+matter_reset "$SX" 101 "$SZ"
+set_energy "$SX" 101 "$SZ" 800
+ctl wait 60 >/dev/null
+spawner "$SX" 101 "$SZ"
+if [ "$SELFTEST" = 1 ] && [ "$SELFTEST_AT" = gate ]; then
+    echo "(selftest: asserting the spawner spawned with no matter at all)"
+    expect_spawn_energy 0
+    expect_spawned 1
+    expect_matter 0,0,0
+    ZOMBIES=$(near minecraft:zombie "$SX" 101 "$SZ" 5)
+    [ "$ZOMBIES" = 1 ] || fail "the spawner spawned $ZOMBIES zombie(s), expected 1"
+else
+    expect_spawn_energy 800
+    expect_spawned 0
+    expect_matter 0,0,0
+    ZOMBIES=$(near minecraft:zombie "$SX" 101 "$SZ" 5)
+    [ "$ZOMBIES" = 0 ] \
+        || fail "the spawner spawned $ZOMBIES zombie(s) with no matter: $(ctl entities 32 minecraft:zombie | jq -c '.entities')"
+fi
+echo "  800 FE and no matter: $ZOMBIES zombie(s), $S_ENERGY FE kept, matter=$S_MATTER, spawned=$S_SPAWNED"
+kill_mobs
+
+echo "== Y2: one matter type one unit short still spawns nothing =="
+# The gate is per type, not a total: two stores full and the third one unit short is a refusal.
+feed_matter "$SX" 101 "$SZ" 0.1 0.2 19.9
+spawner "$SX" 101 "$SZ"
+expect_spawn_energy 800
+expect_matter 0.1,0.2,19.9
+ctl wait 60 >/dev/null
+spawner "$SX" 101 "$SZ"
+expect_spawn_energy 800
+expect_spawned 0
+expect_matter 0.1,0.2,19.9
+ZOMBIES=$(near minecraft:zombie "$SX" 101 "$SZ" 5)
+[ "$ZOMBIES" = 0 ] || fail "the spawner spawned $ZOMBIES zombie(s) with 19.9 of 20 matter"
+echo "  0.1/0.2/19.9 of 0.1/0.2/20: $ZOMBIES zombie(s), $S_ENERGY FE kept, matter=$S_MATTER"
+
+echo "== Z: exactly the recipe's matter and its 800 FE spawn one zombie and spend both =="
+# The buffer is emptied first: a feed with the FE already there is itself the spawn the readout
+# below would read (the tick runs between the command and the read).
+matter_reset "$SX" 101 "$SZ"
+set_energy "$SX" 101 "$SZ" 0
+feed_matter "$SX" 101 "$SZ" 0.1 0.2 20
+spawner "$SX" 101 "$SZ"
+expect_matter 0.1,0.2,20
 set_energy "$SX" 101 "$SZ" 800
 ctl wait 60 >/dev/null
 spawner "$SX" 101 "$SZ"
@@ -863,37 +938,74 @@ if [ "$SELFTEST" = 1 ] && [ "$SELFTEST_AT" = spawn ]; then
     echo "(selftest: asserting the spawner spawned nothing and spent nothing)"
     expect_spawn_energy 800
     expect_spawned 0
+    expect_matter 0.1,0.2,20
     ZOMBIES=$(near minecraft:zombie "$SX" 101 "$SZ" 5)
     [ "$ZOMBIES" = 0 ] || fail "the spawner spawned $ZOMBIES zombie(s), expected 0"
 else
     expect_spawn_energy 0
     expect_spawned 1
+    expect_matter 0,0,0
     ZOMBIES=$(near minecraft:zombie "$SX" 101 "$SZ" 5)
     [ "$ZOMBIES" = 1 ] \
         || fail "the spawner spawned $ZOMBIES zombie(s) within 5 blocks of $SX,101,$SZ, expected 1: $(ctl entities 32 minecraft:zombie | jq -c '.entities')"
 fi
-echo "  800 FE spent: $ZOMBIES zombie within 5 blocks, $S_ENERGY FE left, spawned=$S_SPAWNED"
+echo "  800 FE and 0.1/0.2/20 spent: $ZOMBIES zombie within 5 blocks, $S_ENERGY FE left, matter=$S_MATTER, spawned=$S_SPAWNED"
 kill_mobs
 
-echo "== AA: minecraft:blaze costs its own recipe's 1,000 FE =="
+echo "== Z2: each store is short by exactly its own amount, not by one of them =="
+# 1.1 / 1.2 / 21 is one more than each of 0.1 / 0.2 / 20, and the three leftovers are exact in
+# binary (0.5 + 0.5 + 1.0 would not be): a spawn must leave exactly 1 in every store, so a spend
+# that took 0.1 from all three (or 20 from all three) shows up as the wrong triple.
+set_energy "$SX" 101 "$SZ" 0
+feed_matter "$SX" 101 "$SZ" 1.1 1.2 21
+set_energy "$SX" 101 "$SZ" 800
+ctl wait 60 >/dev/null
+spawner "$SX" 101 "$SZ"
+expect_spawn_energy 0
+expect_spawned 2
+expect_matter 1,1,1
+ZOMBIES=$(near minecraft:zombie "$SX" 101 "$SZ" 5)
+[ "$ZOMBIES" = 1 ] \
+    || fail "the spawner spawned $ZOMBIES zombie(s) within 5 blocks of $SX,101,$SZ, expected 1"
+# Re-setting the same mob keeps a store (`SpawnerTileEntity.testSyringe` only clears it when the
+# mob changes); AA is the other half of that rule.
+set_mob "$SX" 101 "$SZ" minecraft:zombie
+spawner "$SX" 101 "$SZ"
+expect_mob minecraft:zombie
+expect_matter 1,1,1
+echo "  1.1/1.2/21 spent 0.1/0.2/20: matter=$S_MATTER, $ZOMBIES zombie, spawned=$S_SPAWNED"
+kill_mobs
+
+echo "== AA: minecraft:blaze costs its own recipe's 1,000 FE and its own matter =="
 set_mob "$SX" 101 "$SZ" minecraft:blaze
 [[ "$REPLY" == *"spawns minecraft:blaze for 1000 FE"* ]] || fail "the blaze was not set from its recipe's 1000 FE: $REPLY"
 spawner "$SX" 101 "$SZ"
 expect_mob minecraft:blaze
 expect_cost 1000
 expect_needs 0.1,0.5,30
+expect_matter 0,0,0
+set_energy "$SX" 101 "$SZ" 0
+feed_matter "$SX" 101 "$SZ" 0.1 0.5 30
 set_energy "$SX" 101 "$SZ" 1000
 ctl wait 60 >/dev/null
 spawner "$SX" 101 "$SZ"
 expect_spawn_energy 0
-expect_spawned 2
+expect_spawned 3
+expect_matter 0,0,0
 BLAZES=$(near minecraft:blaze "$SX" 101 "$SZ" 5)
 [ "$BLAZES" = 1 ] \
     || fail "the spawner spawned $BLAZES blaze(s) within 5 blocks of $SX,101,$SZ, expected 1: $(ctl entities 32 minecraft:blaze | jq -c '.entities')"
-echo "  1,000 FE spent: $BLAZES blaze within 5 blocks, $S_ENERGY FE left, spawned=$S_SPAWNED"
+echo "  1,000 FE and 0.1/0.5/30 spent: $BLAZES blaze within 5 blocks, $S_ENERGY FE left, matter=$S_MATTER, spawned=$S_SPAWNED"
 kill_mobs
 
-echo "== AB: a broken spawner's item carries its mob and its numbers, and placing it back restores them =="
+echo "== AB: a broken spawner's item carries its mob, its numbers and its matter, and placing it back restores them =="
+# A triple the blaze recipe does not need, with 0 FE, so nothing spawns and the drop has
+# something to carry: the item's `minecraft:block_entity_data` is the machine's own compound.
+set_energy "$SX" 101 "$SZ" 0
+feed_matter "$SX" 101 "$SZ" 1.5 2.5 42
+spawner "$SX" 101 "$SZ"
+expect_matter 1.5,2.5,42
+expect_spawn_energy 0
 ctl command "gamemode survival" >/dev/null
 ctl wait 20 >/dev/null
 ctl command "clear @s" >/dev/null
@@ -910,9 +1022,10 @@ spawner "$SX" 101 "$SZ"
 expect_mob minecraft:blaze
 expect_cost 1000
 expect_needs 0.1,0.5,30
-expect_spawned 2
+expect_matter 1.5,2.5,42
+expect_spawned 3
 expect_spawn_energy 0
-echo "  the placed spawner still spawns $S_MOB for $S_COST FE (spawned=$S_SPAWNED)"
+echo "  the placed spawner still spawns $S_MOB for $S_COST FE with matter=$S_MATTER (spawned=$S_SPAWNED)"
 
 echo "== AC: a crafter3 keeps eight recipes and runs exactly eight cycles =="
 # The jar's own line for the tier: "This machine can handle up to 8 recipes at once".
@@ -1142,22 +1255,32 @@ expect_out -
 echo "  the unfed Overworld twin: '$C_IN' in, '$C_OUT' out, '$C_RECIPES', $C_ENERGY FE" >&2
 to_end
 
-# Now the same for the spawner: only the End one is fed, and its mob must appear at its own
-# spawn point in its own dimension.
+# Now the same for the spawner: only the End one is fed — its mob, its matter and its FE — and
+# its mob must appear at its own spawn point in its own dimension.
 kill_mobs
 set_mob "$SX" 101 "$ZS2" minecraft:zombie
 [[ "$REPLY" == *"spawns minecraft:zombie for 800 FE"* ]] \
     || fail "the End twin's zombie was not set from its 800 FE recipe: $REPLY"
+set_energy "$SX" 101 "$ZS2" 0
+feed_matter "$SX" 101 "$ZS2" 0.1 0.2 20
+spawner "$SX" 101 "$ZS2"
+expect_matter 0.1,0.2,20
 set_energy "$SX" 101 "$ZS2" 800
 ctl wait 60 >/dev/null
 spawner "$SX" 101 "$ZS2"
 expect_mob minecraft:zombie
+END_ENERGY=$S_ENERGY
+END_SPAWNED=$S_SPAWNED
+END_MATTER=$S_MATTER
 END_ZOMBIES=$(near minecraft:zombie "$SX" 101 $((ZS2 + 1)) 5)
 to_dim minecraft:overworld "$ZS2"
 TWIN_ZOMBIES=$(near minecraft:zombie "$SX" 101 $((ZS2 + 1)) 5)
+spawner "$SX" 101 "$ZS2"
+TWIN_STATE="energy=$S_ENERGY spawned=$S_SPAWNED matter=$S_MATTER"
 to_end
 echo "  zombies at $SX,101,$((ZS2 + 1)): the End has $END_ZOMBIES, the Overworld twin has \
-$TWIN_ZOMBIES; the End spawner reads $S_ENERGY FE and spawned=$S_SPAWNED" >&2
+$TWIN_ZOMBIES; the End spawner reads $END_ENERGY FE, matter=$END_MATTER and spawned=$END_SPAWNED; \
+the twin reads $TWIN_STATE" >&2
 if [ "$SELFTEST" = 1 ] && [ "$SELFTEST_AT" = dimension ]; then
     echo "(selftest: asserting the End's spawner spawned nothing at its own spawn point)"
     [ "$END_ZOMBIES" = 0 ] \
@@ -1168,8 +1291,11 @@ $SX,101,$((ZS2 + 1)) in its own dimension, expected 1: $(ctl entities 32 minecra
 fi
 [ "$TWIN_ZOMBIES" = 0 ] || fail "the End's spawner put $TWIN_ZOMBIES zombie(s) at the Overworld \
 twin's spawn point: the tick acted in the wrong dimension"
-[ "$S_ENERGY" = 0 ] || fail "the End's spawner still holds $S_ENERGY FE after 60 ticks, expected 0"
-[ "$S_SPAWNED" = 1 ] || fail "the End's spawner has spawned $S_SPAWNED mob(s), expected 1"
+[ "$END_ENERGY" = 0 ] || fail "the End's spawner still holds $END_ENERGY FE after 60 ticks, expected 0"
+[ "$END_SPAWNED" = 1 ] || fail "the End's spawner has spawned $END_SPAWNED mob(s), expected 1"
+[ "$END_MATTER" = 0,0,0 ] || fail "the End's spawner kept matter=$END_MATTER after its spawn, expected 0,0,0"
+[ "$TWIN_STATE" = "energy=0 spawned=0 matter=0,0,0" ] \
+    || fail "the Overworld twin changed: $TWIN_STATE (expected energy=0 spawned=0 matter=0,0,0)"
 echo "  the End spawner acted in the End; the Overworld twin stayed empty" >&2
 
-echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it; a spawner placed from its item knows no mob and 70 mob recipes are in force; a mob no recipe names is refused while minecraft:zombie is set from its own 800 FE recipe with its own matter amounts; with no energy it spawns nothing; 800 FE spawns exactly one zombie within 5 blocks for that 800 FE and leaves 0; minecraft:blaze costs its own 1,000 FE and spawns one blaze; a broken spawner's item carries its mob and numbers, which placing it back restores; a crafter3 keeps eight taught recipes and, stocked for eight cycles and charged 800 FE, runs exactly eight cycles with all eight products (0 FE left); a crafter2 keeps four recipes and refuses a fifth; the same eight teaches and the same stock on a crafter1 stop at its two recipes and craft only their two products; a broken crafter3's item carries all eight recipes in minecraft:block_entity_data, which placing it back keeps; and with the same crafter and spawner at the same x,y,z in the End and the Overworld, only the fed End pair acts — twelve planks for 300 FE and one zombie at its own spawn point — while the unfed Overworld twin keeps its buffer, its energy and its spawn point empty"
+echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it; a spawner placed from its item knows no mob, holds no FE and no matter, and 70 mob recipes are in force; a mob no recipe names is refused while minecraft:zombie is set from its own 800 FE recipe with its own matter amounts; with no energy it spawns nothing; with no energy it spawns nothing, and 800 FE with the three matter stores empty spawns nothing and keeps its 800 FE (the matter gate); one matter type one unit short spawns nothing and spends nothing; exactly the recipe's 0.1/0.2/20 and its 800 FE spawn exactly one zombie within 5 blocks and leave 0 FE and empty stores; a surplus of 1.1/1.2/21 spawns one more and leaves exactly 1 in every store (each short by its own amount), and re-setting the same mob keeps them; minecraft:blaze costs its own 1,000 FE and its own 0.1/0.5/30 matter and spawns one blaze, and setting a new mob clears the previous mob's matter; a broken spawner's item carries its mob, its numbers and its matter, which placing it back restores; a crafter3 keeps eight taught recipes and, stocked for eight cycles and charged 800 FE, runs exactly eight cycles with all eight products (0 FE left); a crafter2 keeps four recipes and refuses a fifth; the same eight teaches and the same stock on a crafter1 stop at its two recipes and craft only their two products; a broken crafter3's item carries all eight recipes in minecraft:block_entity_data, which placing it back keeps; and with the same crafter and spawner at the same x,y,z in the End and the Overworld, only the fed End pair acts — twelve planks for 300 FE and one zombie at its own spawn point for its FE and its matter — while the unfed Overworld twin keeps its buffer, its energy, its matter and its spawn point empty"
