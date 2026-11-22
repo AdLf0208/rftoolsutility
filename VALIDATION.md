@@ -354,3 +354,56 @@ sdk-test,sdk-clippy,sdk-check,sdk-fits,sdk-fits-other,slice7-package-gate}.log` 
 
 The two in-game defects this slice's first green run caught are in `notes.md` § "Measured traps"
 (a readout taken after a feed is a spawn; a float leftover must be binary-exact to be asserted).
+
+## Slice 8 — the matter beamer (2026-11-22, pin `0a875da`, package 0.2.7)
+
+The beamer fills the spawner's three matter stores from the materials its recipe's
+`item1..3.object` names: one block a send for 2,000 FE, every 20 ticks, behind a redstone signal
+and a command-linked spawner. One lease per step, `BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0`, no
+`--target-dir`. Logs: `../_shared/evidence/rftoolsutility/{slice8-red,slice8-runtime-green,
+slice8-glue-red,slice8-green,slice8-clippy,slice8-build-1,slice8-build-2,sdk-test,sdk-clippy,
+sdk-check,sdk-fits,sdk-fits-other}.log` and `../_shared/evidence/rftoolsutility-e2e/e2e-slice8*.log`
++ `slice8-native-build.log`.
+
+| # | Step | Command (inside the lease) | Result |
+|---|---|---|---|
+| 1 | red, runtime | the eight new `runtime` rules stubbed `todo!()`, `cargo test` | `FAILED. 69 passed; 8 failed`, each at `not yet implemented` (`slice8-red.log`) |
+| 2 | green, runtime | `cargo test` | **77 passed; 0 failed** (`slice8-runtime-green.log`) |
+| 3 | red, glue | the object parser, the destination codec and the readout stubbed `todo!()`, `cargo test` | `FAILED. 75 passed; 5 failed` (`slice8-glue-red.log`) |
+| 4 | green | `cargo test` | **80 passed; 0 failed** (52 runtime + 28 glue; `slice8-green.log`, `sdk-test.log`) |
+| 5 | fmt + clippy | `cargo fmt --check` + `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`slice8-clippy.log`, `sdk-clippy.log`) |
+| 6 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **129,078 B**, SHA-256 `2f4706bc8c2e35c148df11762cc2219ddca249fbefa23e625341e93c1d22adaf`, 167 entries, no `Cargo.lock` |
+| 7 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.7 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`sdk-check.log`) |
+| 8 | fits the pin | `sha256sum` + `cargo horizon-mod fits … --build 0a875da` | `2f4706bc…  rftoolsutility.hmod`, `0a875da  made for`, **FITS_EXIT:0** (`sdk-fits.log`) |
+| 9 | fits another build | `sha256sum` + `cargo horizon-mod fits … --build 0b14f8a` | `2f4706bc…  rftoolsutility.hmod`, `0b14f8a  fits`, **FITS_EXIT:0** (`sdk-fits-other.log`) |
+| 10 | gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | **1/1** (129,078 B, `runtime byte-identical`, 80 tests, 0 clippy warnings, no packed lock, 167 entries, skills PASS) |
+| 11 | native build | `ports/tools/launcher-game.sh build rftoolsutility --port ports/rftoolsutility` (after removing the previous export) | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-129559a0b8f3` (`slice8-native-build.log`) |
+| 12 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e.sh` | **PASS**, `EXIT:0`, phases A–AH (`e2e-slice8.log`) |
+| 13 | in game, c/f | `SELFTEST=1 SELFTEST_AT=beamer` | **FAIL: the spawner's matter reads '2,0,0', expected '0,0,0'**, `EXIT:1` (`e2e-slice8-selftest-beamer.log`) |
+| 14 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: the tank item did not register**, `EXIT:1` (`e2e-slice8-control.log`) |
+| 15 | log gate | `python3 ports/tools/check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=37 ok=37 missing-exit=0 bad-exit=0`, `EXIT:0` (the 34 earlier legs still green) |
+| 16 | coverage | `python3 ports/tools/check-coverage.py rftoolsutility --no-upstream` | `EXIT:0`; the `matter_beamer` row is `tested` (`notes.md` § "Coverage after slice 8") |
+| 17 | skills | `python3 ports/tools/check-skills.py --notes ports/rftoolsutility` | `Skills line present`, `SKILLS GATE: PASS` |
+
+**The AH transcript (from `e2e-slice8.log`):**
+
+```
+== AH2: item1's material feeds the first store; 4,000 FE is two sends of 2,000 ==
+  Beamer at [200, 101, -12]: energy=0/200000 dest=[200, 101, -16] slot=minecraft:rotten_fleshx6 sent=2 lit=true nonce=65
+  Spawner at [200, 101, -16]: energy=0/200000 mob=minecraft:zombie cost=800 needs=0.1,0.2,20 matter=2,0,0 spawned=0 nonce=66
+== AH4: the living item (item3) carries its yield tag's factor: beef is 1.5 a block ==
+  Beamer at [200, 101, -12]: energy=0/200000 dest=[200, 101, -16] slot=minecraft:beefx6 sent=6 lit=true nonce=69
+  Spawner at [200, 101, -16]: energy=0/200000 mob=minecraft:zombie cost=800 needs=0.1,0.2,20 matter=2,2,3 spawned=0 nonce=70
+== AH5: a material the recipe does not take is refused without spending anything ==
+  Beamer at [200, 101, -12]: energy=4000/200000 dest=[200, 101, -16] slot=minecraft:cobblestonex8 sent=6 lit=true nonce=71
+```
+
+The two in-game traps this slice's first run caught are in `notes.md` § "Measured traps": a material
+loaded while the buffer is charged is itself a send (AH6/AH8's order), and `ctl collect` walks (the
+drop is picked up by teleporting onto the item entity's own `pos`). The `fits --build 0b14f8a` false
+fail on a variant named `Item` — and its fix — is recorded there too.
+
+**Not a red leg on the previous package.** A 0.2.6 red run of the same script would fail at the
+first `place_block rftoolsutility:matter_beamer` ("the item did not register") because the block does
+not exist there; the unit red (rows 1 and 3), the control leg (row 14) and the in-phase differentials
+(AH5–AH8) are this slice's fail-capable evidence, and no claim depends on a 0.2.6 run.

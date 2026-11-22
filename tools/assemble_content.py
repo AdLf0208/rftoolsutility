@@ -85,6 +85,26 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/spawner.json",
     "data/rftoolsutility/recipe/spawner.json",
     "data/rftoolsutility/loot_table/blocks/spawner.json",
+    # Slice 8: the matter beamer. Its blockstate keys the jar's two models on `lit`, its models
+    # are the jar's own `cube_all` cubes, and its item model points at the lit cube.
+    "assets/rftoolsutility/blockstates/matter_beamer.json",
+    "assets/rftoolsutility/models/block/matter_beamer_off.json",
+    "assets/rftoolsutility/models/block/matter_beamer_on.json",
+    "assets/rftoolsutility/models/item/matter_beamer.json",
+    "assets/rftoolsutility/textures/block/machinebeamer.png",
+    "assets/rftoolsutility/textures/block/machinebeameroff.png",
+    "data/rftoolsutility/advancement/recipes/misc/matter_beamer.json",
+    "data/rftoolsutility/recipe/matter_beamer.json",
+    "data/rftoolsutility/loot_table/blocks/matter_beamer.json",
+]
+# Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
+# upstream's "living?" form, and these tags are the yield a living item carries
+# (`SpawnerRecipes.MobSpawnAmount.match`); the beamer reads them through the game's tag table.
+CARRIED_TAGS = [
+    "data/rftoolsutility/tags/item/living/living.json",
+    "data/rftoolsutility/tags/item/living/highyield.json",
+    "data/rftoolsutility/tags/item/living/averageyield.json",
+    "data/rftoolsutility/tags/item/living/lowyield.json",
 ]
 # Slice 4: the jar's mob recipes (`SpawnerModule`'s datagen), carried **byte for byte**. Their
 # `type` is `rftoolsutility:spawner`, a type the port's own crafting kind reads; the 1.21.1
@@ -141,6 +161,7 @@ TAB = {
         f"{MOD}:crafter2",
         f"{MOD}:crafter3",
         f"{MOD}:spawner",
+        f"{MOD}:matter_beamer",
     ],
 }
 
@@ -197,6 +218,26 @@ SPAWNER_BLOCK = {
 # The jar's own blockstate rotations (`spawner.json`), kept for the four horizontal facings.
 SPAWNER_FACINGS = CRAFTER_FACINGS
 
+# `MatterBeamerBlock` on McJtyLib's `BlockBuilder.STANDARD_IRON` with `.infusable()`: the same
+# properties every machine carries, no rotation (`RotationType.NONE`) and the one state upstream
+# adds, `BlockStateProperties.LIT` — the jar's blockstate keys its two models on it. The template
+# is the tank's full cube; a mod block entity needs no block-entity template since API 129.
+BEAMER_BLOCK = {
+    "template": "minecraft:iron_block",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "state_properties": {
+        "lit": {"type": "enum", "values": ["false", "true"]}
+    },
+    "default_state": {"lit": "false"},
+    "item": True,
+}
+
 # The jar's recipes name `c:` convention tags the prepared 26.3 root does not
 # ship (it ships `minecraft` tags only), and an unknown tag is an empty
 # ingredient. These are the smallest honest memberships, the same ones this
@@ -210,7 +251,8 @@ CONVENTION_TAGS = {
     "ender_pearls": ["minecraft:ender_pearl"],
 }
 
-# The jar's lang lines for the tank, the crafter tiers and the spawner, verbatim.
+# The jar's lang lines for the tank, the crafter tiers, the spawner and the matter beamer,
+# verbatim.
 LANG_KEYS = [
     "itemGroup.rftoolsutility",
     "block.rftoolsutility.tank",
@@ -218,6 +260,7 @@ LANG_KEYS = [
     "block.rftoolsutility.crafter2",
     "block.rftoolsutility.crafter3",
     "block.rftoolsutility.spawner",
+    "block.rftoolsutility.matter_beamer",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -226,6 +269,8 @@ LANG_KEYS = [
     "message.rftoolsutility.crafter3.header",
     "message.rftoolsutility.spawner.header",
     "message.rftoolsutility.spawner.gold",
+    "message.rftoolsutility.matter_beamer.header",
+    "message.rftoolsutility.matter_beamer.gold",
 ]
 
 
@@ -341,6 +386,11 @@ def main() -> None:
             target = CONTENT / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(jar.read(name))
+        # Slice 8: the `living/*` tags, byte for byte.
+        for name in CARRIED_TAGS:
+            target = CONTENT / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(jar.read(name))
     inventory["textures"] = {
         key: value.replace("rftoolsbase:", f"{MOD}:")
         for key, value in inventory["textures"].items()
@@ -403,22 +453,42 @@ def main() -> None:
             }
         },
     )
+    # Slice 8: the beamer's item definition (its blockstate and models are the jar's own).
+    dump(
+        assets / "items" / "matter_beamer.json",
+        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/matter_beamer"}},
+    )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
     for tier in CRAFTER_TIERS:
         dump(data_dir / "horizon" / "block" / f"{tier}.json", CRAFTER_BLOCK)
     dump(data_dir / "horizon" / "block" / "spawner.json", SPAWNER_BLOCK)
+    dump(data_dir / "horizon" / "block" / "matter_beamer.json", BEAMER_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
     dump(
         CONTENT / "data" / "minecraft" / "tags" / "block" / "mineable" / "pickaxe.json",
-        {"values": [f"{MOD}:tank", *[f"{MOD}:{tier}" for tier in CRAFTER_TIERS], f"{MOD}:spawner"]},
+        {
+            "values": [
+                f"{MOD}:tank",
+                *[f"{MOD}:{tier}" for tier in CRAFTER_TIERS],
+                f"{MOD}:spawner",
+                f"{MOD}:matter_beamer",
+            ]
+        },
     )
     dump(
         CONTENT / "data" / "minecraft" / "tags" / "block" / "needs_iron_tool.json",
-        {"values": [f"{MOD}:tank", *[f"{MOD}:{tier}" for tier in CRAFTER_TIERS], f"{MOD}:spawner"]},
+        {
+            "values": [
+                f"{MOD}:tank",
+                *[f"{MOD}:{tier}" for tier in CRAFTER_TIERS],
+                f"{MOD}:spawner",
+                f"{MOD}:matter_beamer",
+            ]
+        },
     )
 
     print(

@@ -1,11 +1,11 @@
-# RFTools Utility — port notes (slices 1–7: the tank, the crafter tiers, the spawner and its matter)
+# RFTools Utility — port notes (slices 1–8: the tank, the crafter tiers, the spawner and the beamer)
 
-> **Current state (2026-11-22): slice 7, package 0.2.6 at pin
+> **Current state (2026-11-22): slice 8, package 0.2.7 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 7 — the spawner's matter gate (2026-11-22)`** first: the spawner now returns early
-> until all three matter amounts its recipe names are in store, spends them with the energy once
-> the mob exists, and carries them on its item. Then **`## Slice 6 — the tick's own dimension`**
-> (the reviewer's correctness bug on PR #1643), `## Slice 5 — the crafter tiers`,
+> **`## Slice 8 — the matter beamer (2026-11-22)`** first: the beamer now carries a spawner's
+> recipe materials into its three stores, which closes the *feed* half of the gate slice 7
+> proved. Then **`## Slice 7 — the spawner's matter gate`**, **`## Slice 6 — the tick's own
+> dimension`** (the reviewer's correctness bug on PR #1643), `## Slice 5 — the crafter tiers`,
 > `## Slice 4 — the spawner`, `## Slice 3 — the crafter`, `## Slice 2` (the tank's contents on its
 > item) and the 2026-11-18 migration note that produced 0.2.0; everything after the migration
 > describes the retired `.hnmod` bundle.
@@ -206,7 +206,11 @@ this slice does not implement. Recorded so slice 2 does not carry it:
   mob setting from the recipe table and the spawn tick, with the jar's **70** mob recipes
   carried — the jar ships 70, not 100: `unzip -l | grep -c 'recipe/minecraft_'`). Remaining
   there: ~~the three matter types~~ — **the matter gate is done in slice 7** (three stores, the
-  per-type check, the spend and the item carry); the **matter beamers** that fill them, the
+  per-type check, the spend and the item carry); ~~the **matter beamers** that fill them~~ —
+  **the matter beamer is done in slice 8** (one block, 200,000 FE, a redstone signal, a 20-tick
+  send of one block for 2,000 FE, the material match from the recipe's own `item1..3.object`,
+  the wrench's destination as a command, and the `lit` state); the **matter
+  transmitter/receiver/booster** of the teleporter family (a different family), the
   syringe that sets the mob in upstream's GUI, the GUI, and six-way facing; `syringe`.
 - **LAN guests:** the bucket swap is re-sent for the world's own player (the
   window client); a LAN guest's resend goes through the same hub record but is
@@ -1559,3 +1563,297 @@ package, so adding it changed the artifact. The delivered package is the pair ab
 in-game leg in the table was re-run on a game the launcher built from these bytes** (`Compiling
 rftoolsutility (1 of 1)` → `native-0a875da-2600432bf5cd`); the red leg alone ran on the previous
 (0.2.5) export, which is the point of it.
+
+## Slice 8 — the matter beamer (2026-11-22)
+
+**Chosen from the port's own gap list** — `## Slice 4 — the spawner` → `### Deviations and content
+adaptations` and the slice-7 coverage row, verbatim:
+
+> the matter beamers (`MatterBeamerTileEntity`) | not ported | a different block family (200,000 FE,
+> 1,000 matter a tick, the wrench-linked destination, the beamer's own infusing bonus);
+> `/rftoolsutility matter` writes what a beamer's send would add
+
+and the slice-7 report's `## Next slice` (the same block, with the assertion this slice runs). It is
+the **feed** half of the matter gate slice 7 proved: the gate consumes three stores and nothing
+filled them from a machine. It fits the **machines** tier exactly — a block entity with a one-slot
+container, a 200,000 FE buffer, a redstone input and a server tick — with no GUI, no renderer and no
+new family.
+
+**Pin:** Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, horizon-mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, mod API `0.2`, game 26.3. **Version 0.2.7.**
+
+**Read for this slice** (analysis only; the clone at `/tmp/opencode/rftoolsutility-src`, branch
+`1.21_neo`, commit `f799314007d68042df8504e83cd549360f2627c7`): `MatterBeamerTileEntity.java`
+(`tickServer`'s power gate, its `TICKTIME` 20, `numblocks`/`rf` from the configuration and the
+infusing factor, the `addMatter` call, `enableBlockGlow`/`disableBlockGlow`, `setDestination`,
+`wrenchUse`), `MatterBeamerBlock.java` (`RotationType.NONE`, `BlockStateProperties.LIT`),
+`SpawnerTileEntity.useWrench` (`maxBeamDistance` 8, "Destination set!"), `SpawnerConfiguration`
+(`BEAMER_MAXENERGY` 200,000, `BEAMER_RECEIVEPERTICK` 1,000, `beamRfPerObject` 2,000,
+`beamBlocksPerSend` 1, `maxBeamDistance` 8, `maxMatterStorage` 6,400), `SpawnerRecipes.MobSpawnAmount.match`
+(an item/tag object yields 1.0; the empty object is "living?" and 1.5/1.0/0.5 by tag) and the four
+`data/rftoolsutility/tags/item/living/*.json`.
+
+### The artefact says the material match is the beamer's half
+
+Slice 4 recorded that a recipe's `item1..3.object` is **not** parsed as a 26.3 ingredient: the files
+carry 1.21.1's `{"item": …}`, a tag, and in `item2` a *list*, and 26.3's ingredient parser rejects
+both. That stayed true — but the beamer is what the field is **for**: `addMatter` maps the beamed
+item to one of the three types (`mobData.getItem(i).match(stack)`) and adds
+`blocks * factor * 3 / (3 - infusion)`. So the port now reads the sources itself (the same reader
+that already looked at `amount`), keeps them on the machine's recipe copy, and matches the material
+in `runtime::matter_for`. The four `living/*` tag files are carried from the jar and read through the
+game's own tag table, because the empty `object` is upstream's "living?" and its factor is those
+tags — no new ingredient form is invented, and nothing in the 70 carried files changes.
+
+### What it does
+
+- **The block.** `rftoolsutility:matter_beamer` on the **`minecraft:iron_block`** template (a full
+  cube, no rotation — upstream's `RotationType.NONE`), with a declared `lit` state (`false`/`true`,
+  default `false`) that picks the jar's own dark and lit cubes (`machinebeameroff` /
+  `machinebeamer`), and McJtyLib's `STANDARD_IRON` properties.
+- **The container.** One material slot (`SLOT_MATERIAL`), automation inserts into it and takes
+  nothing out; no menu.
+- **The energy.** 200,000 FE (`BEAMER_MAXENERGY`), a fill of at most 1,000 a call
+  (`BEAMER_RECEIVEPERTICK`) on every face, in the engine's `energy` int; the beamer only consumes.
+- **The tick.** A beamer without a redstone signal is dark and does nothing, every tick. On a send
+  tick (`game_time % 20 == 0`, upstream's `TICKTIME` 20) with a linked spawner and a material its
+  recipe takes, one block moves and the buffer pays 2,000 FE (`beamRfPerObject`); the store the
+  material feeds gains `blocks * factor` (`addMatter`, capped at 6,400).
+- **The destination.** Upstream's wrench links a beamer to a spawner: within `maxBeamDistance` 8
+  blocks, only a spawner, and a second wrench on the beamer clears it. The port's
+  `/rftoolsutility link <pos> <dest>` is the same rule (a destination that is the beamer itself
+  unlinks it), because this port carries no wrench item — `rftoolsbase`'s, which the parent port
+  does not ship. The tick also clears a destination whose block is no longer a spawner, as
+  upstream's `setDestination(null)` does.
+- **The glow.** `lit=true` while a send just happened, `false` when the signal is gone, the slot is
+  empty or the destination is lost (`enableBlockGlow`/`disableBlockGlow`); an empty buffer or a
+  refused material leaves it as it was, as upstream's own returns do.
+- **The item carries the machine.** A broken beamer's own item takes the block entity's saved
+  compound (`dest`, `sent`, `energy`, `Items`) as vanilla's `minecraft:block_entity_data`
+  (upstream's `collectImplicitComponents`).
+- **The readout.** `/rftoolsutility beamer <pos> [nonce]` prints
+  `energy=<held>/200000 dest=<[x, y, z]|none> slot=<item>x<count>|-> sent=<n> lit=<true|false>`;
+  `/rftoolsutility link <pos> <dest>` is the wrench; `buffer <pos> 0 <item> <count>` and
+  `energy <pos> <amount>` reach the beamer's slot and buffer. `tools/parse_beamer.py` parses the
+  readout.
+
+### Numbers and where they came from
+
+| Number | Value | Source |
+|---|---:|---|
+| energy buffer | 200,000 FE | `SpawnerConfiguration.BEAMER_MAXENERGY` |
+| fill per call | 1,000 FE | `SpawnerConfiguration.BEAMER_RECEIVEPERTICK` |
+| one block's cost | 2,000 FE | `SpawnerConfiguration.beamRfPerObject`; `rf = beamRfPerObject * numblocks` |
+| blocks per send | 1 | `SpawnerConfiguration.beamBlocksPerSend` (`(int)(1 * 1.01)` uninfused) |
+| send period | 20 ticks | `MatterBeamerTileEntity.TICKTIME` |
+| link distance | 8 blocks | `SpawnerConfiguration.maxBeamDistance` (`SpawnerTileEntity.useWrench`) |
+| one store's capacity | 6,400 | `SpawnerConfiguration.maxMatterStorage` (slice 7's constant) |
+| a material object's factor | 1.0 | `MobSpawnAmount.match` (`object.test(stack) ? 1.0f : null`) |
+| the living factors | 1.5 / 1.0 / 0.5 | the same `match`, from `living/highyield`, `averageyield`, `lowyield` |
+| the zombie's sources | rotten flesh; dirt/gravel/sand; living | `data/rftoolsutility/recipe/minecraft_zombie.json` |
+| block properties | hardness 2.0, blast 2.0, correct tool, metal sound | `BlockBuilder.STANDARD_IRON` |
+| the beamer's own recipe | redstone/glowstone/redstone around a machine frame | `data/rftoolsutility/recipe/matter_beamer.json` (carried) |
+
+### Red → green (unit, verbatim)
+
+The eight new runtime rules were written behind `todo!()` bodies first (`slice8-red.log`):
+
+```
+---- runtime::tests::a_material_feeds_the_type_its_object_names stdout ----
+thread 'runtime::tests::a_material_feeds_the_type_its_object_names' (599551) panicked at src/runtime.rs:712:5:
+not yet implemented
+---- runtime::tests::a_tag_object_matches_a_member_and_refuses_another stdout ----
+thread 'runtime::tests::a_tag_object_matches_a_member_and_refuses_another' (599565) panicked at src/runtime.rs:712:5:
+not yet implemented
+---- runtime::tests::the_living_form_takes_its_yield_tags_factor stdout ----
+thread 'runtime::tests::the_living_form_takes_its_yield_tags_factor' (599585) panicked at src/runtime.rs:712:5:
+not yet implemented
+---- runtime::tests::a_send_moves_one_block_for_two_thousand_fe stdout ----
+thread 'runtime::tests::a_send_moves_one_block_for_two_thousand_fe' (599557) panicked at src/runtime.rs:743:5:
+not yet implemented
+---- runtime::tests::a_send_without_the_power_moves_nothing stdout ----
+thread 'runtime::tests::a_send_without_the_power_moves_nothing' (599558) panicked at src/runtime.rs:743:5:
+not yet implemented
+---- runtime::tests::a_send_adds_the_blocks_times_the_factor stdout ----
+thread 'runtime::tests::a_send_adds_the_blocks_times_the_factor' (599555) panicked at src/runtime.rs:743:5:
+not yet implemented
+---- runtime::tests::a_link_reaches_eight_blocks_and_no_further stdout ----
+thread 'runtime::tests::a_link_reaches_eight_blocks_and_no_further' (599549) panicked at src/runtime.rs:750:5:
+not yet implemented
+---- runtime::tests::a_send_is_due_every_twenty_ticks stdout ----
+thread 'runtime::tests::a_send_is_due_every_twenty_ticks' (599556) panicked at src/runtime.rs:757:5:
+not yet implemented
+
+test result: FAILED. 69 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Green: **77 passed; 0 failed** (`slice8-runtime-green.log`).
+
+The glue's rules were the same shape, with their bodies `todo!()` first (`slice8-glue-red.log`):
+
+```
+---- tests::a_spawner_file_reads_the_material_sources_its_objects_name stdout ----
+thread 'tests::a_spawner_file_reads_the_material_sources_its_objects_name' (614750) panicked at src/lib.rs:1067:5:
+not yet implemented
+---- tests::a_spawner_file_reads_its_entity_power_and_matter stdout ----
+thread 'tests::a_spawner_file_reads_its_entity_power_and_matter' (614749) panicked at src/lib.rs:1067:5:
+not yet implemented
+---- tests::a_spawner_value_writes_back_as_the_recipe_it_came_from stdout ----
+thread 'tests::a_spawner_value_writes_back_as_the_recipe_it_came_from' (614753) panicked at src/lib.rs:1067:5:
+not yet implemented
+---- tests::a_destination_round_trips_through_the_saved_compound stdout ----
+thread 'tests::a_destination_round_trips_through_the_saved_compound' (614743) panicked at src/lib.rs:1100:5:
+not yet implemented
+---- tests::the_beamer_readout_is_the_line_the_harness_parses stdout ----
+thread 'tests::the_beamer_readout_is_the_line_the_harness_parses' (614758) panicked at src/lib.rs:1093:5:
+not yet implemented
+
+test result: FAILED. 75 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Green: **80 passed; 0 failed** (`slice8-green.log`, `sdk-test.log`) — 52 `runtime` tests (the tank's,
+the crafter's, the spawner's, the matter gate's and the eight new beamer rules) and 28 glue tests in
+`src/lib.rs` (the tank's, the crafter's, the spawner's and the three new ones:
+`a_spawner_file_reads_the_material_sources_its_objects_name`,
+`a_destination_round_trips_through_the_saved_compound`,
+`the_beamer_readout_is_the_line_the_harness_parses`). fmt clean, clippy `-D warnings` 0 warnings
+(`slice8-clippy.log`, `sdk-clippy.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e.sh` phases A–AH, one lease per leg, every log ends with its exit:
+
+| log | verdict |
+|---|---|
+| `e2e-slice8.log` | **PASS**, `EXIT:0` — A–AH, on a game the launcher built from the delivered bytes (`Compiling rftoolsutility (1 of 1)` → `native-0a875da-129559a0b8f3`) |
+| `e2e-slice8-selftest-beamer.log` | **FAIL: the spawner's matter reads '2,0,0', expected '0,0,0'**, `EXIT:1` (AH2 inverted) |
+| `e2e-slice8-control.log` | **FAIL: the tank item did not register**, `EXIT:1` (the unmodded Nightly) |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=37 ok=37 missing-exit=0 bad-exit=0` (the 34
+earlier legs still green, and the three new ones).
+
+The slice's phases, each asserting a parsed value (the transcript is in the log):
+
+| phase | what it asserts (observed) |
+|---|---|
+| **AH** | a beamer placed from its item reads `energy=0/200000 dest=none slot=- sent=0 lit=false` and its capacity is 200,000 |
+| **AH1** | a link to a stone block is refused (`the destination [200, 101, -14] is not a spawner.`), a link to a spawner 4 blocks away is made (`sends to the spawner at [200, 101, -16]`), a 12-block target is refused (`destination distance is too far! (maxBeamDistance is 8 blocks)`) with the destination unchanged, and linking the beamer to itself unlinks it (`is unlinked.`), after which it is linked again |
+| **AH2** | the spawner's mob is set to `minecraft:zombie` (its 800 FE recipe, `needs=0.1,0.2,20`) and 4,000 FE + 8 rotten flesh (item1) are **two sends**: the beamer reads `energy=0 slot=minecraft:rotten_fleshx6 sent=2 lit=true`, the store `matter=2,0,0`, `spawned=0` |
+| **AH3** | 8 dirt (item2, the list object) make two more sends: `slot=minecraft:dirtx6 sent=4`, stores `2,2,0` |
+| **AH4** | 8 beef (item3, the living form, highyield) make two more: `slot=minecraft:beefx6 sent=6`, stores `2,2,3` — each block is **1.5** |
+| **AH5** | 8 cobblestone (no object names it) are refused: `slot=minecraft:cobblestonex8`, `energy=4000` kept, `sent=6`, stores unchanged `2,2,3` |
+| **AH6** | 8 rotten flesh at **0 FE** send nothing: slot and stores unchanged, `sent=6` |
+| **AH7** | with the redstone block removed and 4,000 FE, nothing sends and `lit=false` (the signal gates it) |
+| **AH8** | with the signal back and the slot emptied, `slot=-` and `lit=false` (an empty slot clears the glow) |
+| **AH9** | a survival break drops a beamer whose item carries `minecraft:block_entity_data` `{Items: [{count: 1, Slot: 0b, id: "minecraft:rotten_flesh"}], id: "rftoolsutility:matter_beamer", dest: [200, 101, -16], sent: 6, energy: 800}`, and placing it back reads `dest=[200, 101, -16] slot=minecraft:rotten_fleshx1 energy=800 sent=6` |
+
+Counterfactuals: **AH5** (a material the recipe does not name) against AH2–AH4 (three it does),
+**AH6** (the same machine and material at 0 FE as AH2's 4,000), **AH7** (the same machine and
+material without a signal as AH2's), and **AH8**'s empty slot against AH2's filled one; each differs
+in one input only. `SELFTEST_AT=beamer` inverts AH2's store growth and the leg fails as designed;
+`CONTROL=1` runs the same script on the unmodded Nightly, where the package's items do not exist.
+
+### Measured traps this slice cost (harness and engine)
+
+1. **A material loaded while the buffer is still charged is itself a send.** AH6 first put the
+   material in while AH5's 4,000 FE was still there: the tick spent one during the command's own
+   12-tick wait, and the phase read `sent=7`, `slot=…x7`. The order every phase now uses is *empty
+   the buffer, then load the material, then charge* — slice 7's "a readout taken after a feed is a
+   spawn" trap with the beamer's own send in place of the spawn. AH8 was the same shape (replacing
+   the signal while the slot still held material).
+2. **`sent` is the count, so the sends are bounded by the energy, not by the wait.** Eight blocks
+   and 4,000 FE are exactly two sends however many 20-tick boundaries the wait spans (a third due
+   tick finds 0 FE and sends nothing), so the leg does not depend on where a `ctl wait 40` starts.
+3. **`ctl collect` walks.** The brief's warning is real: the walk can leave the arena floor. The
+   drop is picked up by teleporting onto the item entity's own `pos` (`pick_up_at`, from
+   `ctl entities 12 minecraft:item`), not by `collect`.
+4. **A saved empty list is not a destination.** `read_pos` takes exactly three ints; an unlink
+   removes the key (`Compound` is a `BTreeMap` whose key type the API does not export, so the
+   removal goes through the same `Tag::String(name.into())` payload the reads use).
+5. **The fits tool false-fails on a variant named after an API type.** `WireSource::Item` made
+   `fits --build 0b14f8a` answer *"the type `Item` can no longer be built with a literal, and
+   `src/lib.rs:1054` builds it"* — the same class as the brief's `Block` warning. Renaming the
+   variants (`Material`/`Tagged`) cleared it.
+6. **The GitHub releases API rate-limits `fits`.** `cargo horizon-mod fits --build <other>` fetches
+   four pages of releases per call; a burst of retries exhausts the 60/hour quota and the tool then
+   prints `status code 403` (exit 2). The quota is per IP and resets hourly; one attempt per
+   invocation, spaced, is what works.
+
+### Deviations and content adaptations
+
+- **The wrench is a command.** `rftoolsbase`'s wrench is the parent mod's item (this port does not
+  ship it), so `/rftoolsutility link <pos> <dest>` performs the two clicks with the same rules (only
+  a spawner, at most `maxBeamDistance` 8, a second click on the beamer clears it). A user notices:
+  there is no wrench gesture; the link is a command.
+- **The 20-tick clock is the tick's own game time** (`game_time % 20 == 0`) rather than a saved
+  counter, so a tick that sends nothing writes nothing (a saved counter would dirty the machine
+  every tick). A user notices: several beamers send on the same tick, and the first send after a
+  chunk loads comes at the next multiple of 20, not 20 ticks after loading.
+- **The infusing bonus is not ported.** Upstream multiplies `beamBlocksPerSend` by
+  `(1.01 + infused * 2)` and divides the cost by `(4 - infused) / 4`; the infusable path needs
+  `rftoolsbase`'s `DefaultInfusable` (the crafter's recorded gap), so the uninfused values (one
+  block, 2,000 FE) are the rule and the formula is documented on the constants.
+- **The `c:` memberships of the living tags are the pack's.** The four tag files are carried
+  verbatim; the `c:crops`/`c:foods`/`c:eggs`/`c:mushrooms`/`c:seeds` they name are not declared by
+  the prepared 26.3 root (this port declares only the five `c:` tags its recipes name), so with this
+  port alone a living item yields through the vanilla tags and the ids the files list directly —
+  which is what AH4 proves with `minecraft:beef` (1.5).
+- **No GUI, no comparator, no TOP/Jade, no tooltip** — the family's standing gaps; the beamer's
+  GUI (`GuiMatterBeamer`) and its renderer (`MatterBeamerRenderer`, the beam itself) are not ported.
+- **The carried recipe is not crafted in game.** Its middle ingredient is
+  `rftoolsbase:machine_frame`, which only the parent port registers (the tank's, the crafter's and
+  the spawner's own gap); the e2e gives the block instead.
+
+### Upstream defects fixed
+
+- **The beamer burns the FE before it knows the material is wanted.**
+  `MatterBeamerTileEntity.tickServer` computes `rf`, returns if the buffer is short, calls
+  `energyStorage.consumeEnergy(rf)` and *then* `spawnerTileEntity.addMatter(...)`: an item the
+  spawner's recipe does not name costs the full 2,000 FE for nothing (the same class as slice 4's
+  "the spawner pays before it knows the mob exists"). **The port spends both or neither**: the
+  send is decided first (`beam_send`: the material's type, its factor, the cost and the buffer),
+  the store is written, and only then are the FE and the stack taken. AH5 is the proof (8
+  cobblestone at 4,000 FE: `sent=6`, `energy=4000`, the item kept).
+- **A zero-yield living item is consumed for nothing.** A recipe's empty `object` returns a factor
+  of 0.0 for an item in none of the `living/*` tags, and `addMatter` accepts it (`0.0 * blocks`),
+  so upstream deletes the item and the FE and adds nothing. The port's `matter_for` returns `None`
+  at factor 0 (nothing is sent), which is the same rule for a material the recipe does not name.
+
+### Coverage after slice 8
+
+| family | status | evidence / why not |
+|---|---|---|
+| `rftoolsutility:matter_beamer` | tested | AH: placed from its item, read back, `lit` state; AH9: the item carries the machine |
+| the material match (an item, a list, a tag, the living form and its factors) | tested | AH2 (item), AH3 (list), AH4 (living, 1.5); the unit tests `a_tag_object_matches_a_member_and_refuses_another` and `the_living_form_takes_its_yield_tags_factor` (a tag object, and a zero yield refused) |
+| the send (one block, 2,000 FE, `blocks × factor`, the 6,400 cap) | tested | AH2–AH4: 4,000 FE is two sends, the slot falls by two and each store takes its own amount; unit `a_send_adds_the_blocks_times_the_factor` |
+| the refusals (a material the recipe does not name, no FE, no signal, an empty slot) | tested | AH5, AH6, AH7, AH8 — each leaves the slot, the buffer and the stores as they were |
+| the destination (the link's distance and kind, an unlink, a lost destination) | tested | AH1: a stone block refused, a 12-block target refused, the beamer's own position unlinks, a spawner links; AH9: it travels on the item |
+| the 20-tick clock and the `lit` state | tested | AH2: `sent=2` and `lit=true` after 40 ticks; AH7/AH8: `lit=false` without a signal / with an empty slot; unit `a_send_is_due_every_twenty_ticks` |
+| the 200,000 FE buffer and its 1,000-a-call fill | tested | AH: capacity 200000 and the `energy` command's clamp; unit `a_beamer_takes_energy_on_every_face_and_gives_none_out` |
+| `recipe:minecraft:crafting_shaped` | blocked(`rftoolsbase:machine_frame`) | the beamer's own carried recipe needs the parent port's item; the e2e gives the block instead |
+| the GUI (`GuiMatterBeamer`) and the beam renderer (`MatterBeamerRenderer`) | not ported | a menu and a renderer — outside this tier's slice |
+| the wrench item | not ported | `rftoolsbase`'s; `/rftoolsutility link` is the same rule |
+| the infusing bonus | not ported | needs `rftoolsbase`'s infusable path (the crafter's gap) |
+| the matter transmitter/receiver/booster | not ported | the teleporter family, a later slice |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 129,078 B | `2f4706bc8c2e35c148df11762cc2219ddca249fbefa23e625341e93c1d22adaf` | 167 |
+
+Built twice with `rm -f Cargo.lock` before each (`cmp` identical; `slice8-build-1.log`,
+`slice8-build-2.log`), **no packed `Cargo.lock`**, `check` green (`rftoolsutility 0.2.7 (native-mod,
+format native-1/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/e59da9094f0c2fdda6c627fe9eff22dec6a906f0, for
+26.3)`), `fits --build 0a875da` → `0a875da  made for`, `fits --build 0b14f8a` → `0b14f8a  fits`
+(both logs print the artifact's sha first), `verify-sdk-package.py rftoolsutility` → **1/1**, and
+the launcher's `native-build` compiled the mod against the pin (`Compiling rftoolsutility (1 of 1)`,
+`native-0a875da-129559a0b8f3`) for the in-game legs.
+
+**Why the bytes are the third pair.** The first green build (`df7a8f29…`, 128,806 B) was made before
+the `fits` run showed the `WireSource::Item` false-fail; renaming the variants changed the source
+(`e8ce57d7…`, 128,647 B), and the README's slice-8 text (packed in the package) changed it again to
+the delivered pair above. Every in-game leg in the table was re-run on a game the launcher built
+from these bytes (`native-0a875da-129559a0b8f3`).

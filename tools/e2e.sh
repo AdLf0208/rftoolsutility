@@ -91,6 +91,14 @@
 #     planks for 300 FE, its 800 FE and its matter spawn one zombie at its own spawn point,
 #     and the unfed Overworld twin keeps its buffer, its energy, its matter and its spawn
 #     point empty
+#  AH a matter beamer placed from its item is unlinked, empty and dark; a link must name a
+#     spawner within eight blocks (a stone block and a 12-block target refused) and linking it
+#     to itself unlinks it; 4,000 FE and eight of the zombie recipe's item1 (rotten flesh) make
+#     two sends of 2,000 FE each: six left, sent=2, store 2,0,0; item2 (dirt) makes 2,2,0; the
+#     living item3 (beef, a 1.5 yield) makes 2,2,3; a material the recipe does not take
+#     (cobblestone) is refused with no item and no FE spent; 0 FE sends nothing; no redstone
+#     sends nothing and goes dark; an empty slot clears the glow; a broken beamer's item carries
+#     its destination, material and energy back
 #
 # SELFTEST=1 flips B's assertion (the tank must still read 0 mB), proving the
 # scenario can fail: it prints FAIL and exits non-zero.
@@ -106,6 +114,8 @@
 # nothing at its own spawn point), which is slice 6's own fail-capable leg.
 # SELFTEST=1 SELFTEST_AT=gate flips Y1's assertion (800 FE with no matter must have
 # spawned anyway), which is slice 7's own fail-capable leg.
+# SELFTEST=1 SELFTEST_AT=beamer flips AH2's assertion (the beamer's two sends must have
+# added no matter), which is slice 8's own fail-capable leg.
 #
 # CONTROL=1 runs the same scenario on the Nightly WITHOUT this package
 # (CONTROL_GAME, exported by launcher-game.sh): the tank item is not there, so A
@@ -143,6 +153,7 @@ CRAFTER=rftoolsutility:crafter1
 TIER2_BLOCK=rftoolsutility:crafter2
 TIER3_BLOCK=rftoolsutility:crafter3
 SPAWNER_BLOCK=rftoolsutility:spawner
+BEAMER_BLOCK=rftoolsutility:matter_beamer
 SZ=3   # the spawner's z in the arena: clear of the tank's and the crafter's cells
 ZC2=16  # slice 6: the two-dimension phase's crafter twins (the arena floor runs to z=20)
 ZS2=18  # ... its spawner twins, facing south so the spawn point is z=19
@@ -495,6 +506,52 @@ near() { # near TYPE X Y Z RADIUS
 }
 
 kill_mobs() { ctl command "execute in minecraft:the_end run kill @e[type=!player]" >/dev/null; ctl wait 10 >/dev/null; }
+
+
+# ---------------------------------------------------------------------------
+# The matter beamer (slice 8): its readout, its link and its material slot
+# ---------------------------------------------------------------------------
+
+# `/rftoolsutility beamer X Y Z`, parsed into B_ENERGY/B_CAP/B_DEST/B_SLOT/B_SENT/B_LIT/B_NONCE.
+beamer() { # beamer X Y Z
+    NONCE=$((NONCE + 1))
+    say "rftoolsutility beamer $1 $2 $3 $NONCE"
+    ctl wait 12 >/dev/null
+    local line
+    line=$(ctl messages 20 | jq -r '.chat[]' | grep -m1 "nonce=$NONCE" || true)
+    [ -n "$line" ] || fail "no fresh /rftoolsutility beamer reply for nonce $NONCE: $(ctl messages 8 | jq -c '.chat')"
+    eval "$(python3 "$PORT/tools/parse_beamer.py" "$line")"
+    [ "${ok:-0}" = 1 ] || fail "the beamer line did not parse: $line"
+    echo "  $line" >&2
+}
+
+expect_beamer_energy() { [ "$B_ENERGY" = "$1" ] || fail "the matter beamer holds $B_ENERGY FE, expected $1"; }
+expect_beamer_slot() { [ "$B_SLOT" = "$1" ] || fail "the matter beamer's slot reads '$B_SLOT', expected '$1'"; }
+expect_beamer_dest() { [ "$B_DEST" = "$1" ] || fail "the matter beamer's destination reads '$B_DEST', expected '$1'"; }
+expect_sent() { [ "$B_SENT" = "$1" ] || fail "the matter beamer has sent $B_SENT time(s), expected $1"; }
+expect_lit() { [ "$B_LIT" = "$1" ] || fail "the matter beamer's lit state reads '$B_LIT', expected '$1'"; }
+
+# `/rftoolsutility link <beamer> <dest>`: a wrench's two clicks, as a command.
+link() { control link "$@"; }
+# `/rftoolsutility buffer <beamer> 0 <item> <count>`: the beamer's one material slot.
+set_material() { control buffer "$@"; }
+
+# Pick a drop up without walking: `ctl collect` walks to it, and a walk off the arena floor is a
+# 35-block fall. Stand on the item entity's own position instead (`ctl entities` lists dropped
+# items with their `pos`).
+pick_up_at() { # pick_up_at X Y Z ITEM
+    local item=$4 pos x y z
+    pos=$(ctl entities 12 minecraft:item | jq -r --argjson x "$1" --argjson z "$3" \
+        '[.entities[] | select(((.pos[0]-$x)*(.pos[0]-$x) + (.pos[2]-$z)*(.pos[2]-$z)) <= 16)]
+         | .[0].pos // empty')
+    if [ -n "$pos" ]; then
+        x=$(jq -r '.[0]' <<<"$pos"); y=$(jq -r '.[1]' <<<"$pos"); z=$(jq -r '.[2]' <<<"$pos")
+        ctl command "execute in minecraft:the_end run tp @s $x $y $z" >/dev/null
+        ctl wait 20 >/dev/null
+    fi
+    ctl inventory | jq -e "[.hotbar[], .main[] | select(.item == \"$item\")] | length >= 1" >/dev/null \
+        || fail "the broken block's $item item was not picked up: $(ctl inventory | jq -c '{hotbar,main}')"
+}
 
 echo "== launch (The End arena, the package's own content and code) =="
 launch
@@ -1298,4 +1355,176 @@ twin's spawn point: the tick acted in the wrong dimension"
     || fail "the Overworld twin changed: $TWIN_STATE (expected energy=0 spawned=0 matter=0,0,0)"
 echo "  the End spawner acted in the End; the Overworld twin stayed empty" >&2
 
-echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it; a spawner placed from its item knows no mob, holds no FE and no matter, and 70 mob recipes are in force; a mob no recipe names is refused while minecraft:zombie is set from its own 800 FE recipe with its own matter amounts; with no energy it spawns nothing; with no energy it spawns nothing, and 800 FE with the three matter stores empty spawns nothing and keeps its 800 FE (the matter gate); one matter type one unit short spawns nothing and spends nothing; exactly the recipe's 0.1/0.2/20 and its 800 FE spawn exactly one zombie within 5 blocks and leave 0 FE and empty stores; a surplus of 1.1/1.2/21 spawns one more and leaves exactly 1 in every store (each short by its own amount), and re-setting the same mob keeps them; minecraft:blaze costs its own 1,000 FE and its own 0.1/0.5/30 matter and spawns one blaze, and setting a new mob clears the previous mob's matter; a broken spawner's item carries its mob, its numbers and its matter, which placing it back restores; a crafter3 keeps eight taught recipes and, stocked for eight cycles and charged 800 FE, runs exactly eight cycles with all eight products (0 FE left); a crafter2 keeps four recipes and refuses a fifth; the same eight teaches and the same stock on a crafter1 stop at its two recipes and craft only their two products; a broken crafter3's item carries all eight recipes in minecraft:block_entity_data, which placing it back keeps; and with the same crafter and spawner at the same x,y,z in the End and the Overworld, only the fed End pair acts — twelve planks for 300 FE and one zombie at its own spawn point for its FE and its matter — while the unfed Overworld twin keeps its buffer, its energy, its matter and its spawn point empty"
+echo "== AH: the matter beamer fills the spawner's stores from the material its recipe names =="
+# The feed half of slice 7's gate. Upstream's `MatterBeamerTileEntity` is a 200,000 FE machine with
+# one material slot, a 20-tick clock, a redstone signal, a wrench-linked spawner and a
+# `beamRfPerObject` cost; its send adds the material's `blocks * factor` to the store the
+# spawner's recipe's `item1..3` names.
+ctl command "gamemode creative" >/dev/null
+ctl wait 6 >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 4 >/dev/null
+place_block "$BEAMER_BLOCK" 200 101 -12
+beamer 200 101 -12
+[ "$B_CAP" = 200000 ] || fail "the matter beamer's capacity reads $B_CAP, expected 200000"
+expect_beamer_energy 0
+expect_beamer_dest none
+expect_beamer_slot -
+expect_sent 0
+expect_lit false
+echo "  the fresh beamer: $B_ENERGY/$B_CAP FE, dest=$B_DEST, slot=$B_SLOT, sent=$B_SENT, lit=$B_LIT"
+
+echo "== AH1: a link names a spawner within eight blocks; linking the beamer to itself unlinks it =="
+ctl command "execute in minecraft:the_end run setblock 200 101 -14 minecraft:stone" >/dev/null
+ctl wait 6 >/dev/null
+link 200 101 -12 200 101 -14
+[[ "$REPLY" == *"is not a spawner"* ]] || fail "a link to a stone block was not refused: $REPLY"
+beamer 200 101 -12
+expect_beamer_dest none
+place_block "$SPAWNER_BLOCK" 200 101 -16
+link 200 101 -12 200 101 -16
+[[ "$REPLY" == *"sends to the spawner at"* ]] || fail "the spawner link was not made: $REPLY"
+beamer 200 101 -12
+expect_beamer_dest "[200,101,-16]"
+# 12.17 blocks: upstream's maxBeamDistance is 8.
+link 200 101 -12 202 101 0
+[[ "$REPLY" == *"too far"* ]] || fail "a 12-block link was not refused past maxBeamDistance: $REPLY"
+beamer 200 101 -12
+expect_beamer_dest "[200,101,-16]"
+link 200 101 -12 200 101 -12
+[[ "$REPLY" == *"is unlinked"* ]] || fail "linking the beamer to itself did not unlink it: $REPLY"
+beamer 200 101 -12
+expect_beamer_dest none
+link 200 101 -12 200 101 -16
+[[ "$REPLY" == *"sends to the spawner at"* ]] || fail "the relink was not made: $REPLY"
+echo "  linked to [200,101,-16]; a stone and a 12-block target were refused, and its own position unlinked it"
+
+# The spawner's mob is the recipe the beamer matches against; 0 FE, so nothing spawns during the
+# matter phases (a feed with the FE there is itself the spawn the next readout would read).
+set_mob 200 101 -16 minecraft:zombie
+[[ "$REPLY" == *"spawns minecraft:zombie for 800 FE"* ]] || fail "the spawner's zombie was not set: $REPLY"
+matter_reset 200 101 -16
+set_energy 200 101 -16 0
+
+echo "== AH2: item1's material feeds the first store; 4,000 FE is two sends of 2,000 =="
+set_material 200 101 -12 0 minecraft:rotten_flesh 8
+set_energy 200 101 -12 4000
+ctl command "execute in minecraft:the_end run setblock 200 101 -11 minecraft:redstone_block" >/dev/null
+ctl wait 40 >/dev/null
+beamer 200 101 -12
+expect_beamer_energy 0
+expect_beamer_slot minecraft:rotten_fleshx6
+expect_sent 2
+expect_lit true
+spawner 200 101 -16
+if [ "$SELFTEST" = 1 ] && [ "$SELFTEST_AT" = beamer ]; then
+    echo "(selftest: asserting the beamer's sends added no matter)"
+    expect_matter 0,0,0
+else
+    expect_matter 2,0,0
+fi
+expect_spawn_energy 0
+expect_spawned 0
+echo "  two sends: $B_SLOT, $B_ENERGY FE left, the store $S_MATTER"
+
+echo "== AH3: item2's material (a list object) feeds the second store =="
+set_material 200 101 -12 0 minecraft:dirt 8
+set_energy 200 101 -12 4000
+ctl wait 40 >/dev/null
+beamer 200 101 -12
+expect_beamer_energy 0
+expect_beamer_slot minecraft:dirtx6
+expect_sent 4
+spawner 200 101 -16
+expect_matter 2,2,0
+echo "  two more sends: $B_SLOT, the stores $S_MATTER"
+
+echo "== AH4: the living item (item3) carries its yield tag's factor: beef is 1.5 a block =="
+set_material 200 101 -12 0 minecraft:beef 8
+set_energy 200 101 -12 4000
+ctl wait 40 >/dev/null
+beamer 200 101 -12
+expect_beamer_energy 0
+expect_beamer_slot minecraft:beefx6
+expect_sent 6
+spawner 200 101 -16
+expect_matter 2,2,3
+echo "  beef feeds the living store: two blocks at 1.5, so $S_MATTER"
+
+echo "== AH5: a material the recipe does not take is refused without spending anything =="
+# Upstream consumes the FE before `addMatter` and burns it when the material is refused; the port
+# writes the store and the FE only when the send happened.
+set_material 200 101 -12 0 minecraft:cobblestone 8
+set_energy 200 101 -12 4000
+ctl wait 40 >/dev/null
+beamer 200 101 -12
+expect_beamer_energy 4000
+expect_beamer_slot minecraft:cobblestonex8
+expect_sent 6
+spawner 200 101 -16
+expect_matter 2,2,3
+echo "  cobblestone is no material for the zombie: $B_SLOT kept, $B_ENERGY FE kept, stores $S_MATTER"
+
+echo "== AH6: with no energy the beamer sends nothing =="
+# The buffer is emptied *before* the material goes in: with the 4,000 FE of AH5 still there, the
+# fresh material is itself a send during the command's own wait (slice 7's trap, the same one).
+set_energy 200 101 -12 0
+set_material 200 101 -12 0 minecraft:rotten_flesh 8
+ctl wait 40 >/dev/null
+beamer 200 101 -12
+expect_beamer_energy 0
+expect_beamer_slot minecraft:rotten_fleshx8
+expect_sent 6
+spawner 200 101 -16
+expect_matter 2,2,3
+echo "  0 FE: $B_SLOT stays, sent=$B_SENT, stores $S_MATTER"
+
+echo "== AH7: without a redstone signal the beamer sends nothing and goes dark =="
+ctl command "execute in minecraft:the_end run setblock 200 101 -11 minecraft:air" >/dev/null
+ctl wait 4 >/dev/null
+set_energy 200 101 -12 4000
+ctl wait 20 >/dev/null
+beamer 200 101 -12
+expect_beamer_energy 4000
+expect_beamer_slot minecraft:rotten_fleshx8
+expect_sent 6
+expect_lit false
+echo "  unpowered: $B_ENERGY FE kept, $B_SLOT kept, lit=$B_LIT"
+
+echo "== AH8: an empty slot clears the beamer's glow =="
+# The slot is emptied before the signal returns, for the same reason as AH6.
+set_material 200 101 -12 0 minecraft:air 0
+ctl command "execute in minecraft:the_end run setblock 200 101 -11 minecraft:redstone_block" >/dev/null
+ctl wait 20 >/dev/null
+beamer 200 101 -12
+expect_beamer_slot -
+expect_beamer_energy 4000
+expect_sent 6
+expect_lit false
+echo "  an empty slot: slot=$B_SLOT, lit=$B_LIT"
+
+echo "== AH9: a broken beamer's item carries its destination, its material and its energy =="
+ctl command "execute in minecraft:the_end run setblock 200 101 -11 minecraft:air" >/dev/null
+ctl wait 4 >/dev/null
+set_material 200 101 -12 0 minecraft:rotten_flesh 1
+set_energy 200 101 -12 800
+ctl command "gamemode survival" >/dev/null
+ctl wait 20 >/dev/null
+ctl command "clear @s" >/dev/null
+ctl wait 6 >/dev/null
+break_block 200 101 -12 minecraft:iron_pickaxe
+pick_up_at 200 101 -12 "$BEAMER_BLOCK"
+DROP_LINE=$(held_item_line "$BEAMER_BLOCK")
+[ -n "$DROP_LINE" ] || fail "no /data get reply for the picked-up matter beamer: $(ctl messages 8 | jq -c '.chat')"
+[[ "$DROP_LINE" == *"minecraft:block_entity_data"* ]] \
+    || fail "the dropped beamer carries no block-entity data: $DROP_LINE"
+echo "  $DROP_LINE" >&2
+place_kept 200 101 -12 "$BEAMER_BLOCK"
+beamer 200 101 -12
+expect_beamer_dest "[200,101,-16]"
+expect_beamer_slot minecraft:rotten_fleshx1
+expect_beamer_energy 800
+expect_sent 6
+echo "  the placed beamer still sends to $B_DEST with $B_SLOT and $B_ENERGY FE"
+
+echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it; a spawner placed from its item knows no mob, holds no FE and no matter, and 70 mob recipes are in force; a mob no recipe names is refused while minecraft:zombie is set from its own 800 FE recipe with its own matter amounts; with no energy it spawns nothing; with no energy it spawns nothing, and 800 FE with the three matter stores empty spawns nothing and keeps its 800 FE (the matter gate); one matter type one unit short spawns nothing and spends nothing; exactly the recipe's 0.1/0.2/20 and its 800 FE spawn exactly one zombie within 5 blocks and leave 0 FE and empty stores; a surplus of 1.1/1.2/21 spawns one more and leaves exactly 1 in every store (each short by its own amount), and re-setting the same mob keeps them; minecraft:blaze costs its own 1,000 FE and its own 0.1/0.5/30 matter and spawns one blaze, and setting a new mob clears the previous mob's matter; a broken spawner's item carries its mob, its numbers and its matter, which placing it back restores; a crafter3 keeps eight taught recipes and, stocked for eight cycles and charged 800 FE, runs exactly eight cycles with all eight products (0 FE left); a crafter2 keeps four recipes and refuses a fifth; the same eight teaches and the same stock on a crafter1 stop at its two recipes and craft only their two products; a broken crafter3's item carries all eight recipes in minecraft:block_entity_data, which placing it back keeps; and with the same crafter and spawner at the same x,y,z in the End and the Overworld, only the fed End pair acts — twelve planks for 300 FE and one zombie at its own spawn point for its FE and its matter — while the unfed Overworld twin keeps its buffer, its energy, its matter and its spawn point empty; a matter beamer placed from its item is unlinked, empty and dark, a link must name a spawner within eight blocks and its own position unlinks it, 4,000 FE and eight rotten flesh are two sends of 2,000 FE each into the zombie recipe's first store (6 left, 2,0,0), dirt feeds the second (2,2,0), the living beef feeds the third at its 1.5 yield (2,2,3), a material the recipe does not take and a machine at 0 FE and an unpowered machine and an empty slot all send nothing, and a broken beamer's item carries its destination, its material and its energy back"

@@ -541,7 +541,9 @@ pub const SPAWNER_CAPACITY: i32 = 200_000;
 pub const SPAWNER_RECEIVE: i32 = 2_000;
 
 /// One mob's spawner recipe (`SpawnerRecipes.MobData`): the entity it spawns, the RF one
-/// spawn costs (`spawnRf`), and the three matter amounts it wants (`item1..3`).
+/// spawn costs (`spawnRf`), the three matter amounts it wants (`item1..3.amount`), and the
+/// three material sources those types accept (`item1..3.object`, which a matter beamer matches
+/// what it sends against).
 ///
 /// Upstream keys its table by entity id (`SpawnerRecipes.mobData`, filled from the
 /// `rftoolsutility:spawner` recipe files), so the mob a machine spawns is the recipe's own
@@ -552,10 +554,11 @@ pub struct MobRecipe {
     pub entity: String,
     /// The recipe's `power`: FE one spawn costs.
     pub power: i32,
-    /// The recipe's `item1..3` amounts: the matter one spawn consumes. The matter system
-    /// (its three tanks and the beamers that fill them) is not part of this slice; the
-    /// numbers are carried and read so the recipe is the machine's own data.
+    /// The recipe's `item1..3` amounts: the matter one spawn consumes.
     pub matter: [f32; 3],
+    /// The recipe's `item1..3` material sources, one list per matter type; an empty list is
+    /// upstream's "living?" form (`SpawnerRecipes.MobSpawnAmount.match`).
+    pub objects: [Vec<MatterSource>; 3],
 }
 
 /// The recipe that spawns `mob` (`SpawnerRecipes.getMobData`, a lookup by entity id).
@@ -639,6 +642,150 @@ pub fn spawn_at(pos: [i32; 3], facing: &str) -> Option<[f64; 3]> {
         _ => return None,
     };
     Some([f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5])
+}
+
+// ---------------------------------------------------------------------------
+// Slice 8: the matter beamer (`MatterBeamerTileEntity`, `SpawnerConfiguration`)
+// ---------------------------------------------------------------------------
+
+/// `SpawnerConfiguration.BEAMER_MAXENERGY`: the beamer's energy buffer.
+pub const BEAMER_CAPACITY: i32 = 200_000;
+/// `SpawnerConfiguration.BEAMER_RECEIVEPERTICK`: the most one call may fill.
+pub const BEAMER_RECEIVE: i32 = 1_000;
+/// `SpawnerConfiguration.beamRfPerObject`: the FE one beamed item costs.
+pub const BEAM_RF_PER_OBJECT: i32 = 2_000;
+/// `SpawnerConfiguration.beamBlocksPerSend`: the items one send moves. Upstream multiplies it by
+/// its infusing bonus (`(int)(beamBlocksPerSend * (1.01 + infused * 2.0))`); this port carries no
+/// infusable path, so the uninfused value (1) is the rule.
+pub const BEAM_BLOCKS_PER_SEND: i32 = 1;
+/// `SpawnerConfiguration.maxBeamDistance`: the farthest a wrench may link two blocks, in blocks
+/// (upstream compares the `Vec3`s of the two block coordinates).
+pub const MAX_BEAM_DISTANCE: f64 = 8.0;
+/// `MatterBeamerTileEntity.TICKTIME`: the ticks between two sends.
+pub const BEAM_TICKTIME: i64 = 20;
+
+/// `SpawnerRecipes.MobSpawnAmount.match`'s factor for a `living/highyield` item.
+pub const HIGH_YIELD: f32 = 1.5;
+/// …for a `living/averageyield` item.
+pub const AVERAGE_YIELD: f32 = 1.0;
+/// …for a `living/lowyield` item.
+pub const LOW_YIELD: f32 = 0.5;
+
+/// One `item1..3.object` entry: the item or tag a recipe's matter type accepts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatterSource {
+    /// `{"item": "minecraft:rotten_flesh"}`.
+    Material(String),
+    /// `{"tag": "c:rods/blaze"}` (the `#` belongs to the JSON spelling, not to the id).
+    Tagged(String),
+}
+
+/// What one beamer send does (`MatterBeamerTileEntity.tickServer`): which store the item feeds,
+/// how many items move, what it costs, and what that store gains.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BeamSend {
+    /// The recipe's matter type the item feeds (`materialType`, 0..3).
+    pub index: usize,
+    /// The items one send moves (`numblocks`).
+    pub blocks: i32,
+    /// The FE the send costs (`rf`).
+    pub rf: i32,
+    /// What the store gains: `blocks * factor` (`m * factor * 3 / (3 - infused)`, infusion 0).
+    pub matter: f32,
+}
+
+/// The matter type `item` feeds among a recipe's three `item1..3`, and the yield factor it
+/// carries (`SpawnerRecipes.MobSpawnAmount.match`), or None when the recipe does not take it.
+///
+/// A non-empty `object` is an item or a tag and yields 1.0. The empty form is upstream's
+/// "living?": the factor comes from the `living/*` tags ([`HIGH_YIELD`], [`AVERAGE_YIELD`],
+/// [`LOW_YIELD`]), which the caller reads through `living_yield`. A living item in none of them
+/// yields 0.0; upstream accepts it and consumes the item and the FE for no matter, and the port
+/// refuses it instead (the upstream defect this slice fixes).
+#[must_use]
+pub fn matter_for(
+    objects: &[Vec<MatterSource>; 3],
+    item: &str,
+    in_tag: impl Fn(&str, &str) -> bool,
+    living_yield: impl Fn(&str) -> f32,
+) -> Option<(usize, f32)> {
+    for (index, sources) in objects.iter().enumerate() {
+        if sources.is_empty() {
+            // Upstream's empty `object` is "living?": the yield tag decides the factor, and an
+            // item in none of them is the zero-yield refusal above.
+            let factor = living_yield(item);
+            return (factor > 0.0).then_some((index, factor));
+        }
+        if sources.iter().any(|source| match source {
+            MatterSource::Material(id) => id == item,
+            MatterSource::Tagged(tag) => in_tag(item, tag),
+        }) {
+            return Some((index, 1.0));
+        }
+    }
+    None
+}
+
+/// The items one send moves: at most [`BEAM_BLOCKS_PER_SEND`], and never more than the stack
+/// holds (`numblocks = Math.min(maxblocks, itemStack.getCount())`).
+#[must_use]
+pub fn beam_blocks(count: i32) -> i32 {
+    count.clamp(0, BEAM_BLOCKS_PER_SEND)
+}
+
+/// The FE one send costs (`beamRfPerObject * numblocks`, uninfused).
+#[must_use]
+pub fn beam_cost(blocks: i32) -> i32 {
+    BEAM_RF_PER_OBJECT.saturating_mul(blocks)
+}
+
+/// One send, or None when the recipe does not take the item, the slot is empty, or the buffer
+/// does not cover its cost.
+///
+/// The caller writes the store only when this answered. Upstream consumes the FE *before*
+/// asking `addMatter` and so burns it when the item is refused; the port spends both or
+/// neither (the upstream defect this slice fixes).
+#[must_use]
+pub fn beam_send(
+    objects: &[Vec<MatterSource>; 3],
+    item: &str,
+    count: i32,
+    energy: i32,
+    in_tag: impl Fn(&str, &str) -> bool,
+    living_yield: impl Fn(&str) -> f32,
+) -> Option<BeamSend> {
+    let (index, factor) = matter_for(objects, item, in_tag, living_yield)?;
+    let blocks = beam_blocks(count);
+    if blocks == 0 {
+        return None;
+    }
+    let rf = beam_cost(blocks);
+    (energy >= rf).then_some(BeamSend {
+        index,
+        blocks,
+        rf,
+        matter: blocks as f32 * factor,
+    })
+}
+
+/// Whether a wrench may link a beamer at `from` to a destination at `to`
+/// (`SpawnerTileEntity.useWrench`: the distance between the two blocks, [`MAX_BEAM_DISTANCE`]).
+#[must_use]
+pub fn beam_reach(from: [i32; 3], to: [i32; 3]) -> bool {
+    let square: f64 = (0..3)
+        .map(|axis| {
+            let delta = f64::from(to[axis]) - f64::from(from[axis]);
+            delta * delta
+        })
+        .sum();
+    square.sqrt() <= MAX_BEAM_DISTANCE
+}
+
+/// Whether `game_time` is a send tick (`MatterBeamerTileEntity.TICKTIME`, 20): the tick's own
+/// clock instead of a saved counter, so a tick that sends nothing writes nothing.
+#[must_use]
+pub fn beam_due(game_time: i64) -> bool {
+    game_time.rem_euclid(BEAM_TICKTIME) == 0
 }
 
 #[cfg(test)]
@@ -1206,6 +1353,7 @@ mod tests {
             entity: entity.to_owned(),
             power,
             matter: [0.1, 0.2, 20.0],
+            objects: [Vec::new(), Vec::new(), Vec::new()],
         }
     }
 
@@ -1216,6 +1364,7 @@ mod tests {
             entity: "minecraft:blaze".to_owned(),
             power: 1_000,
             matter: [0.1, 0.5, 30.0],
+            objects: [Vec::new(), Vec::new(), Vec::new()],
         };
         let recipes = [zombie, blaze];
         assert_eq!(
@@ -1387,5 +1536,217 @@ mod tests {
             0.0,
             "a harness drain stops at an empty store"
         );
+    }
+
+    // -- the matter beamer (slice 8) -------------------------------------------
+
+    /// The jar's `minecraft_zombie.json` sources: rotten flesh, a list of three blocks, and the
+    /// empty (living) form.
+    fn zombie_objects() -> [Vec<MatterSource>; 3] {
+        [
+            vec![MatterSource::Material("minecraft:rotten_flesh".to_owned())],
+            vec![
+                MatterSource::Material("minecraft:dirt".to_owned()),
+                MatterSource::Material("minecraft:gravel".to_owned()),
+                MatterSource::Material("minecraft:sand".to_owned()),
+            ],
+            vec![],
+        ]
+    }
+
+    /// The jar's `living/*` yield tags, as far as the tests need them.
+    fn living(item: &str) -> f32 {
+        match item {
+            "minecraft:beef" => HIGH_YIELD,
+            "minecraft:apple" => AVERAGE_YIELD,
+            "minecraft:cactus" => LOW_YIELD,
+            _ => 0.0,
+        }
+    }
+
+    /// The jar's `minecraft_blaze.json` item1: a tag, not an item.
+    fn in_tag(item: &str, tag: &str) -> bool {
+        (item, tag) == ("minecraft:blaze_rod", "c:rods/blaze")
+    }
+
+    #[test]
+    fn a_material_feeds_the_type_its_object_names() {
+        let objects = zombie_objects();
+        assert_eq!(
+            matter_for(&objects, "minecraft:rotten_flesh", in_tag, living),
+            Some((0, 1.0)),
+            "item1 is a single item"
+        );
+        assert_eq!(
+            matter_for(&objects, "minecraft:gravel", in_tag, living),
+            Some((1, 1.0)),
+            "item2 is a list, and its second entry feeds the same type"
+        );
+        assert_eq!(
+            matter_for(&objects, "minecraft:apple", in_tag, living),
+            Some((2, 1.0)),
+            "item3 is the empty (living) form, and apple is an average yield"
+        );
+        assert_eq!(
+            matter_for(&objects, "minecraft:cobblestone", in_tag, living),
+            None,
+            "an item no object names feeds nothing"
+        );
+    }
+
+    #[test]
+    fn a_tag_object_matches_a_member_and_refuses_another() {
+        let objects = [
+            vec![MatterSource::Tagged("c:rods/blaze".to_owned())],
+            Vec::new(),
+            Vec::new(),
+        ];
+        assert_eq!(
+            matter_for(&objects, "minecraft:blaze_rod", in_tag, living),
+            Some((0, 1.0)),
+            "a tag object takes its members"
+        );
+        assert_eq!(
+            matter_for(&objects, "minecraft:stick", in_tag, living),
+            None,
+            "a tag object refuses a non-member (and the living form after it yields nothing)"
+        );
+    }
+
+    #[test]
+    fn the_living_form_takes_its_yield_tags_factor() {
+        let objects = zombie_objects();
+        assert_eq!(
+            matter_for(&objects, "minecraft:beef", in_tag, living),
+            Some((2, HIGH_YIELD)),
+            "a highyield item is worth 1.5 blocks"
+        );
+        assert_eq!(
+            matter_for(&objects, "minecraft:apple", in_tag, living),
+            Some((2, AVERAGE_YIELD))
+        );
+        assert_eq!(
+            matter_for(&objects, "minecraft:cactus", in_tag, living),
+            Some((2, LOW_YIELD))
+        );
+        assert_eq!(
+            matter_for(&objects, "minecraft:stone", in_tag, living),
+            None,
+            "a living item in no yield tag adds nothing, so the port refuses it instead of \
+             consuming it for zero matter (the upstream defect)"
+        );
+    }
+
+    #[test]
+    fn a_send_moves_one_block_for_two_thousand_fe() {
+        let send = beam_send(
+            &zombie_objects(),
+            "minecraft:rotten_flesh",
+            8,
+            4_000,
+            in_tag,
+            living,
+        )
+        .expect("8 blocks, 4,000 FE and a matching item is a send");
+        assert_eq!(
+            (send.index, send.blocks, send.rf),
+            (0, 1, 2_000),
+            "one block per send at 2,000 FE, as beamBlocksPerSend and beamRfPerObject say"
+        );
+        assert_eq!(send.matter, 1.0, "an item object yields one unit a block");
+        assert_eq!(beam_blocks(0), 0, "an empty slot moves nothing");
+        assert_eq!(beam_blocks(8), BEAM_BLOCKS_PER_SEND);
+        assert_eq!(beam_cost(BEAM_BLOCKS_PER_SEND), BEAM_RF_PER_OBJECT);
+    }
+
+    #[test]
+    fn a_send_without_the_power_moves_nothing() {
+        assert_eq!(
+            beam_send(
+                &zombie_objects(),
+                "minecraft:rotten_flesh",
+                8,
+                1_999,
+                in_tag,
+                living
+            ),
+            None,
+            "one FE short of the cost is no send"
+        );
+        assert_eq!(
+            beam_send(
+                &zombie_objects(),
+                "minecraft:rotten_flesh",
+                0,
+                4_000,
+                in_tag,
+                living
+            ),
+            None,
+            "an empty slot is no send, and costs nothing"
+        );
+        assert_eq!(
+            beam_send(
+                &zombie_objects(),
+                "minecraft:cobblestone",
+                8,
+                4_000,
+                in_tag,
+                living
+            ),
+            None,
+            "an item the recipe does not take is refused instead of burning the FE"
+        );
+    }
+
+    #[test]
+    fn a_send_adds_the_blocks_times_the_factor() {
+        let send = beam_send(
+            &zombie_objects(),
+            "minecraft:beef",
+            8,
+            4_000,
+            in_tag,
+            living,
+        )
+        .expect("beef is a living item of the zombie recipe");
+        assert_eq!(send.matter, HIGH_YIELD, "a highyield block is 1.5 units");
+        assert_eq!(
+            add_matter(2.0, send.matter),
+            3.5,
+            "the store takes the send's matter"
+        );
+        assert_eq!(
+            add_matter(MATTER_STORAGE, send.matter),
+            MATTER_STORAGE,
+            "the spawner's 6,400 cap still applies"
+        );
+    }
+
+    #[test]
+    fn a_link_reaches_eight_blocks_and_no_further() {
+        assert!(
+            beam_reach([200, 101, -12], [200, 101, -16]),
+            "4 blocks away"
+        );
+        assert!(
+            beam_reach([200, 101, -12], [202, 101, -16]),
+            "4.47 blocks away, the arena's own layout"
+        );
+        assert!(
+            !beam_reach([200, 101, -12], [202, 101, 0]),
+            "12.17 blocks away is past maxBeamDistance"
+        );
+        assert_eq!(MAX_BEAM_DISTANCE, 8.0);
+    }
+
+    #[test]
+    fn a_send_is_due_every_twenty_ticks() {
+        assert!(beam_due(0));
+        assert!(beam_due(BEAM_TICKTIME));
+        assert!(beam_due(2 * BEAM_TICKTIME));
+        assert!(!beam_due(BEAM_TICKTIME - 1));
+        assert!(!beam_due(BEAM_TICKTIME + 1));
+        assert_eq!(BEAM_TICKTIME, 20, "MatterBeamerTileEntity.TICKTIME");
     }
 }

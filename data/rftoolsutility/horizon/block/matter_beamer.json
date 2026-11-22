@@ -1,0 +1,23 @@
+{
+  "default_state": {
+    "lit": "false"
+  },
+  "item": true,
+  "properties": {
+    "explosion_resistance": 2.0,
+    "hardness": 2.0,
+    "occludes": true,
+    "requires_tool": true,
+    "sounds": "minecraft:iron_block"
+  },
+  "state_properties": {
+    "lit": {
+      "type": "enum",
+      "values": [
+        "false",
+        "true"
+      ]
+    }
+  },
+  "template": "minecraft:iron_block"
+}

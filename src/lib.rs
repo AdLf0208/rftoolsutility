@@ -29,11 +29,12 @@ use std::sync::{Mutex, OnceLock};
 pub mod runtime;
 
 use runtime::{
-    BUCKET, BUFFER_IN, BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY,
-    CRAFTER_RECEIVE, CRAFTER_SLOTS, Click, CraftMode, CrafterTier, GHOST_INPUT, GHOST_RESULT,
-    MATTER_STORAGE, MobRecipe, SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, Tank, add_matter,
-    bucket_click, carried, clamped, fill_level, placements, plan, recipe_for, result_range,
-    spawn_at, spawn_cycle, spend, steps,
+    AVERAGE_YIELD, BEAMER_CAPACITY, BEAMER_RECEIVE, BUCKET, BUFFER_IN, BUFFER_IN_SLOTS, BUFFER_OUT,
+    BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY, CRAFTER_RECEIVE, CRAFTER_SLOTS, Click, CraftMode,
+    CrafterTier, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, LOW_YIELD, MATTER_STORAGE,
+    MAX_BEAM_DISTANCE, MatterSource, MobRecipe, SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, Tank,
+    add_matter, beam_due, beam_reach, beam_send, bucket_click, carried, clamped, fill_level,
+    placements, plan, recipe_for, result_range, spawn_at, spawn_cycle, spend, steps,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -108,6 +109,35 @@ const KEY_FACING: &str = "facing";
 /// A spawner's item, resolved once in `register` for the same reason as the tank's.
 static SPAWNER_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
+// ---------------------------------------------------------------------------
+// The matter beamer (slice 8)
+// ---------------------------------------------------------------------------
+
+/// The beamer block and its item (`SpawnerModule.MATTER_BEAMER`).
+const BEAMER: &str = "rftoolsutility:matter_beamer";
+/// The block entity type the port declares for it (`EntityBlock.newBlockEntity`).
+const BEAMER_TYPE: &str = "matter_beamer";
+/// The type id a `minecraft:block_entity_data` payload on a beamer's item carries.
+const BEAMER_TYPE_ID: &str = "rftoolsutility:matter_beamer";
+/// The beamer's one material slot (`SLOT_MATERIAL`).
+const BEAMER_SLOT: usize = 0;
+/// The linked spawner's block position (`MatterBeamerTileEntity`'s `destination`).
+const KEY_DEST: &str = "dest";
+/// The sends the machine has made. Upstream has no such counter; the spawner's `spawned` is the
+/// same harness readout, and it is what lets the end-to-end leg say `blocks` without guessing.
+const KEY_SENT: &str = "sent";
+/// The block's own glow state (`BlockStateProperties.LIT`, which the jar's blockstate keys its
+/// two models on).
+const KEY_LIT: &str = "lit";
+/// The jar's own `living/*` tags: what a recipe's empty `object` yields
+/// (`SpawnerRecipes.MobSpawnAmount.match`).
+const HIGH_YIELD_TAG: &str = "rftoolsutility:living/highyield";
+const AVERAGE_YIELD_TAG: &str = "rftoolsutility:living/averageyield";
+const LOW_YIELD_TAG: &str = "rftoolsutility:living/lowyield";
+
+/// A beamer's item, resolved once in `register` for the same reason as the tank's.
+static BEAMER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
 /// the engine's recipe manager every operation; the port resolves the ingredient sets once,
@@ -178,6 +208,13 @@ fn tag<'a>(nbt: &'a Compound, name: &str) -> Option<&'a Tag> {
 fn put(nbt: &mut Compound, name: &str, value: Tag) {
     if let Tag::String(utf16) = key_tag(name) {
         nbt.insert(utf16, value);
+    }
+}
+
+/// Drop a saved key (the unlink of a beamer's destination).
+fn remove(nbt: &mut Compound, name: &str) {
+    if let Tag::String(utf16) = key_tag(name) {
+        nbt.remove(&utf16);
     }
 }
 
@@ -732,6 +769,9 @@ struct SpawnerValue {
     power: i32,
     /// The recipe's `item1..3` amounts.
     matter: [f32; 3],
+    /// The recipe's `item1..3.object` sources, which a matter beamer matches a material
+    /// against (`SpawnerRecipes.MobSpawnAmount.match`).
+    objects: [Vec<WireSource>; 3],
 }
 
 impl SpawnerValue {
@@ -741,6 +781,9 @@ impl SpawnerValue {
             entity: self.entity.clone(),
             power: self.power,
             matter: self.matter,
+            objects: std::array::from_fn(|index| {
+                self.objects[index].iter().map(WireSource::source).collect()
+            }),
         }
     }
 }
@@ -788,6 +831,7 @@ fn spawner_recipe(json: &mod_api::serde_json::Value) -> Result<SpawnerValue, Str
         entity: entity.to_owned(),
         power,
         matter: [amount(0), amount(1), amount(2)],
+        objects: objects_of(json),
     })
 }
 
@@ -797,9 +841,9 @@ fn write_spawner(value: &SpawnerValue) -> String {
         "type": SPAWNER_RECIPE_TYPE,
         "entity": value.entity.as_str(),
         "power": value.power,
-        "item1": { "amount": value.matter[0] },
-        "item2": { "amount": value.matter[1] },
-        "item3": { "amount": value.matter[2] },
+        "item1": { "amount": value.matter[0], "object": object_json(&value.objects[0]) },
+        "item2": { "amount": value.matter[1], "object": object_json(&value.objects[1]) },
+        "item3": { "amount": value.matter[2], "object": object_json(&value.objects[2]) },
     })
     .to_string()
 }
@@ -985,6 +1029,338 @@ impl BlockEntityPart for SpawnerPart {
     /// One server tick: spawn one mob if the buffer pays for it.
     fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
         spawner_tick(host, event);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The matter beamer: the material match, the destination, the tick and the readout
+// ---------------------------------------------------------------------------
+
+/// One `item1..3.object` source as it crosses the API boundary: the recipe's own spelling, a
+/// `Wire` value so the recipe can ride the kind's codec, converted to [`MatterSource`] for the
+/// match.
+#[derive(Clone, Debug, PartialEq, Eq, mod_api::Wire)]
+enum WireSource {
+    /// `{"item": id}`.
+    Material(String),
+    /// `{"tag": id}`.
+    Tagged(String),
+}
+
+impl WireSource {
+    /// The runtime's view of this source.
+    fn source(&self) -> MatterSource {
+        match self {
+            WireSource::Material(item) => MatterSource::Material(item.clone()),
+            WireSource::Tagged(tag) => MatterSource::Tagged(tag.clone()),
+        }
+    }
+}
+
+/// `item1..3.object` as the beamer reads it (`SpawnerRecipes.MobSpawnAmount.match`): each type
+/// is a list of the item and tag ids it accepts, and an empty list is upstream's "living?" form.
+fn objects_of(json: &mod_api::serde_json::Value) -> [Vec<WireSource>; 3] {
+    std::array::from_fn(|index| {
+        let Some(object) = json
+            .get(format!("item{}", index + 1))
+            .and_then(|item| item.get("object"))
+        else {
+            return Vec::new();
+        };
+        let entries: Vec<&mod_api::serde_json::Value> = match object {
+            mod_api::serde_json::Value::Array(entries) => entries.iter().collect(),
+            entry => vec![entry],
+        };
+        entries
+            .iter()
+            .filter_map(|entry| source_of(entry))
+            .collect()
+    })
+}
+
+/// One `{"item": id}` or `{"tag": id}` entry of an `object`, if it is one; a form this port does
+/// not know is left out (it matches nothing).
+fn source_of(entry: &mod_api::serde_json::Value) -> Option<WireSource> {
+    if let Some(item) = entry.get("item").and_then(|item| item.as_str()) {
+        return Some(WireSource::Material(item.to_owned()));
+    }
+    entry
+        .get("tag")
+        .and_then(|tag| tag.as_str())
+        .map(|tag| WireSource::Tagged(tag.trim_start_matches('#').to_owned()))
+}
+
+/// One source in the recipe's own 1.21.1 spelling (`{"item": id}` / `{"tag": id}`).
+fn source_json(source: &WireSource) -> mod_api::serde_json::Value {
+    match source {
+        WireSource::Material(item) => mod_api::serde_json::json!({ "item": item }),
+        WireSource::Tagged(tag) => mod_api::serde_json::json!({ "tag": tag }),
+    }
+}
+
+/// One matter type's `object` as the recipe file writes it: a single object, a list of them, or
+/// `[]` for the living form (which is how a `write_spawner` round trip keeps the file's shape).
+fn object_json(sources: &[WireSource]) -> mod_api::serde_json::Value {
+    let mut entries: Vec<mod_api::serde_json::Value> = sources.iter().map(source_json).collect();
+    if entries.len() == 1 {
+        entries.pop().unwrap_or(mod_api::serde_json::Value::Null)
+    } else {
+        mod_api::serde_json::Value::Array(entries)
+    }
+}
+
+/// A saved block position under `name`: the three ints a link writes, so a broken beamer keeps
+/// the spawner its item points at.
+fn write_pos(nbt: &mut Compound, name: &str, pos: [i32; 3]) {
+    put(
+        nbt,
+        name,
+        Tag::List(pos.iter().map(|value| Tag::Int(*value)).collect()),
+    );
+}
+
+/// The destination saved under `name`, or none for an unlinked beamer or data that is not three
+/// ints.
+fn read_pos(nbt: &Compound, name: &str) -> Option<[i32; 3]> {
+    let Tag::List(values) = tag(nbt, name)? else {
+        return None;
+    };
+    let mut ints = values.iter().filter_map(|value| match value {
+        Tag::Int(value) => Some(*value),
+        _ => None,
+    });
+    let pos = [ints.next()?, ints.next()?, ints.next()?];
+    ints.next().is_none().then_some(pos)
+}
+
+/// The block's `lit` state (`BlockStateProperties.LIT`), which a send turns on and an empty
+/// slot, a missing signal or a lost destination turns off.
+fn lit_of(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> bool {
+    let Some(state) = level.block_state(host, pos) else {
+        return false;
+    };
+    let states = host.block_states();
+    state.property(&states, KEY_LIT).ok().flatten() == Some("true")
+}
+
+/// Write the `lit` state (`enableBlockGlow`/`disableBlockGlow`); `set_block_property` writes only
+/// when it differs, so a tick that changes nothing touches no chunk.
+fn glow(host: &mut dyn ServerHost, pos: [i32; 3], lit: bool) {
+    host.set_block_property(pos, KEY_LIT, if lit { "true" } else { "false" });
+}
+
+/// Whether the item id `item` is in the item tag `tag` (`TagTools.hasTag`); an unknown tag or
+/// item answers false.
+fn item_in_tag(host: &dyn Host, item: &str, tag: &str) -> bool {
+    let (Ok(item), Ok(tag)) = (Identifier::parse(item), Identifier::parse(tag)) else {
+        return false;
+    };
+    let (Some(item), Some(tag)) = (host.item_key(&item), host.tags().key(&tag)) else {
+        return false;
+    };
+    host.tags().is_in_tag(item, tag).unwrap_or(false)
+}
+
+/// The yield a living item carries (`MobSpawnAmount.match`'s empty-object branch), from the
+/// jar's own `living/*` tags.
+fn living_yield(host: &dyn Host, item: &str) -> f32 {
+    if item_in_tag(host, item, HIGH_YIELD_TAG) {
+        HIGH_YIELD
+    } else if item_in_tag(host, item, AVERAGE_YIELD_TAG) {
+        AVERAGE_YIELD
+    } else if item_in_tag(host, item, LOW_YIELD_TAG) {
+        LOW_YIELD
+    } else {
+        0.0
+    }
+}
+
+/// What `/rftoolsutility beamer` prints. The shape is the harness's contract
+/// (`tools/parse_beamer.py`), so the end-to-end scenario can parse it.
+fn beamer_readout(
+    pos: [i32; 3],
+    nbt: &Compound,
+    slot: Option<(&str, i32)>,
+    lit: bool,
+    nonce: Option<&str>,
+) -> String {
+    let energy = read_int(nbt, KEY_ENERGY).clamp(0, BEAMER_CAPACITY);
+    let dest =
+        read_pos(nbt, KEY_DEST).map_or_else(|| "none".to_owned(), |dest| format!("{dest:?}"));
+    let slot = slot.map_or_else(|| "-".to_owned(), |(item, count)| format!("{item}x{count}"));
+    let sent = read_int(nbt, KEY_SENT).max(0);
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "Beamer at {pos:?}: energy={energy}/{BEAMER_CAPACITY} dest={dest} slot={slot} \
+         sent={sent} lit={lit}{suffix}"
+    )
+}
+
+/// `/rftoolsutility link <pos> <dest>`: what the wrench does upstream — a wrench on the beamer
+/// then on the spawner links them (`SpawnerTileEntity.useWrench`), a second wrench on the beamer
+/// clears it, a destination farther than `maxBeamDistance` is refused, and so is a block that is
+/// not a spawner. The harness's route, because this port carries no wrench item (the parent
+/// port's).
+fn link_beamer(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    dest: [i32; 3],
+) -> String {
+    let Some(entity) = machine_at(&*host, level, pos, BEAMER) else {
+        return "No matter beamer there.".to_owned();
+    };
+    let Some(mut data) = entity.data(&*host) else {
+        return "No matter beamer there.".to_owned();
+    };
+    if dest == pos {
+        remove(&mut data, KEY_DEST);
+        if entity.replace_data(host, data).is_err() {
+            return "No matter beamer there.".to_owned();
+        }
+        glow(host, pos, false);
+        return format!("/rftoolsutility: the matter beamer at {pos:?} is unlinked.");
+    }
+    if !beam_reach(pos, dest) {
+        return format!(
+            "/rftoolsutility: destination distance is too far! (maxBeamDistance is {} blocks)",
+            MAX_BEAM_DISTANCE as i32
+        );
+    }
+    if machine_at(&*host, level, dest, SPAWNER).is_none() {
+        return format!("/rftoolsutility: the destination {dest:?} is not a spawner.");
+    }
+    write_pos(&mut data, KEY_DEST, dest);
+    if entity.replace_data(host, data).is_err() {
+        return "No matter beamer there.".to_owned();
+    }
+    glow(host, pos, false);
+    format!("/rftoolsutility: the matter beamer at {pos:?} sends to the spawner at {dest:?}.")
+}
+
+/// One server tick of the beamer (`MatterBeamerTileEntity.tickServer`): with a redstone signal
+/// and a send tick, move the material its linked spawner's recipe takes into the store that
+/// material feeds, and pay the FE — one block at a time, and only when the send happened.
+fn beamer_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    if event.entity.items.get(BEAMER_SLOT).is_none() {
+        event.entity.items.resize(BEAMER_SLOT + 1, None);
+    }
+    let Some(level) = ticking_level(&*host) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    // Every tick, before the send clock: a beamer without a signal is dark.
+    if !level.has_neighbor_signal(&*host, pos) {
+        glow(host, pos, false);
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    }
+    if !level.game_time(&*host).is_some_and(beam_due) {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    }
+    let Some(dest) = read_pos(&event.entity.nbt, KEY_DEST) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    let Some(spawner) = machine_at(&*host, level, dest, SPAWNER) else {
+        // The destination is gone or is not a spawner: upstream's `setDestination(null)`.
+        remove(&mut event.entity.nbt, KEY_DEST);
+        glow(host, pos, false);
+        return;
+    };
+    let Some(spawner_data) = spawner.data(&*host) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    let Some(item) = event.entity.items.get(BEAMER_SLOT).and_then(Option::as_ref) else {
+        glow(host, pos, false);
+        return;
+    };
+    let item_id = item.item().id(&*host);
+    let count = i32::try_from(item.count()).unwrap_or(i32::MAX);
+    let energy = read_int(&event.entity.nbt, KEY_ENERGY).clamp(0, BEAMER_CAPACITY);
+    // The mob's recipe is the table's own data (`SpawnerRecipes.getMobData`), read when the
+    // send is due rather than cached, so a reloaded recipe table is seen.
+    let recipe = read_text(&spawner_data, KEY_MOB)
+        .and_then(|mob| recipe_for(&spawner_recipes(&*host), &mob).cloned());
+    let send = recipe.and_then(|recipe| {
+        beam_send(
+            &recipe.objects,
+            &item_id,
+            count,
+            energy,
+            |item, tag| item_in_tag(&*host, item, tag),
+            |item| living_yield(&*host, item),
+        )
+    });
+    let Some(send) = send else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    // The store goes on the spawner first: only an answered send pays (upstream consumes the
+    // FE before `addMatter` and burns it when the material is refused).
+    let mut stores = read_matter(&spawner_data, KEY_MATTER).unwrap_or([0.0; 3]);
+    stores[send.index] = add_matter(stores[send.index], send.matter);
+    let mut next = spawner_data.clone();
+    write_matter(&mut next, KEY_MATTER, stores);
+    if spawner.replace_data(host, next).is_err() {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    }
+    write_int(&mut event.entity.nbt, KEY_ENERGY, energy - send.rf);
+    let left = count - send.blocks;
+    if left <= 0 {
+        event.entity.items[BEAMER_SLOT] = None;
+    } else if let Some(stack) = event.entity.items[BEAMER_SLOT].as_mut() {
+        let _ = stack.set_count(left as u32);
+    }
+    let sent = read_int(&event.entity.nbt, KEY_SENT).saturating_add(1);
+    write_int(&mut event.entity.nbt, KEY_SENT, sent);
+    glow(host, pos, true);
+}
+
+/// The beamer's energy domain (`GenericEnergyStorage(this, true, 200,000, 1,000)`): a fill only,
+/// on every face.
+fn beamer_energy() -> ModEnergyBuffer {
+    ModEnergyBuffer {
+        capacity: BEAMER_CAPACITY,
+        max_insert: BEAMER_RECEIVE,
+        max_extract: 0,
+        insert_faces: [true; 6],
+        extract_faces: [false; 6],
+    }
+}
+
+/// The beamer's one material slot (`CONTAINER_FACTORY`'s `generic().in()`): automation inserts
+/// into it and takes nothing out.
+fn beamer_container() -> ModContainer {
+    ModContainer {
+        slots: BEAMER_SLOT + 1,
+        faces: std::array::from_fn(|_| vec![BEAMER_SLOT]),
+        inputs: vec![BEAMER_SLOT],
+        outputs: Vec::new(),
+        menu: None,
+    }
+}
+
+/// The beamer's Part: its block entity and its send tick.
+struct BeamerPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for BeamerPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for BeamerPart {
+    /// The beamer ticks on the server (`EntityBlock.getTicker`).
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    /// One server tick: at most one send, every 20 ticks.
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        beamer_tick(host, event);
     }
 }
 
@@ -1291,6 +1667,19 @@ impl Hooks for Mod {
         // (`SpawnerModule.SPAWNER_SERIALIZER`); without it the files are not in force and the
         // spawner would have no mob to spawn.
         r.register_crafting_recipe_serializer(SPAWNER_KIND, SpawnerRecipeKind);
+
+        let beamer = r.block_key(BEAMER);
+        let beamer_item = r.item_key(BEAMER);
+        let _ = BEAMER_ITEM.set(beamer_item);
+        let beamer_kind = r.block_entity_type(BEAMER_TYPE).blocks(&[BEAMER]).build();
+        if let Err(error) = r.block_entity_part(&beamer_kind, BeamerPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the matter beamer part was refused: {error}"
+            ));
+            return;
+        }
+        r.block_container(&beamer, beamer_container());
+        r.block_energy(&beamer, beamer_energy());
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -1410,6 +1799,12 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(BEAMER) {
+            if let Some(item) = BEAMER_ITEM.get() {
+                carry_machine(level, event, *item, BEAMER_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -1476,6 +1871,13 @@ impl Hooks for Mod {
             "rftoolsutility matter <pos:block_pos> <m0:number> <m1:number> <m2:number>",
             2,
         ));
+        event.commands.push(Command::new(
+            "rftoolsutility beamer <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility link <pos:block_pos> <dest:block_pos>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -1503,6 +1905,8 @@ impl Hooks for Mod {
                     | "spawner"
                     | "mob"
                     | "matter"
+                    | "beamer"
+                    | "link"
                     | "recipes"
             ]
         );
@@ -1742,6 +2146,41 @@ impl Hooks for Mod {
                 let line = feed_matter(host, level, pos, [*m0 as f32, *m1 as f32, *m2 as f32]);
                 feedback(host, &line);
             }
+            ["rftoolsutility", "beamer"] => {
+                let Some(entity) = machine_at(&*host, level, pos, BEAMER) else {
+                    feedback(host, "No matter beamer there.");
+                    return Flow::Cancel;
+                };
+                let Some(data) = entity.data(&*host) else {
+                    feedback(host, "No matter beamer there.");
+                    return Flow::Cancel;
+                };
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let slot = entity
+                    .item_slot(&*host, BEAMER_SLOT as u32)
+                    .ok()
+                    .flatten()
+                    .map(|stack| (stack.item().id(&*host), stack.count() as i32));
+                let line = beamer_readout(
+                    pos,
+                    &data,
+                    slot.as_ref().map(|(item, count)| (item.as_str(), *count)),
+                    lit_of(&*host, level, pos),
+                    nonce,
+                );
+                feedback(host, &line);
+            }
+            ["rftoolsutility", "link"] => {
+                let Some(CommandArgumentValue::BlockPos(dest)) = invocation.argument("dest") else {
+                    feedback(host, "Usage: /rftoolsutility link <pos> <dest>");
+                    return Flow::Cancel;
+                };
+                let line = link_beamer(host, level, pos, *dest);
+                feedback(host, &line);
+            }
             _ => return Flow::Continue,
         }
         Flow::Cancel
@@ -1942,7 +2381,8 @@ fn teach(
 }
 
 /// `/rftoolsutility buffer`: put `count` of `item` in the crafter's buffer slot `slot` (0 clears
-/// it). The harness's stand-in for a hopper; a slot outside the buffer range is refused.
+/// it), or in the matter beamer's one material slot. The harness's stand-in for a hopper; a slot
+/// outside the machine's own range is refused.
 fn set_slot(
     host: &mut dyn ServerHost,
     level: LevelRef,
@@ -1951,16 +2391,18 @@ fn set_slot(
     item: &str,
     count: i32,
 ) -> String {
-    let Some((entity, _tier)) = crafter_at(host, level, pos) else {
-        return "No crafter there.".to_owned();
+    let (entity, buffers, machine) = if let Some((entity, _tier)) = crafter_at(host, level, pos) {
+        (entity, BUFFER_IN..BUFFER_OUT + BUFFER_OUT_SLOTS, "crafter")
+    } else if let Some(entity) = machine_at(&*host, level, pos, BEAMER) {
+        (entity, BEAMER_SLOT..BEAMER_SLOT + 1, "matter beamer")
+    } else {
+        return "No machine there.".to_owned();
     };
     let slot = usize::try_from(slot).unwrap_or(usize::MAX);
-    let buffers = BUFFER_IN..BUFFER_OUT + BUFFER_OUT_SLOTS;
     if !buffers.contains(&slot) {
         return format!(
-            "/rftoolsutility: slot {slot} is not one of the crafter's buffer slots \
-             ({BUFFER_IN}..{}).",
-            BUFFER_IN + BUFFER_IN_SLOTS + BUFFER_OUT_SLOTS
+            "/rftoolsutility: slot {slot} is not one of the {machine}'s slots ({}..{}).",
+            buffers.start, buffers.end
         );
     }
     let stack = if count <= 0 {
@@ -1983,23 +2425,26 @@ fn set_slot(
     });
     match written {
         Ok(true) => format!(
-            "/rftoolsutility: the crafter at {pos:?} slot {slot} holds {}.",
+            "/rftoolsutility: the {machine} at {pos:?} slot {slot} holds {}.",
             match count {
                 0 => "nothing".to_owned(),
                 count => format!("{item} x{count}"),
             }
         ),
-        _ => "No crafter there.".to_owned(),
+        _ => "No machine there.".to_owned(),
     }
 }
 
-/// `/rftoolsutility energy`: set a machine's buffer, clamped to its own capacity. The crafter
-/// and the spawner both keep their FE in the engine's `energy` int, so one command serves both.
+/// `/rftoolsutility energy`: set a machine's buffer, clamped to its own capacity. The crafter,
+/// the spawner and the matter beamer all keep their FE in the engine's `energy` int, so one
+/// command serves them.
 fn set_energy(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], amount: i32) -> String {
     let (entity, capacity, name) = if let Some((entity, _tier)) = crafter_at(&*host, level, pos) {
         (entity, CRAFTER_CAPACITY, "crafter")
     } else if let Some(entity) = machine_at(&*host, level, pos, SPAWNER) {
         (entity, SPAWNER_CAPACITY, "spawner")
+    } else if let Some(entity) = machine_at(&*host, level, pos, BEAMER) {
+        (entity, BEAMER_CAPACITY, "matter beamer")
     } else {
         return "No machine there.".to_owned();
     };
@@ -2537,6 +2982,15 @@ mod tests {
                 entity: "minecraft:zombie".to_owned(),
                 power: 800,
                 matter: [0.1, 0.2, 20.0],
+                objects: [
+                    vec![MatterSource::Material("minecraft:rotten_flesh".to_owned())],
+                    vec![
+                        MatterSource::Material("minecraft:dirt".to_owned()),
+                        MatterSource::Material("minecraft:gravel".to_owned()),
+                        MatterSource::Material("minecraft:sand".to_owned()),
+                    ],
+                    Vec::new(),
+                ],
             }
         );
         // A file the engine has already stripped of its type reads the same as one naming the
@@ -2683,5 +3137,88 @@ mod tests {
         assert_eq!(buffer.max_extract, 0, "upstream's spawner only consumes");
         assert!(buffer.insert_faces.iter().all(|face| *face));
         assert!(buffer.extract_faces.iter().all(|face| !*face));
+    }
+
+    // -- the matter beamer's glue (slice 8) --------------------------------------
+
+    #[test]
+    fn a_spawner_file_reads_the_material_sources_its_objects_name() {
+        assert_eq!(
+            objects_of(&zombie_recipe()),
+            [
+                vec![WireSource::Material("minecraft:rotten_flesh".to_owned())],
+                vec![
+                    WireSource::Material("minecraft:dirt".to_owned()),
+                    WireSource::Material("minecraft:gravel".to_owned()),
+                    WireSource::Material("minecraft:sand".to_owned()),
+                ],
+                Vec::new(),
+            ],
+            "item1 is one object, item2 a list of them, item3 the empty (living) form"
+        );
+        // The jar's blaze recipe: item1 is a tag, item2 an item.
+        let blaze = mod_api::serde_json::json!({
+            "entity": "minecraft:blaze",
+            "item1": { "amount": 0.1, "object": { "tag": "c:rods/blaze" } },
+            "item2": { "amount": 0.5, "object": { "item": "minecraft:netherrack" } },
+            "item3": { "amount": 30.0, "object": [] },
+            "power": 1000
+        });
+        let objects = objects_of(&blaze);
+        assert_eq!(
+            objects[0],
+            vec![WireSource::Tagged("c:rods/blaze".to_owned())],
+            "a tag object keeps its id, without the JSON's `#`"
+        );
+        assert_eq!(
+            objects[1],
+            vec![WireSource::Material("minecraft:netherrack".to_owned())]
+        );
+        assert!(objects[2].is_empty());
+    }
+
+    #[test]
+    fn a_destination_round_trips_through_the_saved_compound() {
+        let mut nbt = Compound::new();
+        assert_eq!(read_pos(&nbt, KEY_DEST), None, "a fresh beamer is unlinked");
+        write_pos(&mut nbt, KEY_DEST, [200, 101, -16]);
+        assert_eq!(read_pos(&nbt, KEY_DEST), Some([200, 101, -16]));
+        remove(&mut nbt, KEY_DEST);
+        assert_eq!(read_pos(&nbt, KEY_DEST), None, "an unlink clears the key");
+        let mut short = Compound::new();
+        put(
+            &mut short,
+            KEY_DEST,
+            Tag::List(vec![Tag::Int(1), Tag::Int(2)]),
+        );
+        assert_eq!(
+            read_pos(&short, KEY_DEST),
+            None,
+            "a destination that is not three ints is not a destination"
+        );
+    }
+
+    #[test]
+    fn the_beamer_readout_is_the_line_the_harness_parses() {
+        let mut nbt = Compound::new();
+        write_int(&mut nbt, KEY_ENERGY, 4_000);
+        write_int(&mut nbt, KEY_SENT, 2);
+        write_pos(&mut nbt, KEY_DEST, [200, 101, -16]);
+        assert_eq!(
+            beamer_readout(
+                [200, 101, -12],
+                &nbt,
+                Some(("minecraft:rotten_flesh", 6)),
+                true,
+                Some("9")
+            ),
+            "Beamer at [200, 101, -12]: energy=4000/200000 dest=[200, 101, -16] \
+             slot=minecraft:rotten_fleshx6 sent=2 lit=true nonce=9"
+        );
+        assert_eq!(
+            beamer_readout([1, 2, 3], &Compound::new(), None, false, None),
+            "Beamer at [1, 2, 3]: energy=0/200000 dest=none slot=- sent=0 lit=false",
+            "a fresh beamer is unlinked, empty and dark"
+        );
     }
 }
