@@ -1,0 +1,17 @@
+{
+  "pools": [
+    {
+      "bonus_rolls": 0.0,
+      "entries": [
+        {
+          "name": "rftoolsutility:wire",
+          "type": "minecraft:item"
+        }
+      ],
+      "name": "wire",
+      "rolls": 1.0
+    }
+  ],
+  "random_sequence": "rftoolsutility:blocks/wire",
+  "type": "minecraft:block"
+}

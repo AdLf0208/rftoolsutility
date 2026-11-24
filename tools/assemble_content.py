@@ -240,6 +240,19 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/redstone_receiver.json",
     "data/rftoolsutility/recipe/redstone_receiver.json",
     "data/rftoolsutility/loot_table/blocks/redstone_receiver.json",
+    # Slice 19: the wire, the last logic-row sibling. Its four slab models, top texture, item
+    # model, recipe, advancement and loot table are the jar's own; the 24 `logic_facing` rotations
+    # are replaced below by the exact cached strength and the four-way input side the redstone hook
+    # reads out of the block state.
+    "assets/rftoolsutility/models/block/wire_0.json",
+    "assets/rftoolsutility/models/block/wire_1.json",
+    "assets/rftoolsutility/models/block/wire_2.json",
+    "assets/rftoolsutility/models/block/wire_3.json",
+    "assets/rftoolsutility/models/item/wire.json",
+    "assets/rftoolsutility/textures/block/logic/machinewiretop.png",
+    "data/rftoolsutility/advancement/recipes/misc/wire.json",
+    "data/rftoolsutility/recipe/wire.json",
+    "data/rftoolsutility/loot_table/blocks/wire.json",
 ]
 # Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
 # upstream's "living?" form, and these tags are the yield a living item carries
@@ -325,6 +338,11 @@ TELEPORTER_MODELS = [
     "assets/rftoolsutility/models/block/redstone_receiver_1.json",
     "assets/rftoolsutility/models/block/redstone_receiver_2.json",
     "assets/rftoolsutility/models/block/redstone_receiver_3.json",
+    # Slice 19: the four wire slab models name the same base textures.
+    "assets/rftoolsutility/models/block/wire_0.json",
+    "assets/rftoolsutility/models/block/wire_1.json",
+    "assets/rftoolsutility/models/block/wire_2.json",
+    "assets/rftoolsutility/models/block/wire_3.json",
 ]
 # The teleporter family's three blocks (McJtyLib `STANDARD_IRON`; the booster is
 # `.strength(2, 6)`). The transmitter and receiver carry a block entity; the booster is a plain
@@ -386,6 +404,7 @@ TAB = {
         f"{MOD}:invchecker",
         f"{MOD}:redstone_transmitter",
         f"{MOD}:redstone_receiver",
+        f"{MOD}:wire",
     ],
 }
 
@@ -640,6 +659,29 @@ RED_RX_BLOCK = {
     "item": True,
 }
 
+# `WireTileEntity.createBlock` is a LogicSlabBlock on the same `STANDARD_IRON` builder. The wire
+# passes an exact 0..15 strength, so the cache has sixteen values like the analog's; unlike its
+# siblings it also needs its input side in the *state* (not only the saved compound), because
+# `BlockPart::block_signal` gets the block state and cannot read block-entity data. The jar's 24
+# `logic_facing` rotations are replaced by four horizontal `wire_facing` values, written by
+# `/rftoolsutility wire-set` in place of the GUI.
+WIRE_BLOCK = {
+    "template": "minecraft:iron_block",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "state_properties": {
+        "signal": {"type": "enum", "values": [str(level) for level in range(16)]},
+        "wire_facing": {"type": "enum", "values": ["north", "south", "east", "west"]},
+    },
+    "default_state": {"signal": "0", "wire_facing": "north"},
+    "item": True,
+}
+
 # The jar's recipes name `c:` convention tags the prepared 26.3 root does not
 # ship (it ships `minecraft` tags only), and an unknown tag is an empty
 # ingredient. These are the smallest honest memberships, the same ones this
@@ -689,6 +731,8 @@ LANG_KEYS = [
     "message.rftoolsutility.redstone_transmitter.header",
     "block.rftoolsutility.redstone_receiver",
     "message.rftoolsutility.redstone_receiver.header",
+    "block.rftoolsutility.wire",
+    "message.rftoolsutility.wire.header",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -1002,6 +1046,23 @@ def main() -> None:
             }
         },
     )
+    # Slice 19: the wire caches the exact 0..15 strength in `signal` and its input side in
+    # `wire_facing`; both are read straight out of the block state by `BlockPart::block_signal`.
+    # The jar's 24 `logic_facing` rotations are not expressible as a content block's state.
+    dump(
+        assets / "items" / "wire.json",
+        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/wire"}},
+    )
+    dump(
+        assets / "blockstates" / "wire.json",
+        {
+            "variants": {
+                f"signal={strength},wire_facing={facing}": {"model": f"{MOD}:block/wire_0"}
+                for strength in range(16)
+                for facing in ("north", "south", "east", "west")
+            }
+        },
+    )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
@@ -1020,6 +1081,7 @@ def main() -> None:
     dump(data_dir / "horizon" / "block" / "invchecker.json", INVCHECKER_BLOCK)
     dump(data_dir / "horizon" / "block" / "redstone_transmitter.json", RED_TX_BLOCK)
     dump(data_dir / "horizon" / "block" / "redstone_receiver.json", RED_RX_BLOCK)
+    dump(data_dir / "horizon" / "block" / "wire.json", WIRE_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
@@ -1044,6 +1106,7 @@ def main() -> None:
                 f"{MOD}:invchecker",
                 f"{MOD}:redstone_transmitter",
                 f"{MOD}:redstone_receiver",
+                f"{MOD}:wire",
             ]
         },
     )
@@ -1068,6 +1131,7 @@ def main() -> None:
                 f"{MOD}:invchecker",
                 f"{MOD}:redstone_transmitter",
                 f"{MOD}:redstone_receiver",
+                f"{MOD}:wire",
             ]
         },
     )

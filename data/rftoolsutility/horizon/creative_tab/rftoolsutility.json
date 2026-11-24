@@ -19,7 +19,8 @@
     "rftoolsutility:logic",
     "rftoolsutility:invchecker",
     "rftoolsutility:redstone_transmitter",
-    "rftoolsutility:redstone_receiver"
+    "rftoolsutility:redstone_receiver",
+    "rftoolsutility:wire"
   ],
   "title": "itemGroup.rftoolsutility"
 }

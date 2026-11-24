@@ -23,6 +23,11 @@
 //! redstone strength into a numbered channel in the save's own mod-data file (the pin's equivalent
 //! of the artefact's world-saved `RedstoneChannels`), and the receiver emits 15 in digital mode or
 //! the exact 0..15 strength in analog mode; `/rftoolsutility redstone-set` replaces the two GUIs.
+//! [`WirePart`] is the last logic sibling: a `LogicSlabBlock` that passes the input-side neighbour's
+//! strength to the output side only, so a run of wires carries a signal down a line, with the
+//! loop-guarded neighbour-change nudge of `WireTileEntity.checkRedstone`. Its input side and cached
+//! strength live in the block state because the redstone hook can read state but not block-entity
+//! data; `/rftoolsutility wire-set` replaces the GUI that set the jar's `logic_facing`.
 //! (The display-only `digit` is not ported: upstream's whole behaviour is a client renderer, with
 //! no redstone output for a fail-capable lamp assertion.) The `/rftoolsutility …` commands serve
 //! the harness, because upstream's controls are its GUIs.
@@ -61,7 +66,8 @@ use runtime::{
     placements, plan, receiver_output, receiver_ready, recipe_for, result_range, rising_edge,
     sensor_due, sensor_front, sensor_sees, sensor_signal, sequencer_tick as run_sequencer_tick,
     spawn_at, spawn_cycle, spend, start_cost, start_time, steps, timer_signal,
-    timer_tick as run_timer_tick, transmitter_update,
+    timer_tick as run_timer_tick, transmitter_update, wire_forward, wire_loop_allows, wire_output,
+    wire_source,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -448,6 +454,23 @@ const RED_CHANNELS_FILE: &str = "redstone-channels.tsv";
 /// The transmitter's and receiver's items, resolved once in `register` for `block_drops`.
 static RED_TX_ITEM: OnceLock<ItemKey> = OnceLock::new();
 static RED_RX_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+/// Slice 19: the wire, the last logic-row sibling. `WireTileEntity.createBlock()` is a
+/// `LogicSlabBlock` on McJtyLib's `STANDARD_IRON`; its 24 `logic_facing` rotations are replaced by
+/// a four-way input side and the exact cached strength, both carried in the block state because
+/// `BlockPart::block_signal` can read state but not the block entity's saved compound.
+const WIRE: &str = "rftoolsutility:wire";
+const WIRE_TYPE: &str = "wire";
+const WIRE_TYPE_ID: &str = "rftoolsutility:wire";
+/// The saved input side (`LogicSupport.getFacing(state).getInputSide()`), the cached input power,
+/// the game time of the last strength change and the re-entrancy guard's decision.
+const KEY_WIRE_FACING: &str = "wireFacing";
+const KEY_WIRE_POWER: &str = "wirePower";
+const KEY_WIRE_CHANGED_AT: &str = "wireChangedAt";
+const KEY_WIRE_PROPAGATE: &str = "wirePropagate";
+/// The block-state keys the `BlockPart` reads: the exact 0..15 strength and the input side.
+const WIRE_STATE_FACING: &str = "wire_facing";
+static WIRE_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -3146,6 +3169,148 @@ impl BlockEntityPart for RedReceiverPart {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The wire's glue (slice 19) — `WireTileEntity.getRedstoneOutput`/`checkRedstone`
+// ---------------------------------------------------------------------------
+
+/// Translate the SDK's `BlockSignalEvent.face` into the Java `getRedstoneOutput` `side` argument.
+/// The two are opposites: the SDK's face is the side of this block facing the consumer asking for
+/// power, while vanilla's `getSignal` direction is the side facing away from it ("directions in
+/// redstone signal related methods are backwards"). McJtyLib's `getRedstoneOutput` returns power
+/// when `side == getInputSide()` — i.e. it emits toward `inputSide.getOpposite()`, the downstream
+/// neighbour. Expressed in SDK faces that is `face == inputSide.getOpposite()`, which is what the
+/// pure [`runtime::wire_output`] rule is ultimately asked. `Down`/`Up` are never a wire input side
+/// (the jar only writes the four horizontal `logic_facing` values), so they emit nothing.
+fn wire_java_side(face: Direction) -> &'static str {
+    match face {
+        Direction::North => "south",
+        Direction::South => "north",
+        Direction::West => "east",
+        Direction::East => "west",
+        Direction::Down => "up",
+        Direction::Up => "down",
+    }
+}
+
+/// The direction to hand `LevelRef::signal` when reading the wire's input-side neighbour. The
+/// hook's `face` is consumer-facing ("the side that touches the block reading it"), but
+/// `getSignal`'s direction is the backwards one, so the two are opposites: a north input side is
+/// read with `Direction::North`, which dispatches the neighbour's hook with `face = South`.
+fn wire_read_direction(facing: &str) -> Direction {
+    match facing {
+        "north" => Direction::North,
+        "south" => Direction::South,
+        "east" => Direction::East,
+        "west" => Direction::West,
+        _ => Direction::North,
+    }
+}
+
+/// `WireTileEntity.checkRedstone`: read the input-side neighbour's own emitted strength
+/// (`SignalGetter.getSignal`, never `getBestNeighborSignal`, which would see this wire's own output
+/// as a phantom input), cache the exact 0..15 in the `signal` block state, and wake the neighbours
+/// so the wire on the output side and a lamp at the far end re-read it. The input side is mirrored
+/// into a second state property because `block_signal` receives state, not block-entity data.
+fn wire_block_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let facing =
+        read_text(&event.entity.nbt, KEY_WIRE_FACING).unwrap_or_else(|| "north".to_owned());
+    write_text(&mut event.entity.nbt, KEY_WIRE_FACING, &facing);
+    let Some(level) = ticking_level(&*host) else {
+        return;
+    };
+    let into = wire_read_direction(&facing);
+    let input = wire_source(pos, &facing)
+        .and_then(|source| level.signal(&*host, source, into))
+        .unwrap_or(0);
+    let power = wire_output(input, &facing, &facing);
+    write_int(&mut event.entity.nbt, KEY_WIRE_POWER, power);
+    // The artefact's `loopDetector` is 0 outside its own synchronous nudge; the SDK schedules
+    // neighbour updates instead, so the guard is always satisfied here. Its decision is kept as
+    // an observation the harness readout can assert.
+    write_flag(
+        &mut event.entity.nbt,
+        KEY_WIRE_PROPAGATE,
+        wire_loop_allows(0),
+    );
+    let prior = analog_cached_signal(&*host, level, pos);
+    let state_facing = level
+        .block_state(&*host, pos)
+        .and_then(|state| host.block_state_string(state))
+        .and_then(|name| sensor_state_property(&name, WIRE_STATE_FACING).map(str::to_owned));
+    if power != prior || state_facing.as_deref() != Some(facing.as_str()) {
+        write_int(
+            &mut event.entity.nbt,
+            KEY_WIRE_CHANGED_AT,
+            level.game_time(&*host).unwrap_or(0) as i32,
+        );
+        host.set_block_property(pos, KEY_SIGNAL, &power.to_string());
+        host.set_block_property(pos, WIRE_STATE_FACING, &facing);
+        if let Some(state) = level.block_state(&*host, pos) {
+            // `Neighbours` includes `input_side.getOpposite()`, the output side `checkRedstone`
+            // nudges explicitly; waking all six is the SDK's equivalent of that call.
+            let _ = level.update_neighbors(host, pos, state, NeighbourUpdate::Neighbours);
+        }
+    }
+}
+
+/// The wire's one Part: a block entity with a server tick, and the two redstone methods that make
+/// its cached strength a real vanilla signal only on the input side
+/// (`WireTileEntity.getRedstoneOutput`/`LogicSupport.isSignalSource`).
+struct WirePart;
+
+#[mod_api::horizon_part]
+impl BlockPart for WirePart {
+    fn is_signal_source(&self, _level: &dyn LevelHost, event: &mut IsSignalSourceEvent) {
+        event.source = true;
+    }
+
+    fn block_signal(&self, level: &dyn LevelHost, event: &mut BlockSignalEvent) {
+        let Some(name) = level.state_string(event.state) else {
+            return;
+        };
+        let power = analog_signal_from_state(&name);
+        let input_side = sensor_state_property(&name, WIRE_STATE_FACING).unwrap_or("north");
+        event.signal = wire_output(power, wire_java_side(event.face), input_side);
+    }
+}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for WirePart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        wire_block_tick(host, event);
+    }
+}
+
+/// `/rftoolsutility wire <pos> [nonce]`: the wire's parsed input, cached strength, the exact
+/// side it emits on (`forward`, the neighbour `checkRedstone` nudges), the game time of the last
+/// change and the adjacent lamp's live state. Every field comes from the game, never wall time.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the readout carries the parsed strength, forward side and game-time evidence"
+)]
+fn wire_line(
+    pos: [i32; 3],
+    input: i32,
+    power: i32,
+    changed: i32,
+    forward: Option<[i32; 3]>,
+    lamp: &str,
+    facing: &str,
+    time: i64,
+    nonce: Option<&str>,
+) -> String {
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    let forward = forward.map_or_else(|| "-".to_owned(), |pos| format!("{pos:?}"));
+    format!(
+        "/rftoolsutility: wire at {pos:?}: input={input} power={power} output={power} changed={changed} forward={forward} lamp={lamp} facing={facing} time={time}{suffix}"
+    )
+}
+
 /// `/rftoolsutility redstone <pos> [nonce]`: a parsed readout of either machine. The
 /// transmitter prints its input power, saved `prevIn` and the channel's table value; the
 /// receiver prints its channel, analog mode, table value, emitted strength, the lamp's live
@@ -3904,6 +4069,18 @@ impl Hooks for Mod {
                 "rftoolsutility: the redstone receiver part was refused: {error}"
             ));
         }
+
+        // Slice 19: the wire's block entity, directional redstone Part and per-tick propagation.
+        // Both the strength and the input side live in the block state because the redstone hook
+        // reads state, not the block entity's saved compound. No menu or renderer is declared —
+        // `wire-set` replaces the GUI that wrote the jar's `logic_facing`.
+        let _ = WIRE_ITEM.set(r.item_key(WIRE));
+        let wire_kind = r.block_entity_type(WIRE_TYPE).blocks(&[WIRE]).build();
+        if let Err(error) = r.block_entity_part(&wire_kind, WirePart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the wire part was refused: {error}"
+            ));
+        }
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -4095,6 +4272,12 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(WIRE) {
+            if let Some(item) = WIRE_ITEM.get() {
+                carry_machine(level, event, *item, WIRE_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -4256,6 +4439,15 @@ impl Hooks for Mod {
             "rftoolsutility redstone-set <pos:block_pos> <channel:integer> <analog:word> <facing:word>",
             2,
         ));
+        // Slice 19: the wire's GUI-equivalent controls — a readout of the strength it passes and
+        // the neighbour it feeds, and a way to write the input side the jar's GUI set.
+        event.commands.push(Command::new(
+            "rftoolsutility wire <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility wire-set <pos:block_pos> <facing:word>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -4305,6 +4497,8 @@ impl Hooks for Mod {
                     | "invchecker-set"
                     | "redstone"
                     | "redstone-set"
+                    | "wire"
+                    | "wire-set"
                     | "recipes"
             ]
         );
@@ -5551,6 +5745,75 @@ impl Hooks for Mod {
                         "Redstone channel set to {channel}, analog={analog}, input to the {facing}."
                     ),
                 );
+            }
+            ["rftoolsutility", "wire"] => {
+                let Some(entity) = machine_at(&*host, level, pos, WIRE) else {
+                    feedback(host, "No wire there.");
+                    return Flow::Cancel;
+                };
+                let Some(nbt) = entity.data(&*host) else {
+                    feedback(host, "No wire there.");
+                    return Flow::Cancel;
+                };
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let facing = read_text(&nbt, KEY_WIRE_FACING).unwrap_or_else(|| "north".to_owned());
+                let into = wire_read_direction(&facing);
+                let input = wire_source(pos, &facing)
+                    .and_then(|source| level.signal(&*host, source, into))
+                    .unwrap_or(0);
+                let power = read_int_or(&nbt, KEY_WIRE_POWER, 0);
+                let changed = read_int_or(&nbt, KEY_WIRE_CHANGED_AT, -1);
+                let time = level.game_time(&*host).unwrap_or(0);
+                let lamp = if red_lamp(&*host, level, pos) {
+                    "lit"
+                } else {
+                    "dark"
+                };
+                feedback(
+                    host,
+                    &wire_line(
+                        pos,
+                        input,
+                        power,
+                        changed,
+                        wire_forward(pos, &facing),
+                        lamp,
+                        &facing,
+                        time,
+                        nonce,
+                    ),
+                );
+            }
+            ["rftoolsutility", "wire-set"] => {
+                let usage = "Usage: /rftoolsutility wire-set <pos> <facing>";
+                let Some(CommandArgumentValue::String(facing)) = invocation.argument("facing")
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                if logic_neighbours(pos, facing).is_none() {
+                    feedback(host, "unknown facing (north|south|east|west).");
+                    return Flow::Cancel;
+                }
+                let Some(entity) = machine_at(&*host, level, pos, WIRE) else {
+                    feedback(host, "No wire there.");
+                    return Flow::Cancel;
+                };
+                let Some(mut nbt) = entity.data(&*host) else {
+                    feedback(host, "No wire there.");
+                    return Flow::Cancel;
+                };
+                write_text(&mut nbt, KEY_WIRE_FACING, facing);
+                write_int(&mut nbt, KEY_WIRE_CHANGED_AT, -1);
+                if entity.replace_data(host, nbt).is_err() {
+                    feedback(host, "No wire there.");
+                    return Flow::Cancel;
+                }
+                host.set_block_property(pos, WIRE_STATE_FACING, facing);
+                feedback(host, &format!("Wire input set to the {facing}."));
             }
             _ => return Flow::Continue,
         }
@@ -6934,5 +7197,62 @@ mod tests {
         channels.set_value(1, 7);
         assert_eq!(format_channels(&channels), "lastId=4\n1 7\n4 15\n");
         assert_eq!(parse_channels("lastId=4\n1 7\n4 15\n"), channels);
+    }
+
+    // ---- wire (slice 19) ----
+
+    #[test]
+    fn the_wire_readout_is_the_line_the_harness_parses() {
+        assert_eq!(
+            wire_line(
+                [201, 101, 0],
+                15,
+                11,
+                410,
+                Some([201, 101, 1]),
+                "lit",
+                "north",
+                430,
+                Some("wire")
+            ),
+            "/rftoolsutility: wire at [201, 101, 0]: input=15 power=11 output=11 changed=410 forward=[201, 101, 1] lamp=lit facing=north time=430 nonce=wire"
+        );
+    }
+
+    #[test]
+    fn a_wires_cached_state_is_the_hook_answers_exactly_one_side() {
+        let name = "rftoolsutility:wire[signal=11,wire_facing=north]";
+        let power = analog_signal_from_state(name);
+        let input_side = sensor_state_property(name, WIRE_STATE_FACING).unwrap();
+        assert_eq!(power, 11);
+        assert_eq!(input_side, "north");
+        // A consumer south of the wire is asked about by the SDK with `face = South`, which maps
+        // to Java's `side = North = input_side`: it sees 11. The source-facing SDK faces report 0,
+        // which is the artefact's exact `getRedstoneOutput` rule once the convention is mapped.
+        assert_eq!(
+            wire_output(power, wire_java_side(Direction::South), input_side),
+            11
+        );
+        assert_eq!(
+            wire_output(power, wire_java_side(Direction::North), input_side),
+            0
+        );
+        assert_eq!(
+            wire_output(power, wire_java_side(Direction::East), input_side),
+            0
+        );
+        assert_eq!(
+            wire_output(power, wire_java_side(Direction::Down), input_side),
+            0
+        );
+    }
+
+    #[test]
+    fn a_wire_reads_its_input_neighbour_and_feeds_the_opposite_side() {
+        let pos = [200, 101, 0];
+        assert_eq!(wire_source(pos, "north"), Some([200, 101, -1]));
+        assert_eq!(wire_forward(pos, "north"), Some([200, 101, 1]));
+        assert_eq!(wire_source(pos, "east"), Some([201, 101, 0]));
+        assert_eq!(wire_forward(pos, "east"), Some([199, 101, 0]));
     }
 }

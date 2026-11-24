@@ -1,0 +1,15 @@
+{
+  "category": "misc",
+  "key": {
+    "A": "rftoolsbase:machine_base",
+    "r": "minecraft:redstone"
+  },
+  "pattern": [
+    "rAr"
+  ],
+  "result": {
+    "count": 1,
+    "id": "rftoolsutility:wire"
+  },
+  "type": "minecraft:crafting_shaped"
+}

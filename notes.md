@@ -1,8 +1,11 @@
-# RFTools Utility — port notes (slices 1–17: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer, the timer, the counter, the analog, the logic gate and the inventory checker)
+# RFTools Utility — port notes (slices 1–19: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer, the timer, the counter, the analog, the logic gate, the inventory checker, the redstone transmitter/receiver and the wire)
 
-> **Current state (2026-11-24): slice 18, package 0.2.17 at pin
+> **Current state (2026-11-24): slice 19, package 0.2.18 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 18 — the redstone transmitter/receiver (2026-11-24)`** first: the
+> **`## Slice 19 — the wire (2026-11-24)`** first: the block gate, the two direction
+> conventions mapped in game, the six-wire lamp leg and the lone-wire directional
+> differential. Then
+> **`## Slice 18 — the redstone transmitter/receiver (2026-11-24)`**: the
 > persistence gate (the world-saved `RedstoneChannels` table maps to this pin's per-save file
 > store), the channel/signal rules, the lamp leg with game-time stamps and the relaunch that
 > proves the table was really persisted. Then
@@ -3787,3 +3790,236 @@ ending `EXIT:1`. The other remaining gap, `redstone_information`, is an item who
 is the `GuiRedstoneInformation` tablet screen — check for a menu path before proposing it as a
 slice; do not invent a GUI. Redistribute the modified brief from the orchestrator; this report
 proposes it, it does not dispatch it.
+
+## Slice 19 — the wire (2026-11-24)
+
+**Chosen from the port's own `## Next slice`** (the section immediately above this one), verbatim:
+
+> The next logic-family gap on the same line is `wire` (`rftoolsutility:wire`, `WireTileEntity`), the
+> last redstone-logic sibling. It is a `LogicSlabBlock` whose `getRedstoneOutput` returns the input
+> side's `powerLevel` only on the output side and whose `checkRedstone` propagates a neighbour
+> change (`WireTileEntity.java` at `f799314`), so it fits **machines** with the same `LevelRef::signal`
+> + `BlockPart::block_signal` surface. **Gate first:** confirm the artefact's wire is a block (not a
+> Java-only network hook) and that its states are expressible as a content block; if not, stop with
+> `blocked(<symbol>)`. The concrete assertion: a redstone block feeds a short wire run built from
+> `rftoolsutility:wire`, a vanilla lamp at the far end lights at the artefact's declared strength
+> while a broken link stays dark, with a redstone-block lamp control and `SELFTEST_AT=wire` ending
+> `EXIT:1`. The other remaining gap, `redstone_information`, is an item whose whole behaviour is
+> the `GuiRedstoneInformation` tablet screen — check for a menu path before proposing it as a
+> slice; do not invent a GUI.
+
+and the shared gap line `## Gaps (the rest of the mod)`:
+
+> **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`, `digit`, `logic`,
+> `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+
+It fits the ledger's **machines** tier exactly: one block entity, one directional signal read, an
+exact 0..15 cache and the already-proven `BlockPart::block_signal` surface — no renderer, no entity
+AI, no new client half. **Pin** `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` /
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, API `0.2`, game 26.3. **Version 0.2.18.** Class
+**content**, tier **machines** (ledger). MIT, ours on main → an **Update** of the entry (never a
+first `Add`).
+
+### Block gate — PASSED, not `blocked`
+
+Read from the upstream `1.21_neo` clone at the artefact's own commit
+`f799314007d68042df8504e83cd549360f2627c7` (analysis only, clone at `/tmp/opencode`), plus
+McJtyLib's `LogicSupport.java`, `LogicSlabBlock.java` and `LogicFacing.java` at the same line:
+
+- `WireTileEntity extends GenericTileEntity`; `createBlock()` returns a `LogicSlabBlock`. It has
+  exactly two redstone methods — `getRedstoneOutput` and `checkRedstone` — and **no cross-block
+  table, channel registry or network hook** (unlike slice 18's `RedstoneChannels`). It is a plain
+  placeable block whose output is its input power on one side, with a neighbour-change nudge to the
+  opposite side.
+- Its 24 `logic_facing` rotations are a content-schema limitation shared by every logic sibling,
+  not a missing API: the port carries four horizontal `wire_facing` values plus the cached strength
+  in the block state. Not `blocked(<symbol>)`.
+
+### The artefact's exact directional rule (read first)
+
+```java
+public int getRedstoneOutput(BlockState state, BlockGetter world, BlockPos pos, Direction side) {
+    if (side == LogicSupport.getFacing(state).getInputSide()) { return powerLevel; } else { return 0; }
+}
+public void checkRedstone(Level world, BlockPos pos) {
+    support.checkRedstone(this, world, pos);              // powerLevel = getSignal(input neighbour)
+    if (loopDetector <= 0) {
+        loopDetector++;
+        BlockState state = world.getBlockState(pos);
+        BlockPos offsetPos = pos.relative(LogicSupport.getFacing(state).getInputSide().getOpposite());
+        if (world.hasChunkAt(offsetPos)) { world.neighborChanged(offsetPos, state.getBlock(), pos); }
+        loopDetector--;
+    }
+}
+```
+
+McJtyLib `LogicSupport`: `checkRedstone` reads `world.getSignal(pos.relative(inputSide), inputSide)`;
+`getRedstoneOutput` returns the cached power only when `side == inputSide`; `setRedstoneState`
+notifies `pos.relative(inputSide.getOpposite())`. **Two direction conventions had to be mapped, and
+both were found in game, not guessed:**
+
+1. Vanilla `getSignal`'s direction is the *backwards* one ("directions in redstone signal related
+   methods are backwards"). The SDK's `LevelRef::signal(pos, direction)` uses that convention, so
+   the wire tick reads its input-side neighbour with `Direction::North` for a north input side
+   (`wire_read_direction`), which dispatches the neighbour's hook with `face = South`.
+2. The SDK's `BlockSignalEvent.face` is the **consumer-facing** side ("the side that touches the
+   block reading it"). The artefact's `side == inputSide` condition therefore becomes, in SDK
+   terms, `face == inputSide.getOpposite()` (`wire_java_side`). The first build emitted on
+   `face == inputSide` and the far lamp stayed dark; the second build mapped the conventions
+   correctly and the chain propagated 15 to a lit lamp.
+
+The first mapping's failure is kept as `e2e-slice19-wire.log`'s earlier runs (overwritten by the
+green leg) and described here: the root cause was the convention mismatch, diagnosed against
+`LogicSupport`/McJtyLib and the SDK's `hook:block_signal` doc, not a guessed fix.
+
+### What it does
+
+- **The block.** `rftoolsutility:wire` on `minecraft:iron_block` with two state properties: `signal`
+  (0…15, the exact strength for the redstone hook) and `wire_facing` (north/south/east/west). The
+  jar's four slab models, top texture, item model, recipe, advancement and loot table are carried;
+  its 24 `logic_facing` rotations are replaced by those two states.
+- **The tick.** Reads the input-side neighbour's own emitted strength, runs the artefact's
+  pass-through, mirrors the exact 0..15 into `signal` and the side into `wire_facing`, and wakes the
+  neighbours on a change — `Neighbours` includes `inputSide.getOpposite()`, the output side
+  `checkRedstone` nudges. The artefact's `loopDetector` is 0 outside its own synchronous nudge (the
+  SDK schedules neighbour updates instead), so the guard's decision is kept as an observation.
+- **The redstone.** `BlockPart::block_signal` reports the cached strength **only on the output
+  side** (the consumer-facing face opposite the input side) and 0 elsewhere; `is_signal_source`
+  marks the wire a source. A real vanilla redstone signal.
+- **The harness.** `/rftoolsutility wire <pos> [nonce]` prints `input=… power=… output=… changed=…
+  forward=… lamp=… facing=… time=…`; `wire-set <pos> <facing>` is the GUI equivalent. `changed`
+  and `time` are game-time stamps, `forward` is the neighbour the guarded propagation feeds.
+
+### Red → green (unit, verbatim)
+
+Five pure rules were `todo!()` stubs behind their tests first (`slice19-red.log`):
+
+```
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 172 filtered out
+  runtime::tests::a_wire_emits_only_on_its_input_side                 not yet implemented
+  runtime::tests::a_wire_clamps_the_strength_it_emits                 not yet implemented
+  runtime::tests::a_wire_reads_the_neighbour_on_its_input_side       not yet implemented
+  runtime::tests::a_wire_propagates_to_the_side_opposite_its_input   not yet implemented
+  runtime::tests::a_wires_loop_guard_stops_reentrant_propagation     not yet implemented
+```
+
+Green: **180 passed; 0 failed** (`sdk-test.log` regenerated for 0.2.18 after the final build) — 99
+runtime and 81 glue tests, including `the_wire_readout_is_the_line_the_harness_parses`,
+`a_wires_cached_state_is_the_hook_answers_exactly_one_side` and
+`a_wire_reads_its_input_neighbour_and_feeds_the_opposite_side`. `cargo fmt --check` clean and
+`cargo clippy --all-targets --offline -- -D warnings` 0 warnings (`slice19-lint-final.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-wire.sh` — a focused, fail-capable leg reusing the launcher-built game; one lease per
+leg, every log ends with its exit. The assertion is a **vanilla redstone lamp** at the far end of a
+six-wire run; a vanilla redstone block powers the same lamp first as the positive control.
+
+| log | verdict |
+|---|---|
+| `e2e-slice19-wire.log` | **PASS**, `EXIT:0` — W–W4 |
+| `e2e-slice19-wire-control.log` | **FAIL: ctl place rftoolsutility:wire … was refused three times**, `EXIT:1` (unmodded Nightly) |
+| `e2e-slice19-wire-selftest.log` | **FAIL: SELFTEST wire: the fed run lit the far lamp, expected it to stay dark**, `EXIT:1` |
+| `e2e-slice19-{sensor,sequencer,timer,counter,analog,logic,invchecker,redstone}.log` | each **PASS**, `EXIT:0` — the earlier logic families, no regression on the final bytes |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=118 ok=118 missing-exit=0 bad-exit=0`
+(`slice19-e2e-gate.log`).
+
+The phases, each asserting a parsed value (verbatim from the green transcript):
+
+```
+W-control: lamp with a vanilla redstone block: minecraft:redstone_lamp[lit=true] / after removing it: [lit=false]
+W0:  wire at [202, 101, -3]: input=0 power=0 output=0 changed=-1 forward=[202, 101, -2] lamp=dark facing=north time=415 nonce=1
+W1:  wires at z=-3…2 all input=15 power=15 output=15 changed=477; lamp at [202,101,3]=lit at the far end, time=537 nonce=7
+W2:  wire at [202, 101, 1]: input=0 power=0 output=0 changed=552 … lamp=dark  (the middle wire was removed)
+W3:  single wire at [205,101,8] north-facing: power=15 forward=[205,101,9] lamp=lit … nonce=10
+     the same wire south-facing: power=0 forward=[205,101,7] lamp=dark signal=0 … nonce=11
+W4:  give rftoolsutility:not_a_wire → rc=1 {"error":"unknown item rftoolsutility:not_a_wire"}
+```
+
+Counterfactuals: the redstone-block control proves the lamp and its `lit` parser work in this game;
+W2's air gap is the broken-link differential against W1; W3's lone wire is the **directional**
+differential — with no conducting chain, its output-side lamp lights on `north` and darkens on
+`south`, and its cached `signal` state falls to 0. `SELFEST_AT=wire` inverts W1's far-lamp
+assertion and fails as designed; `CONTROL=1` runs the same script on the unmodded Nightly.
+
+### Measured traps this slice cost (harness, engine and SDK conventions)
+
+1. **A chained run's `LevelRef::signal` reads are not a directional oracle.** The wire's block is an
+   `iron_block` template — a redstone conductor — and `LevelRef::signal` adds conducted power
+   *after* the redstone hook. After reversing a middle wire, its cached `signal` was 0 but the next
+   wire still read 15 through conduction, so the far lamp stayed lit. W3 therefore uses a **lone**
+   wire, whose lamp reads the hook's own weak signal directly, as the directional assertion. The
+   run's far-lamp assertion (W1) and the air-gap differential (W2) still prove the end-to-end rule.
+2. **The two direction conventions.** The first build compared the SDK's consumer-facing `face`
+   directly with the artefact's backwards `side`; the lamp stayed dark. Mapping `side = face.getOpposite()`
+   (`wire_java_side`) and reading the input neighbour with `wire_read_direction` made the chain pass
+   15 and the lamp light (see the direction section above).
+3. **The `forward=[x, y, z]` parser** first captured only `[202,` (up to the first space); the regex
+   was changed to capture `\[[^\]]*\]`. The product code was correct — the harness parse was at fault.
+4. **`cargo fmt --check` and clippy run on the remote copy**, whose pull-back excludes `*.rs`;
+   `rustfmt --edition 2024` was applied locally before every final lint, and every Rust step printed
+   `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no `BUILD_LOCAL=1`.
+
+### Deviations and content adaptations
+
+- **The input side is a block-state property, not a saved advisory.** Its siblings keep the facing
+  only in the block entity, but `BlockPart::block_signal` receives the block state and cannot read
+  block-entity data, so this wire carries `wire_facing` in the state as well (written by
+  `wire-set`). A user still cannot orient the block by placement; the jar's 24 `logic_facing`
+  rotations are not expressible as content states.
+- **The GUI is a command.** `wire-set` writes the side the jar's GUI wrote; the loop detector's
+  decision is an observation, not a saved field.
+- **No new upstream defect adopted.** The pass-through, the changed-only nudge and the 0…15 exact
+  strength are the artefact's own. No comparator/TOP/Jade, no sounds, no GUI — the standing
+  machines-tier gaps. `digit` stays blocked (`no-redstone-output:DigitTileEntity`).
+- The carried recipe needs `rftoolsbase:machine_base`, so the e2e gives the block, as every
+  machine's does.
+
+### Coverage after slice 19
+
+| family | status |
+|---|---|
+| `rftoolsutility:wire` (block, item, recipe, advancement, loot, texture, `signal` + `wire_facing` states) | tested — W: placed and read back; content regenerated by `assemble_content.py` |
+| the input-side read and the exact 0…15 pass-through | tested — W1 (six wires at 15), W2 (air gap → 0), unit rules for the clamp and source/forward sides |
+| the directional output (only the output side) | tested — W3 (lone wire: north lights its lamp, south darkens it); unit `a_wires_cached_state_is_the_hook_answers_exactly_one_side` |
+| the loop-guarded neighbour-change nudge | tested in code (`wire_loop_allows`, `Neighbours` includes the output side); the guard's decision is exposed in the readout |
+| `wire` / `wire-set` commands and unknown-id refusal | tested — W0–W4; the parsed reply and the refused `ctl give` |
+| a `rftoolsbase:machine_base` recipe craft | blocked(`rftoolsbase:machine_base`) — the parent port's item; the e2e gives the block |
+| the GUI and the jar's 24 `logic_facing` rotations | not ported (no menu; `wire-set` is the equivalent) |
+| `rftoolsutility:redstone_information`, `digit`, screens, teleporter GUIs | not ported — next gaps (see `## Next slice`) |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices (rust-review and rust-port did not apply: this slice was set by the orchestrator's Next slice and is a clean-room rewrite, not an audit or a translation)
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 255,734 B | `cb690fab949b3c4fb2f0353324f9687b62ea20aa4365ddb7157141d2a299d0fd` | 325 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice19-final-build-1/2.hmod`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.18 (native-mod, format
+native-1/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/e59da9094f0c2fdda6c627fe9eff22dec6a906f0, for
+26.3)`); `fits --build 0a875da` → `0a875da  made for`; `fits --build 0b14f8a` → `0b14f8a  fits`;
+`verify-sdk-package.py rftoolsutility` → **1/1** (180 passed, 0 clippy warnings, package matches the
+tree, R9, skills gate; `slice19-package-gate-final.log`). The manifest, README, crate doc and content
+were edited **before** the final build; the later `notes.md`/`VALIDATION.md`/`CONTENT.md` edits are not
+packed, and the gate still reports `package matches the tree`. The launcher's `native-build` compiled
+the mod (`Compiling rftoolsutility (1 of 1)`, `native-0a875da-0085ffa39d92`) after the stale
+0.2.17 tag was removed. All Rust ladder steps printed `build-slot: forwarding … to the remote runner`
+(hostname `AdLf-PC`), no `BUILD_LOCAL=1` was set, and no lease was backgrounded.
+
+## Next slice
+
+The only remaining logic-row gap is `redstone_information` — an **item** whose whole behaviour is
+`GuiRedstoneInformation`, the tablet screen that shows the redstone channels and their values. It is
+**not** a machines-tier block slice and there is no menu path in this port (all declared containers
+have `menu: None`), so before dispatching check the artefact's `RedstoneInformationItem` at
+`f799314` for a non-GUI, fail-capable oracle; if there is none, the honest next slice is a different
+machines family from the ledger (the teleporter GUIs, screens or environmental controller) or a
+stop, not an invented GUI. The concrete assertion for a tablet, if a menu path exists, would be: open
+the tablet beside a transmitter on channel N, read the channel's value from the screen, and assert it
+matches the world file's stored strength, with an unknown channel refused and `SELFTEST_AT=information`
+ending `EXIT:1`. Redistribute the modified brief from the orchestrator; this report proposes it, it
+does not dispatch it.

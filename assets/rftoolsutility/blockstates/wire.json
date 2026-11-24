@@ -1,0 +1,196 @@
+{
+  "variants": {
+    "signal=0,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=0,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=0,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=0,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=1,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=1,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=1,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=1,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=10,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=10,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=10,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=10,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=11,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=11,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=11,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=11,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=12,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=12,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=12,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=12,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=13,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=13,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=13,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=13,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=14,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=14,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=14,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=14,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=15,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=15,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=15,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=15,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=2,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=2,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=2,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=2,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=3,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=3,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=3,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=3,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=4,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=4,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=4,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=4,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=5,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=5,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=5,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=5,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=6,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=6,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=6,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=6,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=7,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=7,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=7,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=7,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=8,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=8,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=8,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=8,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=9,wire_facing=east": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=9,wire_facing=north": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=9,wire_facing=south": {
+      "model": "rftoolsutility:block/wire_0"
+    },
+    "signal=9,wire_facing=west": {
+      "model": "rftoolsutility:block/wire_0"
+    }
+  }
+}

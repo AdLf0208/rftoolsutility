@@ -1773,6 +1773,51 @@ pub fn receiver_output(channel: i32, value: Option<i32>, analog: bool) -> i32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The wire (slice 19) — `WireTileEntity.getRedstoneOutput` / `checkRedstone`
+// ---------------------------------------------------------------------------
+
+/// `WireTileEntity.getRedstoneOutput`: the cached input strength is handed to the redstone hook
+/// only on the input side (`LogicSupport.getFacing(state).getInputSide()`); every other side
+/// reports 0. Vanilla `getSignal` directions are "backwards", so a consumer on the opposite
+/// (output) side queries the wire with `direction = input_side` and sees this strength.
+#[must_use]
+pub fn wire_output(power: i32, face: &str, input_side: &str) -> i32 {
+    if face == input_side {
+        power.clamp(0, MAX_SIGNAL)
+    } else {
+        0
+    }
+}
+
+/// The input-side neighbour `pos.relative(inputSide)` whose emitted strength the wire reads
+/// (`LogicSupport.checkRedstone`), the same directional helper its logic siblings use.
+#[must_use]
+pub fn wire_source(pos: [i32; 3], input_side: &str) -> Option<[i32; 3]> {
+    logic_neighbours(pos, input_side).map(|neighbours| neighbours[0])
+}
+
+/// `WireTileEntity.checkRedstone` nudges `pos.relative(inputSide.getOpposite())` — the side the
+/// signal actually flows out of — after the cached strength changes.
+#[must_use]
+pub fn wire_forward(pos: [i32; 3], input_side: &str) -> Option<[i32; 3]> {
+    let [x, y, z] = pos;
+    match input_side {
+        "north" => Some([x, y, z + 1]),
+        "south" => Some([x, y, z - 1]),
+        "east" => Some([x - 1, y, z]),
+        "west" => Some([x + 1, y, z]),
+        _ => None,
+    }
+}
+
+/// `WireTileEntity.loopDetector <= 0`: the neighbour-change nudge is emitted only outside an
+/// in-progress propagation, so a wire run cannot re-enter itself indefinitely.
+#[must_use]
+pub const fn wire_loop_allows(detector: i32) -> bool {
+    detector <= 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3859,5 +3904,44 @@ mod tests {
         assert_eq!(receiver_output(1, Some(7), true), 7);
         assert_eq!(receiver_output(1, Some(15), true), MAX_SIGNAL);
         assert_eq!(receiver_output(1, Some(0), true), 0);
+    }
+
+    // ---- wire (slice 19) ----
+
+    #[test]
+    fn a_wire_emits_only_on_its_input_side() {
+        assert_eq!(wire_output(11, "north", "north"), 11);
+        assert_eq!(wire_output(11, "south", "north"), 0);
+        assert_eq!(wire_output(11, "east", "north"), 0);
+        assert_eq!(wire_output(0, "north", "north"), 0);
+    }
+
+    #[test]
+    fn a_wire_clamps_the_strength_it_emits() {
+        assert_eq!(wire_output(20, "west", "west"), MAX_SIGNAL);
+        assert_eq!(wire_output(-3, "west", "west"), 0);
+    }
+
+    #[test]
+    fn a_wire_reads_the_neighbour_on_its_input_side() {
+        assert_eq!(wire_source([200, 101, 0], "north"), Some([200, 101, -1]));
+        assert_eq!(wire_source([200, 101, 0], "east"), Some([201, 101, 0]));
+        assert_eq!(wire_source([200, 101, 0], "up"), None);
+    }
+
+    #[test]
+    fn a_wire_propagates_to_the_side_opposite_its_input() {
+        assert_eq!(wire_forward([200, 101, 0], "north"), Some([200, 101, 1]));
+        assert_eq!(wire_forward([200, 101, 0], "south"), Some([200, 101, -1]));
+        assert_eq!(wire_forward([200, 101, 0], "east"), Some([199, 101, 0]));
+        assert_eq!(wire_forward([200, 101, 0], "west"), Some([201, 101, 0]));
+        assert_eq!(wire_forward([200, 101, 0], "up"), None);
+    }
+
+    #[test]
+    fn a_wires_loop_guard_stops_reentrant_propagation() {
+        assert!(wire_loop_allows(0));
+        assert!(wire_loop_allows(-1));
+        assert!(!wire_loop_allows(1));
     }
 }

@@ -1,0 +1,47 @@
+{
+  "default_state": {
+    "signal": "0",
+    "wire_facing": "north"
+  },
+  "item": true,
+  "properties": {
+    "explosion_resistance": 2.0,
+    "hardness": 2.0,
+    "occludes": true,
+    "requires_tool": true,
+    "sounds": "minecraft:iron_block"
+  },
+  "state_properties": {
+    "signal": {
+      "type": "enum",
+      "values": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15"
+      ]
+    },
+    "wire_facing": {
+      "type": "enum",
+      "values": [
+        "north",
+        "south",
+        "east",
+        "west"
+      ]
+    }
+  },
+  "template": "minecraft:iron_block"
+}

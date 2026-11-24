@@ -786,3 +786,39 @@ packed lock); no local type or variant is named `Block`/`Item` (the new types ar
 and the two `Red*Part`s), so neither `fits` run false-failed; `E2E_TMP` and all path exports came
 from `launcher-game.sh env`, never `/tmp`. All ten slice-18 logs plus the 97 earlier logs are
 strict-green.
+
+## Slice 19 — the wire (2026-11-24, pin `0a875da`, package 0.2.18)
+
+| # | Step | Command (inside the lease) | Evidence | Result |
+|---|---|---|---|---|
+| 1 | gate | read `WireTileEntity`/`WireBlock` at `f799314` + McJtyLib `LogicSupport`/`LogicSlabBlock`/`LogicFacing` | `notes.md` § Slice 19 | a placeable `LogicSlabBlock` with a directional redstone surface, **no cross-block table** — not `blocked` |
+| 2 | red | five pure wire rules stubbed with `todo!()`, `cargo test --offline wire` | `slice19-red.log` | `test result: FAILED. 0 passed; 5 failed; … 172 filtered out`, each `not yet implemented` |
+| 3 | green | `cargo test --offline` | `slice19-green-final.log`, `sdk-test.log` | **180 passed; 0 failed** (99 runtime + 81 glue) |
+| 4 | fmt + clippy | `cargo fmt --check && cargo clippy --all-targets --offline -- -D warnings` | `slice19-lint-final.log`, `sdk-clippy.log` | clean, 0 warnings |
+| 5 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build` | `slice19-final-build-1/2.log`, `-1/2.hmod` | `cmp`-identical, **255,734 B**, `cb690fab…d0fd`, 325 entries, no packed lock |
+| 6 | check | `cargo horizon-mod check rftoolsutility.hmod` | `slice19-final-check-fits.log` | `rftoolsutility 0.2.18 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_OK** |
+| 7 | fits pin | `cargo horizon-mod fits … --build 0a875da` | `slice19-final-check-fits.log` | `0a875da  made for`, **FITS_PIN_OK** |
+| 8 | fits other | `cargo horizon-mod fits … --build 0b14f8a` | `slice19-final-fits-other.log` | `0b14f8a  fits`, **FITS_OTHER_OK** |
+| 9 | package gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | `slice19-package-gate-final.log` | **1/1** (180 passed, 0 clippy warnings, package matches tree, R9, skills gate) |
+| 10 | native build | `launcher-game.sh build rftoolsutility` | `slice19-native-build-final.log` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-0085ffa39d92`; stale 0.2.17 tag removed first |
+| 11 | wire leg | `e2e-wire.sh` on the launcher game | `e2e-slice19-wire.log` | **PASS**, `EXIT:0` — W–W4 |
+| 12 | control | `CONTROL=1 e2e-wire.sh` (unmodded Nightly) | `e2e-slice19-wire-control.log` | **FAIL: ctl place … refused three times**, `EXIT:1` |
+| 13 | selftest | `SELFTEST=1 SELFTEST_AT=wire e2e-wire.sh` | `e2e-slice19-wire-selftest.log` | **FAIL: SELFTEST wire: the fed run lit the far lamp, expected it to stay dark**, `EXIT:1` |
+| 14 | regressions | the eight sibling legs on the final bytes | `e2e-slice19-{sensor,sequencer,timer,counter,analog,logic,invchecker,redstone}.log` | all **PASS**, `EXIT:0` |
+| 15 | log gate | `python3 ports/tools/check-e2e-logs.py rftoolsutility-e2e --strict` | `slice19-e2e-gate.log` | `logs=118 ok=118 missing-exit=0 bad-exit=0` |
+
+**Direction conventions, measured not guessed.** The first build compared the SDK's consumer-facing
+`BlockSignalEvent.face` with the artefact's backwards `side` and the far lamp stayed dark; the second
+mapped `side = face.getOpposite()` and read the input neighbour with `wire_read_direction`, which
+lit the lamp. A chained run's `LevelRef::signal` reads include iron-block conduction **after** the
+hook, so reversing a middle wire left downstream reads at 15; the directional differential therefore
+uses a lone wire (W3), whose lamp reads the hook's own weak signal directly. The `forward=[x, y, z]`
+parser first captured only `[202,`; it now captures the whole bracket. `sdk-test.log`/`sdk-clippy.log`
+were regenerated from the final forwarded runs (the pull-back excludes `*.rs`), and the package gate
+was re-run last. The manifest, README, crate doc and content were edited **before** the final build;
+the later notes/VALIDATION/CONTENT edits are not packed, and the gate still reports
+`package matches the tree`. R9 holds; no local type or variant is named `Block`/`Item` (the new
+helpers are `WirePart`, `wire_face`/`wire_java_side` and the `runtime::wire_*` functions), so neither
+`fits` run false-failed. Every Rust step printed `build-slot: forwarding … to the remote runner`
+(hostname `AdLf-PC`), no `BUILD_LOCAL=1` was set, no lease was backgrounded, and all path exports
+came from `launcher-game.sh env` (`E2E_TMP`, never `/tmp`).

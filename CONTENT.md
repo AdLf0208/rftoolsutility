@@ -216,3 +216,27 @@ middle ingredient is `rftoolsbase:machine_base` (the parent port's item), so the
 blocks, as every machine slice has. The deterministic regeneration is part of the package build;
 running `python3 tools/assemble_content.py --check`-style comparison against a fresh run produces
 the same bytes (the script is the only writer of `assets/` and `data/`).
+
+## Slice 19 — the wire (`rftoolsutility:wire`)
+
+The wire's four slab models, top texture (`textures/block/logic/machinewiretop.png`), item model,
+recipe, advancement and loot table are carried from the RFTools Utility jar byte for byte (the loot
+table's `copy_components` function is removed by the same `upgrade_loot` pass as the other logic
+blocks). Its model's `rftoolsbase:` machine-base textures are re-pointed into this namespace.
+Unlike its siblings, the wire needs **two** content states: the exact 0…15 `signal` cache the
+redstone hook reads, and the four-way `wire_facing` input side — `BlockPart::block_signal` receives
+the block state and cannot read the block entity's saved compound, so the side lives in the state as
+well. The jar's 24 `logic_facing` rotations are not expressible as a content block's state.
+
+| File | What |
+|---|---|
+| `assets/rftoolsutility/blockstates/wire.json` | 64 variants: `signal=0…15` × `wire_facing=north\|south\|east\|west`, all pointing at `block/wire_0` |
+| `assets/rftoolsutility/items/wire.json` | the 26.3 item definition (`minecraft:model` → `rftoolsutility:item/wire`) |
+| `data/rftoolsutility/horizon/block/wire.json` | the block: `minecraft:iron_block` template, hardness 2.0 / blast 2.0, correct tool, metal sound, and the two declared state properties (defaults `signal=0`, `wire_facing=north`) |
+| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json` | the wire added to the tab |
+| `data/minecraft/tags/block/{mineable/pickaxe,needs_iron_tool}.json` | the wire added to both (upstream's `ironPickaxeTags()`) |
+| `assets/rftoolsutility/lang/en_us.json` | the two jar lang lines (`block.rftoolsutility.wire`, `message.rftoolsutility.wire.header`) |
+
+The carried recipe's middle ingredient is `rftoolsbase:machine_base`, the parent port's item, so
+the e2e gives the block, as every machine slice has. The deterministic regeneration is part of the
+package build; `tools/assemble_content.py` is the only writer of `assets/` and `data/`.
