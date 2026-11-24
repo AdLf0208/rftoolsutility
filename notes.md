@@ -1,8 +1,10 @@
-# RFTools Utility — port notes (slices 1–9: the tank, the crafter tiers, the spawner, the beamer and the teleporter family)
+# RFTools Utility — port notes (slices 1–11: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer and the sensor)
 
-> **Current state (2026-11-24): slice 9, package 0.2.8 at pin
+> **Current state (2026-11-24): slice 11, package 0.2.10 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 9 — the teleporter family (2026-11-24)`** first: the transmitter, receiver and
+> **`## Slice 11 — the sensor (2026-11-24)`** first: the switch from the dialing device to the
+> sensor, its real redstone output and the fail-capable lamp leg. Then
+> **`## Slice 9 — the teleporter family (2026-11-24)`**: the transmitter, receiver and
 > booster are the **player teleporter** family (not a matter mover — the artefact wins over the
 > brief's "matter fell / receiver rose" wording, which this mod does not have). Then
 > **`## Slice 8 — the matter beamer (2026-11-22)`**: the beamer now carries a spawner's
@@ -2207,3 +2209,209 @@ blocks), with a fail-capable redstone assertion rather than an invented GUI. The
 assertion for the dialing device would be: a dialing device adjacent to a transmitter lists the
 receiver id from the destination table and `/rftoolsutility dial` uses that id, with an unknown id
 refused — but this needs a menu-equivalent harness path first.
+
+## Slice 11 — the sensor (2026-11-24)
+
+**Surface check first (the dispatch's Step-0 gate): the dialing device is NOT expressible as a
+no-GUI machines slice.** Read from the jar and the upstream `1.21_neo` clone at the artefact's own
+commit `f799314007d68042df8504e83cd549360f2627c7` (analysis only, clone under `/tmp/opencode`):
+
+- `DialingDeviceTileEntity` has **no tick and no redstone output**. Its whole behaviour is its GUI:
+  `CMD_GETRECEIVERS` / `CMD_GETTRANSMITTERS` are mcjtylib `ListCommand`s, `CMD_DIAL` /
+  `CMD_DIALONCE` / `CMD_CHECKSTATUS` are `ResultCommand`s, all driven by `GuiDialingDevice`. The SDK
+  has no equivalent screen-command protocol and this port has **zero menu machinery** (every
+  container it declares has `menu: None`).
+- The list is `TeleportDestinations extends AbstractWorldData`: a world-persistent table with
+  `destinationById`, `destinationIdByCoordinate`, `lastId`, receiver registration and per-player
+  access. This port deliberately has no such registry — slice 9 dials the `GlobalPos` directly
+  (upstream's own fallback when a coordinate has no destination-table id).
+
+Implementing it would mean inventing a global destination table, integer ids and a list/dial
+command the artefact exposes only through a GUI — a new subsystem, not a slice, and the brief
+forbids inventing a GUI. **Switched to the sensor**, the other family the gap list and the 0.2.9
+report name.
+
+**Chosen from the port's own gap list** — `## Gaps (the rest of the mod)`, verbatim:
+
+> **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`, `digit`, `logic`,
+> `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+
+It fits the ledger's **machines** tier shape: one block, one block entity, a ten-tick server check
+and a real redstone output — no renderer, no entity AI, no new client half. The SDK at `0a875da`
+exposes the surface (`BlockPart::block_signal`, `is_signal_source`, `LevelHost::state_string`,
+`LevelRef::update_neighbors`, `Host::set_block_property` — the `laserbridges`, `securitycraft` and
+`integrateddynamics` reference implementations), so this is not `blocked`.
+
+**Pin** `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+mod API `0.2`, game 26.3. **Version 0.2.10.** Class **content**, tier **machines** (ledger).
+
+### The artefact's trigger rule (read first)
+
+`SensorTileEntity.java`: `tickServer` decrements `checkCounter`, resets it to **10** and calls
+`support.setRedstoneState(this, checkSensor() ? 15 : 0)`. `checkSensor` resolves the block on the
+input side (`getBlockPos().relative(facing.getInputSide())`); `SENSOR_BLOCK` checks that block with
+`checkBlock`, which compares the ghost slot's item (or accepts any `state.canOcclude()` block when
+the slot is empty). `SensorType`, `AreaType` (AREA_1/3/5), `GroupType` (ONE/ALL) and `SensorData`
+carry the setting. The jar's block has 24 `logic_facing` slab rotations and a GUI that writes the
+setting; neither is expressible by the content schema, so (as the analyzer/booster do for their
+cosmetic facing) the input side and matcher are saved settings written by a harness command.
+
+### What it does
+
+- **The block.** `rftoolsutility:sensor` on `minecraft:iron_block` with a `signal` state property
+  (`0`/`1`, default `0`) that caches the strength for the redstone hook. The jar's four sensor
+  models, face texture, item model, recipe, advancement, loot table and lang lines are carried;
+  its 24-rotation blockstate is replaced by the two `signal` variants, as the tank's nine-level
+  blockstate is generated.
+- **The check.** Every ten ticks the block entity reads the block on the configured input side
+  (`north` by default), matches the named block id (or any non-replaceable block for `any`), and
+  writes `signal=1`/`0` through `set_block_property`, then wakes the neighbours so a vanilla lamp
+  or wire beside the sensor reacts. The block entity's own payload is untouched.
+- **The redstone.** A `BlockPart::block_signal` reports **15** when the cached state is `1` (on both
+  the direct and indirect paths) and `is_signal_source` marks the sensor a source so wire connects.
+  Unlike the analyzer — whose artefact has no emitter — this is a **real vanilla redstone signal**.
+- **The harness.** `/rftoolsutility sensor <pos> [nonce]` prints
+  `signal=<0|15> type=<blocks|any> target=<id|none> area=1 group=one facing=<n>`;
+  `/rftoolsutility sensor-set <pos> <kind> <target> <area> <group> <facing>` is the GUI's equivalent
+  and refuses an unknown kind, facing, area or group. A broken sensor's item carries its setting
+  (`minecraft:block_entity_data`, as every machine's does).
+
+### Red → green (unit, verbatim)
+
+Five runtime rules were `todo!()` stubs behind their tests first; the focused red leg
+(`slice11-red.log`) ran four of them (the other two matcher tests do not contain "sensor" in their
+names):
+
+```
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 93 filtered out
+  runtime::tests::a_sensor_checks_every_ten_ticks            panicked at src/runtime.rs:1016:5: not yet implemented
+  runtime::tests::a_sensor_looks_at_the_block_on_its_input_side  panicked at src/runtime.rs:991:5: not yet implemented
+  runtime::tests::a_sensor_signal_is_fifteen_or_zero         panicked at src/runtime.rs:1010:5: not yet implemented
+  runtime::tests::an_unknown_sensor_kind_is_refused          panicked at src/runtime.rs:978:9: not yet implemented
+```
+
+The harness line's formatter was stubbed behind its own test (`slice11-glue-red.log`):
+
+```
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 97 filtered out
+  tests::the_sensor_readout_is_the_line_the_harness_parses  panicked at src/lib.rs:1588:5: not yet implemented
+```
+
+Green: **98 passed; 0 failed** (`slice11-green.log`, `sdk-test.log` regenerated for 0.2.10) — 56
+runtime and 42 glue tests. `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+0 warnings (`slice11-clippy.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-sensor.sh` — a focused, fail-capable leg reusing the launcher-built game; one lease per
+leg, every log ends with its exit. The assertion is a **vanilla redstone lamp** beside the sensor.
+
+| log | verdict |
+|---|---|
+| `e2e-slice11-sensor.log` | **PASS**, `EXIT:0` — AK–AK4 |
+| `e2e-slice11-sensor-selftest.log` | **FAIL: SELFTEST sensor: the matching block lit the lamp, expected it to stay dark**, `EXIT:1` |
+| `e2e-slice11-sensor-control.log` | **FAIL: ctl place rftoolsutility:sensor … was refused three times** (unmodded Nightly), `EXIT:1` |
+| `e2e-slice11-teleporter.log` | **PASS**, `EXIT:0` — AI–AI2 (the 0.2.8 family, no regression) |
+| `e2e-slice11-analyzer.log` | **PASS**, `EXIT:0` — AJ–AJ3 (the 0.2.9 family, no regression) |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=51 ok=51 missing-exit=0 bad-exit=0`.
+
+The phases, each asserting a parsed value (verbatim from the green transcript):
+
+```
+AK-control: lamp with a vanilla redstone block: minecraft:redstone_lamp[lit=true]
+            lamp after removing it: minecraft:redstone_lamp[lit=false]
+AK0:  /rftoolsutility: sensor at [201, 101, 0]: signal=0 type=blocks target=minecraft:stone area=1 group=one facing=north nonce=1
+AK1:  minecraft:redstone_lamp[lit=true] / signal=15 … nonce=2
+AK2:  minecraft:redstone_lamp[lit=false] / signal=0 … nonce=3   (dirt in front)
+AK3:  minecraft:redstone_lamp[lit=true] / signal=15 … nonce=4   (stone restored)
+AK4:  give: rc=1 {"error":"unknown item rftoolsutility:not_a_sensor"} / signal=15 … nonce=5
+```
+
+AK places the sensor at `[201,101,0]` and a vanilla lamp at `[202,101,0]`; the input side is north
+(`[201,101,-1]`). The vanilla redstone-block control proves the lamp and its `lit` parser work in
+this game. Counterfactuals: AK2 (a different block) against AK1, AK3's restore, AK0's air, and
+AK4's refused id; `SELFTEST_AT=sensor` inverts AK1 and fails as designed, so the redstone case can
+fail. `CONTROL=1` runs the same script on the unmodded Nightly, where the sensor item does not
+exist.
+
+### Measured traps this slice cost
+
+1. **`fits --build 0b14f8a` false-failed on `BlockStates::is_solid_render`** — the handle was
+   removed at the other build. The port now uses the stable `BlockStates::replaceable` (negated)
+   for `canOcclude()`, and both fits runs are green. No local type or variant is named `Block`/`Item`.
+2. **`ctl place` cannot place a vanilla redstone lamp beside the sensor** ("no visible face to
+   place … against"); the established harness sets vanilla blocks with `setblock`, which the leg
+   now does. The assertion is the lamp's `lit` state, not a placement gesture.
+3. **The ERR trap printed a spurious `FAIL:` for an intentionally refused `ctl give`**; the
+   refusal is now wrapped in an `if` condition so the green log has no `FAIL:` line at all.
+4. **Glue compile/lint:** the SDK's `Host` method is `block_state_string`, not `state_string`;
+   clippy rejects an inherent `from_str` (renamed `SensorKind::from_name`) and a needless `return`
+   at the end of `register`.
+
+### Deviations and content adaptations
+
+- **The input side is a saved setting, not the jar's 24-state `logic_facing`** (the content schema
+   cannot express those slab rotations); both are set by `/rftoolsutility sensor-set` instead of a
+   GUI. A user notices: the sensor cannot be oriented by placement.
+- **`canOcclude()` is approximated by `!replaceable()`**, the stable handle across both builds;
+   a thin non-replaceable block (a torch) would count as occluding here, where upstream's
+   `canOcclude` would not. The carried matcher blocks (stone, dirt) behave identically.
+- **The matcher is a block id, not the ghost slot's item.** Upstream compares the block's clone
+   item to a ghost-stack item; with no GUI the harness names the block id directly. For the
+   vanilla blocks the leg uses, the two spellings coincide.
+- **Only AREA_1 / GROUP_ONE and two sensor kinds (`blocks`, `any`) are carried.** The seven other
+   `SensorType`s, AREA_3/5/3x3/5x5/7x7 and GROUP_ALL are not ported (they need entity/growth queries
+   and more harness surface); `sensor-set` refuses them rather than pretending to apply them.
+- **No GUI, no infusing bonus, no comparator/TOP/Jade, no sounds** — the standing machines-tier
+   gaps. The jar's carried recipe needs `rftoolsbase:machine_base`, so the e2e gives the block.
+- **No new upstream defect** was adopted; the match, the 10-tick check and the 15/0 output are the
+   artefact's own rule.
+
+### Coverage after slice 11
+
+| family | status |
+|---|---|
+| `rftoolsutility:sensor` (block, item, recipe, advancement, loot, texture, `signal` state) | tested — AK: placed and read back; the content is regenerated by `assemble_content.py` |
+| the ten-tick check and the 15/0 redstone output | tested — AK0/AK1/AK2/AK3: a vanilla lamp lights only while the named block is in front; `SELFTEST_AT=sensor` inverts AK1 |
+| the matcher (`blocks` by id, `any` for empty) | tested — AK1 (stone), AK2 (dirt refused), AK0 (air); unit `a_named_matcher_only_accepts_its_own_block` and `an_empty_matcher_accepts_any_occluding_block` |
+| `sensor-set` / `sensor` commands and unknown-id refusal | tested — AK0–AK4; the parsed reply and the refused `ctl give` |
+| the input side (four horizontal facings, unknown refused) | tested in code (`sensor_front`, `SensorConfig::from_data`); AK uses north |
+| a `rftoolsbase:machine_base` recipe craft | blocked(`rftoolsbase:machine_base`) — the parent port's item; the e2e gives the block, as every machine's |
+| the seven other sensor kinds, larger areas, `GROUP_ALL`, the GUI | not ported (more harness surface and a menu; recorded above) |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices, rust-port
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 165,931 B | `a2b5a1427d6a2d50f09e93179cb63a9cb870bb1b6cb274a172ea7fb11803cfc3` | 216 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice11-build-a.sha`, `-b.sha`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.10 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`);
+`fits --build 0a875da` → `0a875da  made for`; `fits --build 0b14f8a` → `0b14f8a  fits`;
+`verify-sdk-package.py rftoolsutility` → **1/1** (package matches the tree, R9, skills gate).
+The README and both manifests were edited **before** the final build. The launcher's `native-build`
+compiled the mod (`Compiling rftoolsutility (1 of 1)`, `native-0a875da-fbbbe2710a00`) for the legs.
+All Rust ladder steps printed `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`);
+`BUILD_LOCAL=1` was never set. The launcher/native build and the game legs ran locally by design.
+
+## Next slice
+
+The next logic-family gap is the **sequencer** — `rftoolsutility:sequencer`
+(`SequencerTileEntity`, `SequencerData`, `SequencerMode`), from the same gap line:
+
+> **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`, `digit`, `logic`,
+> `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+
+It is the sibling of the sensor just proven and fits the same **machines** shape (one block entity,
+a 64-step redstone pattern, seven modes, an input signal and the `block_signal` surface now proven
+in game). The artefact's rule to read first is `SequencerTileEntity.tickServer` plus
+`SequencerMode` (`Once1/Once2/Loop1/Loop2/Loop3/Step/Loop4`) and `SequencerData.bits/delay/stepcount/
+endstate`. The concrete assertion: set a known 64-bit pattern and `Step` mode by command, pulse a
+**vanilla lever** on the input side once per step, and assert the adjacent vanilla lamp's `lit`
+state follows bit 0, then bit 1, then bit 2 (a vanilla redstone block as the positive control,
+as in AK); `SELFTEST_AT=sequencer` inverts one step and must `EXIT:1`. If the pin cannot express a
+clean edge-triggered input, stop with `blocked(<symbol>)` rather than invent a GUI.

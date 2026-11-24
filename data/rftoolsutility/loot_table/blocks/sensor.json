@@ -1,0 +1,23 @@
+{
+  "pools": [
+    {
+      "bonus_rolls": 0.0,
+      "entries": [
+        {
+          "functions": [
+            {
+              "function": "minecraft:copy_name",
+              "source": "block_entity"
+            }
+          ],
+          "name": "rftoolsutility:sensor",
+          "type": "minecraft:item"
+        }
+      ],
+      "name": "sensor",
+      "rolls": 1.0
+    }
+  ],
+  "random_sequence": "rftoolsutility:blocks/sensor",
+  "type": "minecraft:block"
+}

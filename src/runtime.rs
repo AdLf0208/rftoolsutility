@@ -953,6 +953,94 @@ pub fn analyzer_due(game_time: i64) -> bool {
     game_time.rem_euclid(20) == 0
 }
 
+// ---- slice 11: the sensor (`SensorTileEntity`) ----
+
+/// The `SensorType`s this slice carries. The names deliberately avoid the exact spellings `Block`
+/// and `Item`: a local type or variant with either name false-fails `cargo horizon-mod fits`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SensorKind {
+    /// `SENSOR_BLOCK`: match the block named by the ghost slot (here, by its block id).
+    Blocks,
+    /// `SENSOR_BLOCK` with an empty ghost slot: any occluding block matches.
+    AnySolid,
+}
+
+impl SensorKind {
+    /// The spelling the harness command uses.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocks => "blocks",
+            Self::AnySolid => "any",
+        }
+    }
+
+    /// Resolve a harness spelling, refusing an unknown one.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "blocks" => Some(Self::Blocks),
+            "any" => Some(Self::AnySolid),
+            _ => None,
+        }
+    }
+}
+
+/// `SensorTileEntity.tickServer`: `checkCounter = 10` between checks.
+pub const SENSOR_TICKS: i64 = 10;
+/// `support.setRedstoneState(this, checkSensor() ? 15 : 0)`.
+pub const SENSOR_ON: i32 = 15;
+pub const SENSOR_OFF: i32 = 0;
+
+/// The block on the sensor's input side: `getBlockPos().relative(facing.getInputSide())`.
+#[must_use]
+pub fn sensor_front(pos: [i32; 3], facing: &str) -> Option<[i32; 3]> {
+    let [x, y, z] = pos;
+    match facing {
+        "north" => Some([x, y, z - 1]),
+        "south" => Some([x, y, z + 1]),
+        "west" => Some([x - 1, y, z]),
+        "east" => Some([x + 1, y, z]),
+        _ => None,
+    }
+}
+
+/// `SensorTileEntity.checkBlock`: a named matcher compares the block id; an empty matcher (the
+/// `any` spelling) asks `state.canOcclude()`.
+#[must_use]
+pub fn block_matches(target: Option<&str>, actual: Option<&str>, occludes: bool) -> bool {
+    match target {
+        Some(id) => actual == Some(id),
+        None => occludes,
+    }
+}
+
+/// `checkSensor()` for the carried AREA_1 / GROUP_ONE case.
+#[must_use]
+pub fn sensor_sees(
+    kind: SensorKind,
+    target: Option<&str>,
+    actual: Option<&str>,
+    occludes: bool,
+) -> bool {
+    match kind {
+        SensorKind::Blocks => block_matches(target, actual, occludes),
+        SensorKind::AnySolid => occludes,
+    }
+}
+
+/// The redstone strength a check writes.
+#[must_use]
+pub fn sensor_signal(sees: bool) -> i32 {
+    if sees { SENSOR_ON } else { SENSOR_OFF }
+}
+
+/// Whether this game tick is a sensor check tick.
+#[must_use]
+pub fn sensor_due(game_time: i64) -> bool {
+    game_time.rem_euclid(SENSOR_TICKS) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2019,5 +2107,86 @@ mod tests {
         for time in [1, 7, 19, 21, 39] {
             assert!(!analyzer_due(time), "tick {time} is not a check tick");
         }
+    }
+
+    // Slice 11: the sensor.
+
+    #[test]
+    fn a_sensor_checks_every_ten_ticks() {
+        assert_eq!(SENSOR_TICKS, 10, "SensorTileEntity.tickServer checkCounter");
+        for time in [0, 10, 40, 100] {
+            assert!(sensor_due(time), "tick {time} is a sensor check");
+        }
+        for time in [1, 7, 9, 11, 39] {
+            assert!(!sensor_due(time), "tick {time} is not a sensor check");
+        }
+    }
+
+    #[test]
+    fn a_sensor_looks_at_the_block_on_its_input_side() {
+        assert_eq!(sensor_front([200, 101, 8], "north"), Some([200, 101, 7]));
+        assert_eq!(sensor_front([200, 101, 8], "south"), Some([200, 101, 9]));
+        assert_eq!(sensor_front([200, 101, 8], "west"), Some([199, 101, 8]));
+        assert_eq!(sensor_front([200, 101, 8], "east"), Some([201, 101, 8]));
+        assert_eq!(
+            sensor_front([200, 101, 8], "up"),
+            None,
+            "an unknown facing is refused"
+        );
+    }
+
+    #[test]
+    fn a_named_matcher_only_accepts_its_own_block() {
+        assert!(block_matches(
+            Some("minecraft:stone"),
+            Some("minecraft:stone"),
+            true
+        ));
+        assert!(!block_matches(
+            Some("minecraft:stone"),
+            Some("minecraft:dirt"),
+            true
+        ));
+        assert!(!block_matches(Some("minecraft:stone"), None, true));
+    }
+
+    #[test]
+    fn an_empty_matcher_accepts_any_occluding_block() {
+        assert!(block_matches(None, Some("minecraft:dirt"), true));
+        assert!(!block_matches(None, Some("minecraft:torch"), false));
+        assert!(sensor_sees(
+            SensorKind::AnySolid,
+            None,
+            Some("minecraft:stone"),
+            true
+        ));
+        assert!(!sensor_sees(
+            SensorKind::AnySolid,
+            None,
+            Some("minecraft:air"),
+            false
+        ));
+    }
+
+    #[test]
+    fn a_sensor_signal_is_fifteen_or_zero() {
+        assert_eq!(sensor_signal(true), SENSOR_ON);
+        assert_eq!(sensor_signal(false), SENSOR_OFF);
+        assert_eq!(SENSOR_ON, 15, "setRedstoneState(this, 15)");
+    }
+
+    #[test]
+    fn an_unknown_sensor_kind_is_refused() {
+        assert_eq!(SensorKind::from_name("blocks"), Some(SensorKind::Blocks));
+        assert_eq!(SensorKind::from_name("any"), Some(SensorKind::AnySolid));
+        assert_eq!(SensorKind::from_name("fluid"), None);
+        assert_eq!(SensorKind::Blocks.as_str(), "blocks");
+        assert_eq!(SensorKind::AnySolid.as_str(), "any");
+        assert!(sensor_sees(
+            SensorKind::Blocks,
+            Some("minecraft:stone"),
+            Some("minecraft:stone"),
+            true
+        ));
     }
 }

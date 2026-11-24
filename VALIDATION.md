@@ -480,3 +480,43 @@ variant is named `Block`/`Item`, so neither `fits` run false-failed. The full A�
 teleporter phase hit two harness flakes (a missing placement face after the earlier breaks, then
 a chat-reply race); `e2e-slice9.log` shows the same late-phase failure on 0.2.8, and the focused
 teleporter leg is green on these bytes.
+
+## Slice 11 — the sensor (0.2.10, forwarded to AdLf-PC)
+
+The dialing-device surface check came first (see `notes.md` § "Slice 11"): no menu machinery in this
+port, no world-saved `TeleportDestinations` table, and the artefact's behaviour is a GUI
+`ListCommand`/`ResultCommand` protocol — so the slice switched to the sensor. All Rust ladder steps
+went through `build-slot.sh run --job W1-rftoolsutility --port ports/rftoolsutility --step
+test|build|check -- …`, each printing `build-slot: forwarding … to the remote runner`; hostname
+`AdLf-PC`; `BUILD_LOCAL=1` was never set. The launcher's native build and the game legs ran locally
+by design (the far box has no `libxkbcommon-x11.so.0`). No lease was backgrounded.
+
+| # | check | command | result |
+|---|---|---|---|
+| 1 | red, runtime | four sensor rules stubbed `todo!()` behind their tests, focused `cargo test --offline sensor` | `FAILED. 0 passed; 4 failed; 93 filtered out`, each at `not yet implemented` (`slice11-red.log`) |
+| 2 | red, glue | `sensor_line` stubbed behind its test | `FAILED. 0 passed; 1 failed; 97 filtered out` (`slice11-glue-red.log`) |
+| 3 | green | `cargo test --offline` | **98 passed; 0 failed** (`slice11-green.log`, `sdk-test.log` regenerated for 0.2.10) |
+| 4 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`slice11-fmt.log`, `slice11-clippy.log`) |
+| 5 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **165,931 B**, sha `a2b5a142…03cfc3`, 216 entries, no `Cargo.lock` (`slice11-build-a.sha`, `-b.sha`) |
+| 6 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.10 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`sdk-check.log`) |
+| 7 | fits the pin | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, **FITS_EXIT:0** (`sdk-fits.log`) |
+| 8 | fits another build | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, **FITS_OTHER_EXIT:0** (`sdk-fits-other.log`) |
+| 9 | gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | **1/1** (package matches the tree, R9, skills gate; `slice11-package-gate.log`) |
+| 10 | native build | `ports/tools/launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-fbbbe2710a00` (`slice11-native-build.log`); the stale 0.2.9 tag was removed first |
+| 11 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e-sensor.sh` | **PASS**, `EXIT:0` — AK–AK4 (`e2e-slice11-sensor.log`): a vanilla lamp lights only while the named block is in front; the vanilla redstone-block control, the dirt differential, the restore and the refused id all assert parsed values |
+| 12 | in game, c/f | `SELFTEST=1 SELFTEST_AT=sensor` | **FAIL: SELFTEST sensor: the matching block lit the lamp, expected it to stay dark**, `EXIT:1` (`e2e-slice11-sensor-selftest.log`) |
+| 13 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: ctl place rftoolsutility:sensor … was refused three times**, `EXIT:1` (`e2e-slice11-sensor-control.log`) |
+| 14 | no regression | the same game, `tools/e2e-teleporter.sh` and `tools/e2e-analyzer.sh` | both **PASS**, `EXIT:0` — AI–AI2 and AJ–AJ3 (`e2e-slice11-teleporter.log`, `e2e-slice11-analyzer.log`) |
+| 15 | log gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=51 ok=51 missing-exit=0 bad-exit=0`, `EXIT:0` (`slice11-e2e-gate.log`) |
+
+**Traps handled:** the first `fits --build 0b14f8a` refused the removed `BlockStates::is_solid_render`,
+so the occludes test uses the stable `replaceable` instead and both fits runs are green; a local
+variant named `Block`/`Item` would false-fail `fits` (none is); `ctl place` cannot place a vanilla
+redstone lamp beside the sensor, so the leg uses `setblock` and asserts the lamp's `lit` state; the
+intentional refused `ctl give` is wrapped in an `if` so the ERR trap prints no spurious `FAIL:`;
+`E2E_TMP` and all four path exports came from `launcher-game.sh env`, never `/tmp`; the manifest,
+README and packed content were edited before the final build and the gate confirmed `package
+matches the tree`; R9 holds (SDK path dep only, no `[workspace]`, no packed lock). The full A–AH
+replay was deliberately not re-run: it flaked twice in its late teleporter phase under load
+(those flakes predate this slice), so the focused teleporter and analyzer legs prove the two
+earlier families green without weakening any assertion.

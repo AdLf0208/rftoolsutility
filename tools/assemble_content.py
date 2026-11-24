@@ -131,6 +131,19 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/destination_analyzer.json",
     "data/rftoolsutility/recipe/destination_analyzer.json",
     "data/rftoolsutility/loot_table/blocks/destination_analyzer.json",
+    # Slice 11: the sensor. Its four models and its face texture are the jar's own; the jar's
+    # 24 `logic_facing` slab rotations cannot be a content block's states, so the blockstate the
+    # pin reads is generated below with the `signal` property the native code caches, exactly as
+    # the tank's nine-level blockstate is generated.
+    "assets/rftoolsutility/models/block/sensor_0.json",
+    "assets/rftoolsutility/models/block/sensor_1.json",
+    "assets/rftoolsutility/models/block/sensor_2.json",
+    "assets/rftoolsutility/models/block/sensor_3.json",
+    "assets/rftoolsutility/models/item/sensor.json",
+    "assets/rftoolsutility/textures/block/logic/machinesensor.png",
+    "data/rftoolsutility/advancement/recipes/misc/sensor.json",
+    "data/rftoolsutility/recipe/sensor.json",
+    "data/rftoolsutility/loot_table/blocks/sensor.json",
 ]
 # Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
 # upstream's "living?" form, and these tags are the yield a living item carries
@@ -172,6 +185,11 @@ TELEPORTER_MODELS = [
     "assets/rftoolsutility/models/block/matter_booster.json",
     # Slice 10: the analyzer's cube names `rftoolsbase:` machine base textures.
     "assets/rftoolsutility/models/block/destination_analyzer.json",
+    # Slice 11: the four sensor cube models name `rftoolsbase:` machine base textures.
+    "assets/rftoolsutility/models/block/sensor_0.json",
+    "assets/rftoolsutility/models/block/sensor_1.json",
+    "assets/rftoolsutility/models/block/sensor_2.json",
+    "assets/rftoolsutility/models/block/sensor_3.json",
 ]
 # The teleporter family's three blocks (McJtyLib `STANDARD_IRON`; the booster is
 # `.strength(2, 6)`). The transmitter and receiver carry a block entity; the booster is a plain
@@ -224,6 +242,7 @@ TAB = {
         f"{MOD}:matter_receiver",
         f"{MOD}:matter_booster",
         f"{MOD}:destination_analyzer",
+        f"{MOD}:sensor",
     ],
 }
 
@@ -300,6 +319,27 @@ BEAMER_BLOCK = {
     "item": True,
 }
 
+# `SensorTileEntity.createBlock` on McJtyLib's `BlockBuilder.STANDARD_IRON`. The jar's slab has 24
+# `logic_facing` states, which the content schema cannot take from a vanilla template; like the
+# analyzer's cosmetic facing, the input side is a saved setting written by the harness command.
+# The one state the port needs is `signal`, the cache the redstone hook reads (`BlockPart::
+# block_signal` asks very often and must not read the world).
+SENSOR_BLOCK = {
+    "template": "minecraft:iron_block",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "state_properties": {
+        "signal": {"type": "enum", "values": ["0", "1"]}
+    },
+    "default_state": {"signal": "0"},
+    "item": True,
+}
+
 # The jar's recipes name `c:` convention tags the prepared 26.3 root does not
 # ship (it ships `minecraft` tags only), and an unknown tag is an empty
 # ingredient. These are the smallest honest memberships, the same ones this
@@ -311,6 +351,8 @@ CONVENTION_TAGS = {
     "bones": ["minecraft:bone"],
     "rods/blaze": ["minecraft:blaze_rod"],
     "ender_pearls": ["minecraft:ender_pearl"],
+    # Slice 11, the sensor's own recipe (`data/rftoolsutility/recipe/sensor.json`).
+    "gems/quartz": ["minecraft:quartz"],
 }
 
 # The jar's lang lines for the tank, the crafter tiers, the spawner and the matter beamer,
@@ -327,6 +369,8 @@ LANG_KEYS = [
     "block.rftoolsutility.matter_receiver",
     "block.rftoolsutility.matter_booster",
     "block.rftoolsutility.destination_analyzer",
+    "block.rftoolsutility.sensor",
+    "message.rftoolsutility.sensor.header",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -541,6 +585,17 @@ def main() -> None:
             assets / "items" / f"{name}.json",
             {"model": {"type": "minecraft:model", "model": f"{MOD}:item/{name}"}},
         )
+    # Slice 11: the sensor's jar blockstate is all 24 `logic_facing` slab rotations, which this
+    # content block cannot express; the pin reads the generated `signal` variants instead. The
+    # four jar models are carried (the front-facing one shows on both strengths).
+    dump(
+        assets / "items" / "sensor.json",
+        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/sensor"}},
+    )
+    dump(
+        assets / "blockstates" / "sensor.json",
+        {"variants": {f"signal={value}": {"model": f"{MOD}:block/sensor_0"} for value in ("0", "1")}},
+    )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
@@ -550,6 +605,7 @@ def main() -> None:
     dump(data_dir / "horizon" / "block" / "matter_beamer.json", BEAMER_BLOCK)
     for name in ("matter_transmitter", "matter_receiver", "matter_booster", "destination_analyzer"):
         dump(data_dir / "horizon" / "block" / f"{name}.json", TELEPORTER_BLOCK)
+    dump(data_dir / "horizon" / "block" / "sensor.json", SENSOR_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
@@ -565,6 +621,7 @@ def main() -> None:
                 f"{MOD}:matter_receiver",
                 f"{MOD}:matter_booster",
                 f"{MOD}:destination_analyzer",
+                f"{MOD}:sensor",
             ]
         },
     )
@@ -580,6 +637,7 @@ def main() -> None:
                 f"{MOD}:matter_receiver",
                 f"{MOD}:matter_booster",
                 f"{MOD}:destination_analyzer",
+                f"{MOD}:sensor",
             ]
         },
     )

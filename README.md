@@ -1,14 +1,15 @@
-# RFTools Utility for Horizon — slices 1–10: the tank, the crafter tiers, the spawner, the matter beamer and the teleporter family
+# RFTools Utility for Horizon — slices 1–11: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family and the sensor
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–10, the tank, the crafter tiers, the spawner's matter gate, the matter
-beamer, the matter transmitter / receiver / booster and the destination analyzer.** One flat SDK package
-(`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the models and textures,
-and the behaviour — see [`notes.md`](notes.md) § "Slice 10 — the destination analyzer", § "Slice 9 — the teleporter family",
+**Status: slices 1–11, the tank, the crafter tiers, the spawner's matter gate, the matter
+beamer, the matter transmitter / receiver / booster, the destination analyzer and the sensor.**
+One flat SDK package (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the
+models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 11 — the sensor",
+§ "Slice 10 — the destination analyzer", § "Slice 9 — the teleporter family",
 § "Slice 8 — the matter beamer", § "Slice 7 — the spawner's matter gate", § "Slice 6 — the tick's own dimension",
 § "Slice 5 — the crafter tiers", § "Slice 4 — the spawner", § "Slice 3 — the crafter" and
 § "Slice 2 — the tank's contents travel with its item".
@@ -80,6 +81,14 @@ and the behaviour — see [`notes.md`](notes.md) § "Slice 10 — the destinatio
   destination dimension not loaded) or **0** (red, blocked or underpowered) — the numeric form
   of the beam colour the jar's lang line describes. Removing the analyzer forces the ready
   state again, as upstream does.
+- `rftoolsutility:sensor` — a **block** whose ten-tick check reads the block on its input side
+   and emits a **real redstone signal** through the SDK's `block_signal` hook: **15** when the
+   named block matches (`blocks <id>`), otherwise **0**. With the matcher empty (`any`) it
+   accepts any occluding block, upstream's empty-ghost-slot rule. `/rftoolsutility sensor-set
+   <pos> <kind> <target> <area> <group> <facing>` is the GUI's equivalent (only AREA_1 and
+   GROUP_ONE are carried); an unknown type/facing is refused. The jar's 24 cosmetic slab
+   rotations are dropped, so the input side is a saved setting, and a broken sensor's item
+   carries that setting and the last signal.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
@@ -89,12 +98,14 @@ and the behaviour — see [`notes.md`](notes.md) § "Slice 10 — the destinatio
   spawner, its stores and its table; `/rftoolsutility beamer <pos> [nonce]` and
   `link <pos> <dest>` for the beamer and its destination; `/rftoolsutility dial <pos> <dim> <x>
   <y> <z>`, `transmitter <pos> [nonce]`, `receiver <pos> [nonce]` and `analyzer <pos> [nonce]`
-  for the teleporter family (the analyzer prints `signal=<0|7|15> status=<warn|unknown|ok>`).
+  for the teleporter family (the analyzer prints `signal=<0|7|15> status=<warn|unknown|ok>`);
+  `/rftoolsutility sensor <pos> [nonce]` and `sensor-set <pos> <kind> <target> <area> <group>
+  <facing>` for the sensor (the readout prints `signal=<0|15> type=… target=… facing=…`).
 
 ## What does not (yet)
 
-The dialing device, destination GUI, screens and their 30 modules, the logic
-blocks, the environmental controller and its modules, the tank's GUI and filter slot, the
+The dialing device, destination GUI, screens and their 30 modules, the rest of the logic
+blocks (the sensor is ported), the environmental controller and its modules, the tank's GUI and filter slot, the
 fluid quad inside its window, the crafter's GUI, the spawner's GUI, the syringe that sets the
 mob, six-way facing, the item tooltips, the wrench item (a command links the beamer instead),
 the infusing power discount and the analyzer's vanilla redstone output (the artefact has none —

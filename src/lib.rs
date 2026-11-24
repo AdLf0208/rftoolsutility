@@ -16,11 +16,12 @@
 //! alone proves them.
 use mod_api::{
     self, BlockClick, BlockDropsEvent, BlockEntityPart, BlockEntityRef, BlockEntityTickEvent,
-    BlockEntityTickReply, BlockEntityTicksEvent, BlockPart, Command, CommandArgumentValue,
-    CommandSource, Compound, CraftingGrid, CraftingRecipeCodec, CraftingRecipeKind, Direction,
-    Flow, FluidResource, FluidStack, Hand, Hooks, Host, HostBlockStates, HostSide, HostTransaction,
-    ITEM_FLUIDS, Identifier, InteractionResult, ItemKey, ItemPart, ItemPlace, ItemStack, LevelHost,
-    LevelRef, ModContainer, ModEnergyBuffer, ModFluidTanks, OnBlockPlacedByEvent, PlayerRef,
+    BlockEntityTickReply, BlockEntityTicksEvent, BlockPart, BlockSignalEvent, Command,
+    CommandArgumentValue, CommandSource, Compound, CraftingGrid, CraftingRecipeCodec,
+    CraftingRecipeKind, Direction, Flow, FluidResource, FluidStack, Hand, Hooks, Host,
+    HostBlockStates, HostSide, HostTransaction, ITEM_FLUIDS, Identifier, InteractionResult,
+    IsSignalSourceEvent, ItemKey, ItemPart, ItemPlace, ItemStack, LevelHost, LevelRef,
+    ModContainer, ModEnergyBuffer, ModFluidTanks, NeighbourUpdate, OnBlockPlacedByEvent, PlayerRef,
     RecipeInput, RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent,
     ServerHost, ServerTickEvent, SpawnReason, Tag, Text, UseItemOnBlockEvent, UsePhase, fluid_util,
 };
@@ -33,11 +34,11 @@ use runtime::{
     BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY, CRAFTER_RECEIVE, CRAFTER_SLOTS,
     Click, CraftMode, CrafterTier, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, LOW_YIELD,
     MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe, RECEIVER_CAPACITY,
-    RECEIVER_RECEIVE, RF_PER_TICK, SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, TRANSMITTER_CAPACITY,
-    TRANSMITTER_RECEIVE, Tank, add_matter, analyzer_due, analyzer_status, beam_due, beam_reach,
-    beam_send, bucket_click, carried, clamped, fill_level, in_beam, placements, plan,
-    receiver_ready, recipe_for, result_range, spawn_at, spawn_cycle, spend, start_cost, start_time,
-    steps,
+    RECEIVER_RECEIVE, RF_PER_TICK, SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE,
+    SensorKind, Speed, TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank, add_matter, analyzer_due,
+    analyzer_status, beam_due, beam_reach, beam_send, bucket_click, carried, clamped, fill_level,
+    in_beam, placements, plan, receiver_ready, recipe_for, result_range, sensor_due, sensor_front,
+    sensor_sees, sensor_signal, spawn_at, spawn_cycle, spend, start_cost, start_time, steps,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -189,6 +190,26 @@ const ANALYZER: &str = "rftoolsutility:destination_analyzer";
 /// yellow beam state the jar's lang line describes). The harness reads this through
 /// `/rftoolsutility analyzer` as a signal strength; the block itself emits no redstone.
 const KEY_STATUS: &str = "status";
+
+// ---------------------------------------------------------------------------
+// The sensor (slice 11) — `SensorTileEntity`
+// ---------------------------------------------------------------------------
+
+/// `LogicBlockModule.SENSOR`: a block entity whose 10-tick check emits 15 or 0 through the
+/// redstone hook. The jar's 24 `logic_facing` slab rotations cannot be expressed by the content
+/// schema, so the input side is a saved setting (the analyzer/booster facing deviation).
+const SENSOR: &str = "rftoolsutility:sensor";
+const SENSOR_TYPE: &str = "sensor";
+const SENSOR_TYPE_ID: &str = "rftoolsutility:sensor";
+const KEY_SENSOR_KIND: &str = "sensorKind";
+const KEY_SENSOR_TARGET: &str = "sensorTarget";
+const KEY_SENSOR_FACING: &str = "sensorFacing";
+/// The state property that caches the signal for `BlockPart::block_signal` (vanilla asks it very
+/// often, from inside the level's update, and the hook must not read the world).
+const KEY_SIGNAL: &str = "signal";
+
+/// A sensor's item, resolved once in `register` for `block_drops`.
+static SENSOR_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -1575,6 +1596,158 @@ fn analyzer_line(pos: [i32; 3], status: &str, dial: &str, nonce: Option<&str>) -
     )
 }
 
+/// The sensor's harness line (`SensorTileEntity.getRedstoneOutput` has no GUI readout upstream, so
+/// the port prints the strength it hands the redstone hook beside the block id and its setting).
+fn sensor_line(
+    pos: [i32; 3],
+    signal: i32,
+    kind: &str,
+    target: &str,
+    facing: &str,
+    nonce: Option<&str>,
+) -> String {
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: sensor at {pos:?}: signal={signal} type={kind} target={target} area=1 group=one facing={facing}{suffix}"
+    )
+}
+
+/// One property out of a serialized block state (`"rftoolsutility:sensor[signal=1]"`).
+fn sensor_state_property<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    let inner = text.split_once('[')?.1.rsplit_once(']')?.0;
+    inner.split(',').find_map(|part| {
+        let (name, value) = part.split_once('=')?;
+        (name == key).then_some(value)
+    })
+}
+
+/// The sensor's saved setting: the type, the matcher (none = the empty ghost slot) and the input
+/// side. The GUI that writes these upstream is replaced by `/rftoolsutility sensor-set`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SensorConfig {
+    kind: SensorKind,
+    target: Option<String>,
+    facing: String,
+}
+
+impl SensorConfig {
+    fn from_data(data: &Compound) -> Self {
+        let kind = read_text(data, KEY_SENSOR_KIND)
+            .and_then(|name| SensorKind::from_name(&name))
+            .unwrap_or(SensorKind::Blocks);
+        let target = read_text(data, KEY_SENSOR_TARGET).filter(|id| id != "none");
+        let facing = read_text(data, KEY_SENSOR_FACING)
+            .filter(|name| sensor_front([0, 0, 0], name).is_some())
+            .unwrap_or_else(|| "north".to_owned());
+        Self {
+            kind,
+            target,
+            facing,
+        }
+    }
+
+    fn write(&self, nbt: &mut Compound) {
+        write_text(nbt, KEY_SENSOR_KIND, self.kind.as_str());
+        write_text(
+            nbt,
+            KEY_SENSOR_TARGET,
+            self.target.as_deref().unwrap_or("none"),
+        );
+        write_text(nbt, KEY_SENSOR_FACING, &self.facing);
+    }
+}
+
+/// The cached signal strength on the block state, which the redstone hook reads without touching
+/// the world (`LevelHost::state_string`, the `laserbridges` receiver pattern).
+fn cached_signal(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> i32 {
+    let Some(state) = level.block_state(host, pos) else {
+        return SENSOR_OFF;
+    };
+    let Some(name) = host.block_state_string(state) else {
+        return SENSOR_OFF;
+    };
+    if sensor_state_property(&name, KEY_SIGNAL) == Some("1") {
+        SENSOR_ON
+    } else {
+        SENSOR_OFF
+    }
+}
+
+/// `SensorTileEntity.tickServer`: every ten ticks check the block on the input side
+/// (`checkSensor`), write the 15/0 strength into the block state and wake the neighbours so a
+/// vanilla lamp or wire beside the sensor sees it. The block entity's own payload is untouched.
+fn sensor_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let Some(level) = ticking_level(host) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    let time = level.game_time(&*host).unwrap_or(0);
+    if sensor_due(time) {
+        let config = SensorConfig::from_data(&event.entity.nbt);
+        let sees = sensor_front(pos, &config.facing).is_some_and(|front| {
+            let actual = level.block(&*host, front).map(|block| block.id(&*host));
+            // `canOcclude()` is not exposed on every build this package must fit; the stable
+            // equivalent is the engine's `replaceable` (air and thin plants are replaceable,
+            // stone is not).
+            let occludes = level
+                .block_state(&*host, front)
+                .and_then(|state| {
+                    host.block_states()
+                        .replaceable(state)
+                        .map(|replaceable| !replaceable)
+                })
+                .unwrap_or(false);
+            sensor_sees(
+                config.kind,
+                config.target.as_deref(),
+                actual.as_deref(),
+                occludes,
+            )
+        });
+        let wanted = sensor_signal(sees);
+        if wanted != cached_signal(&*host, level, pos) {
+            host.set_block_property(pos, KEY_SIGNAL, if sees { "1" } else { "0" });
+            if let Some(state) = level.block_state(&*host, pos) {
+                let _ = level.update_neighbors(host, pos, state, NeighbourUpdate::Neighbours);
+            }
+        }
+    }
+    *event.reply = BlockEntityTickReply::Unchanged;
+}
+
+/// The sensor's one Part: a block entity with a ten-tick check, and the two redstone methods that
+/// make the cached strength a real vanilla signal (`getSignal`, `getDirectSignal` and
+/// `isSignalSource`). One struct may implement both parts (the `securitycraft` keypad pattern).
+struct SensorPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for SensorPart {
+    fn is_signal_source(&self, _level: &dyn LevelHost, event: &mut IsSignalSourceEvent) {
+        event.source = true;
+    }
+
+    fn block_signal(&self, level: &dyn LevelHost, event: &mut BlockSignalEvent) {
+        let Some(name) = level.state_string(event.state) else {
+            return;
+        };
+        if sensor_state_property(&name, KEY_SIGNAL) == Some("1") {
+            event.signal = SENSOR_ON;
+        }
+    }
+}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for SensorPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        sensor_tick(host, event);
+    }
+}
+
 /// `/rftoolsutility analyzer <pos> [nonce]`: the harness's readout of the passive analyzer block.
 /// It finds the adjacent dialed transmitter and prints the receiver-check status the transmitter
 /// keeps (`green=ok` → 15, `yellow=unknown` → 7, `red=warn` → 0). The artefact has no redstone
@@ -2188,6 +2361,16 @@ impl Hooks for Mod {
         let _ = TRANSMITTER_ITEM.set(r.item_key(TRANSMITTER));
         let _ = RECEIVER_ITEM.set(r.item_key(RECEIVER));
         r.block_key(BOOSTER);
+
+        // Slice 11: the sensor's block entity and its redstone Part. The 10-tick check reads the
+        // block on the input side and writes the `signal` state the two redstone methods report.
+        let _ = SENSOR_ITEM.set(r.item_key(SENSOR));
+        let sensor_kind = r.block_entity_type(SENSOR_TYPE).blocks(&[SENSOR]).build();
+        if let Err(error) = r.block_entity_part(&sensor_kind, SensorPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the sensor part was refused: {error}"
+            ));
+        }
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -2325,6 +2508,12 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(SENSOR) {
+            if let Some(item) = SENSOR_ITEM.get() {
+                carry_machine(level, event, *item, SENSOR_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -2413,6 +2602,15 @@ impl Hooks for Mod {
         event.commands.push(Command::new(
             "rftoolsutility analyzer <pos:block_pos> [nonce:word]",
         ));
+        // Slice 11: the sensor's GUI is replaced by two harness controls — a readout of the
+        // strength it hands the redstone hook, and the setting the GUI would write.
+        event.commands.push(Command::new(
+            "rftoolsutility sensor <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility sensor-set <pos:block_pos> <kind:word> <target:id> <area:integer> <group:word> <facing:word>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -2446,6 +2644,8 @@ impl Hooks for Mod {
                     | "transmitter"
                     | "receiver"
                     | "analyzer"
+                    | "sensor"
+                    | "sensor-set"
                     | "recipes"
             ]
         );
@@ -2783,6 +2983,106 @@ impl Hooks for Mod {
                 };
                 let line = analyzer_readout(&*host, level, pos, nonce);
                 feedback(host, &line);
+            }
+            ["rftoolsutility", "sensor"] => {
+                let Some(entity) = machine_at(&*host, level, pos, SENSOR) else {
+                    feedback(host, "No sensor there.");
+                    return Flow::Cancel;
+                };
+                let Some(data) = entity.data(&*host) else {
+                    feedback(host, "No sensor there.");
+                    return Flow::Cancel;
+                };
+                let config = SensorConfig::from_data(&data);
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let signal = cached_signal(&*host, level, pos);
+                feedback(
+                    host,
+                    &sensor_line(
+                        pos,
+                        signal,
+                        config.kind.as_str(),
+                        config.target.as_deref().unwrap_or("none"),
+                        &config.facing,
+                        nonce,
+                    ),
+                );
+            }
+            ["rftoolsutility", "sensor-set"] => {
+                let Some(entity) = machine_at(&*host, level, pos, SENSOR) else {
+                    feedback(host, "No sensor there.");
+                    return Flow::Cancel;
+                };
+                let kind = match invocation.argument("kind") {
+                    Some(CommandArgumentValue::String(name)) => SensorKind::from_name(name),
+                    _ => None,
+                };
+                let Some(kind) = kind else {
+                    feedback(host, "unknown sensor type (blocks|any).");
+                    return Flow::Cancel;
+                };
+                let target = match invocation.argument("target") {
+                    Some(CommandArgumentValue::Id(id)) => id.to_string(),
+                    Some(CommandArgumentValue::String(id)) => id.clone(),
+                    _ => {
+                        feedback(
+                            host,
+                            "Usage: /rftoolsutility sensor-set <pos> <kind> <target> <area> <group> <facing>",
+                        );
+                        return Flow::Cancel;
+                    }
+                };
+                let target = (target != "none").then_some(target);
+                if !matches!(
+                    invocation.argument("area"),
+                    Some(CommandArgumentValue::Integer(1))
+                ) {
+                    feedback(host, "this sensor has area 1.");
+                    return Flow::Cancel;
+                }
+                if !matches!(
+                    invocation.argument("group"),
+                    Some(CommandArgumentValue::String(group)) if group == "one"
+                ) {
+                    feedback(host, "this sensor has group one.");
+                    return Flow::Cancel;
+                }
+                let Some(CommandArgumentValue::String(facing)) = invocation.argument("facing")
+                else {
+                    feedback(
+                        host,
+                        "Usage: /rftoolsutility sensor-set <pos> <kind> <target> <area> <group> <facing>",
+                    );
+                    return Flow::Cancel;
+                };
+                if sensor_front(pos, facing).is_none() {
+                    feedback(host, "unknown sensor facing (north|south|east|west).");
+                    return Flow::Cancel;
+                }
+                let config = SensorConfig {
+                    kind,
+                    target,
+                    facing: facing.clone(),
+                };
+                let Some(mut data) = entity.data(&*host) else {
+                    feedback(host, "No sensor there.");
+                    return Flow::Cancel;
+                };
+                config.write(&mut data);
+                if entity.replace_data(host, data).is_err() {
+                    feedback(host, "No sensor there.");
+                    return Flow::Cancel;
+                }
+                feedback(
+                    host,
+                    &format!(
+                        "Sensor at {pos:?} checks {} to the {facing} (area 1, group one).",
+                        config.target.as_deref().unwrap_or("any occluding block")
+                    ),
+                );
             }
             _ => return Flow::Continue,
         }
@@ -3856,6 +4156,27 @@ mod tests {
         assert!(
             analyzer_line([200, 101, 8], "unknown", "none", None)
                 .contains("signal=7 status=unknown")
+        );
+    }
+
+    // -- the sensor's harness readout (slice 11) ---------------------------------
+
+    #[test]
+    fn the_sensor_readout_is_the_line_the_harness_parses() {
+        assert_eq!(
+            sensor_line(
+                [200, 101, 8],
+                15,
+                "blocks",
+                "minecraft:stone",
+                "north",
+                Some("7")
+            ),
+            "/rftoolsutility: sensor at [200, 101, 8]: signal=15 type=blocks target=minecraft:stone area=1 group=one facing=north nonce=7"
+        );
+        assert_eq!(
+            sensor_line([200, 101, 8], 0, "any", "none", "south", None),
+            "/rftoolsutility: sensor at [200, 101, 8]: signal=0 type=any target=none area=1 group=one facing=south"
         );
     }
 }
