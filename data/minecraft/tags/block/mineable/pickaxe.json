@@ -10,6 +10,7 @@
     "rftoolsutility:matter_receiver",
     "rftoolsutility:matter_booster",
     "rftoolsutility:destination_analyzer",
-    "rftoolsutility:sensor"
+    "rftoolsutility:sensor",
+    "rftoolsutility:sequencer"
   ]
 }

@@ -8,8 +8,9 @@
 //! a tick that runs taught 3x3 recipes from its buffer. [`SpawnerPart`] is the spawner:
 //! 200,000 FE and a tick that spawns the mob its own recipe names, for that recipe's RF cost;
 //! [`SpawnerRecipeKind`] is the `rftoolsutility:spawner` recipe kind its 70 carried mob recipes
-//! need. `/rftoolsutility info|tank|crafter|recipe|buffer|energy|setting|spawner|mob|recipes`
-//! serves the harness, because upstream's controls are its GUIs.
+//! need. [`SensorPart`] and [`SequencerPart`] are the two logic blocks: a ten-tick block check and
+//! a rising-edge-driven 64-step pattern, both emitting a real 15/0 redstone signal. The
+//! `/rftoolsutility …` commands serve the harness, because upstream's controls are its GUIs.
 //!
 //! The numbers — the capacity, the fill level, what a bucket click does, the craft loop, the
 //! spawn cost — are in [`runtime`], a plain module with no `mod_api` types, so `cargo test`
@@ -35,10 +36,12 @@ use runtime::{
     Click, CraftMode, CrafterTier, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, LOW_YIELD,
     MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe, RECEIVER_CAPACITY,
     RECEIVER_RECEIVE, RF_PER_TICK, SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE,
-    SensorKind, Speed, TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank, add_matter, analyzer_due,
-    analyzer_status, beam_due, beam_reach, beam_send, bucket_click, carried, clamped, fill_level,
-    in_beam, placements, plan, receiver_ready, recipe_for, result_range, sensor_due, sensor_front,
-    sensor_sees, sensor_signal, spawn_at, spawn_cycle, spend, start_cost, start_time, steps,
+    SensorKind, SequencerData, SequencerMode, SequencerState, Speed, TRANSMITTER_CAPACITY,
+    TRANSMITTER_RECEIVE, Tank, add_matter, analyzer_due, analyzer_status, beam_due, beam_reach,
+    beam_send, bucket_click, carried, clamped, fill_level, in_beam, placements, plan,
+    receiver_ready, recipe_for, result_range, sensor_due, sensor_front, sensor_sees, sensor_signal,
+    sequencer_tick as run_sequencer_tick, spawn_at, spawn_cycle, spend, start_cost, start_time,
+    steps,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -210,6 +213,35 @@ const KEY_SIGNAL: &str = "signal";
 
 /// A sensor's item, resolved once in `register` for `block_drops`.
 static SENSOR_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// The sequencer (slice 12) — `SequencerTileEntity`
+// ---------------------------------------------------------------------------
+
+/// `LogicBlockModule.SEQUENCER`: the sibling of the sensor, a block entity with a 64-bit pattern,
+/// seven modes and a real 15/0 redstone output. The input is a **rising edge**
+/// (`pulse = (powerLevel > 0) && !prevIn`), which a vanilla lever on any side expresses through
+/// `LevelRef::best_neighbor_signal`.
+const SEQUENCER: &str = "rftoolsutility:sequencer";
+const SEQUENCER_TYPE: &str = "sequencer";
+const SEQUENCER_TYPE_ID: &str = "rftoolsutility:sequencer";
+/// `SequencerData`'s five record fields, and the four live fields `SequencerTileEntity` saves
+/// beside them (`rs`, `step`, `prevIn`, `timer`).
+const KEY_SEQ_BITS: &str = "bits";
+const KEY_SEQ_MODE: &str = "sequencerMode";
+const KEY_SEQ_DELAY: &str = "delay";
+const KEY_SEQ_COUNT: &str = "stepcount";
+const KEY_SEQ_ENDSTATE: &str = "endstate";
+const KEY_SEQ_STEP: &str = "step";
+const KEY_SEQ_PREV: &str = "prevIn";
+const KEY_SEQ_TIMER: &str = "timer";
+const KEY_SEQ_RS: &str = "rs";
+/// The cosmetic input-side setting (the jar's 24 `logic_facing` slab rotations cannot be a
+/// content block's states); the engine reads the strongest adjacent signal, so the side is a
+/// saved advisory, as the analyzer's and the booster's facing are.
+const KEY_SEQ_FACING: &str = "seqFacing";
+/// A sequencer's item, resolved once in `register` for `block_drops`.
+static SEQUENCER_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -1748,6 +1780,175 @@ impl BlockEntityPart for SensorPart {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The sequencer's glue (slice 12)
+// ---------------------------------------------------------------------------
+
+/// A boolean out of the block entity's compound (upstream writes NBT booleans as bytes).
+fn read_flag(nbt: &Compound, name: &str) -> bool {
+    matches!(tag(nbt, name), Some(Tag::Byte(value)) if *value != 0)
+}
+
+fn write_flag(nbt: &mut Compound, name: &str, value: bool) {
+    put(nbt, name, Tag::Byte(i8::from(value)));
+}
+
+/// An int with a fallback, for a declared block entity whose compound starts empty: the artefact's
+/// `SequencerData.createDefault()` supplies the values a GUI would otherwise have written.
+fn read_int_or(nbt: &Compound, name: &str, default: i32) -> i32 {
+    match tag(nbt, name) {
+        Some(Tag::Int(value)) => *value,
+        _ => default,
+    }
+}
+
+/// `SequencerData` out of the saved compound. A 64-bit pattern is an NBT Long (`Tag::Long`).
+fn sequencer_data(nbt: &Compound) -> SequencerData {
+    let defaults = SequencerData::default();
+    SequencerData {
+        bits: match tag(nbt, KEY_SEQ_BITS) {
+            Some(Tag::Long(value)) => *value as u64,
+            _ => defaults.bits,
+        },
+        mode: read_text(nbt, KEY_SEQ_MODE)
+            .and_then(|name| SequencerMode::from_name(&name))
+            .unwrap_or(defaults.mode),
+        delay: read_int_or(nbt, KEY_SEQ_DELAY, defaults.delay),
+        stepcount: read_int_or(nbt, KEY_SEQ_COUNT, defaults.stepcount),
+        endstate: read_flag(nbt, KEY_SEQ_ENDSTATE),
+    }
+}
+
+/// The live tick state out of the saved compound, using the mode's own starting step and delay
+/// when a freshly placed sequencer has no saved fields yet.
+fn sequencer_state(nbt: &Compound, data: &SequencerData) -> SequencerState {
+    SequencerState {
+        step: read_int_or(nbt, KEY_SEQ_STEP, data.mode.initial_step()),
+        prev_in: read_flag(nbt, KEY_SEQ_PREV),
+        timer: read_int_or(nbt, KEY_SEQ_TIMER, data.delay),
+        output: read_flag(nbt, KEY_SEQ_RS),
+    }
+}
+
+/// Write both halves back. The engine persists a block entity's compound when its tick answers
+/// `Changed` (the default) — the same path the crafter's and the spawner's ticks use.
+fn write_sequencer(nbt: &mut Compound, data: &SequencerData, state: &SequencerState) {
+    put(nbt, KEY_SEQ_BITS, Tag::Long(data.bits as i64));
+    write_text(nbt, KEY_SEQ_MODE, data.mode.as_str());
+    write_int(nbt, KEY_SEQ_DELAY, data.delay);
+    write_int(nbt, KEY_SEQ_COUNT, data.stepcount);
+    write_flag(nbt, KEY_SEQ_ENDSTATE, data.endstate);
+    write_int(nbt, KEY_SEQ_STEP, state.step);
+    write_flag(nbt, KEY_SEQ_PREV, state.prev_in);
+    write_int(nbt, KEY_SEQ_TIMER, state.timer);
+    write_flag(nbt, KEY_SEQ_RS, state.output);
+}
+
+/// `/rftoolsutility sequencer <pos>`: the harness reads the **parsed** step, pattern and 15/0
+/// output, not the absence of an error. `bits` is decimal so a 64-bit pattern round-trips exactly.
+fn sequencer_line(
+    pos: [i32; 3],
+    data: &SequencerData,
+    state: &SequencerState,
+    facing: &str,
+    nonce: Option<&str>,
+) -> String {
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: sequencer at {pos:?}: step={} bits={} mode={} output={} delay={} count={} endstate={} facing={facing}{suffix}",
+        state.step,
+        data.bits,
+        data.mode.as_str(),
+        if state.output { SENSOR_ON } else { SENSOR_OFF },
+        data.delay,
+        data.stepcount,
+        data.endstate,
+    )
+}
+
+/// The four saved input-side spellings (the jar's 24 `logic_facing` slab rotations are not
+/// expressible by a content block's states, so the side is a saved advisory).
+fn sequencer_front(facing: &str) -> bool {
+    sensor_front([0, 0, 0], facing).is_some()
+}
+
+/// The harness's `/rftoolsutility sequencer-set` argument: a 64-bit pattern spelled in decimal or
+/// as `0x` hex (the SDK's `word` argument keeps both spellings).
+fn parse_bits(text: &str) -> Option<u64> {
+    match text.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => text.parse::<u64>().ok(),
+    }
+}
+
+/// `SequencerTileEntity.tickOnServer`: latch a rising edge of the adjacent redstone power, run the
+/// mode's state machine, persist the live fields and mirror the cached 15/0 into the block's
+/// `signal` property so a vanilla lamp or wire beside it sees the result. The block entity's own
+/// payload carries the state; only the cached strength goes into the block state, as the sensor's
+/// tick does.
+fn sequencer_block_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let data = sequencer_data(&event.entity.nbt);
+    let mut state = sequencer_state(&event.entity.nbt, &data);
+    let Some(level) = ticking_level(&*host) else {
+        return;
+    };
+    // Read the *input side* neighbour's own emitted signal (`SignalGetter.getSignal(pos, dir)`),
+    // not `getBestNeighborSignal`: the latter includes this block's own 15/0 output (it is a
+    // signal source), so a high output would latch a phantom rising edge on the next tick and
+    // advance the pattern by itself. A vanilla lever on the configured input side gives a clean
+    // 0 → 15 → 0 edge here, so no GUI or chat-driven substitute is invented.
+    let facing = read_text(&event.entity.nbt, KEY_SEQ_FACING).unwrap_or_else(|| "north".to_owned());
+    let (front, into) = match facing.as_str() {
+        "north" => ([pos[0], pos[1], pos[2] - 1], Direction::South),
+        "south" => ([pos[0], pos[1], pos[2] + 1], Direction::North),
+        "west" => ([pos[0] - 1, pos[1], pos[2]], Direction::East),
+        "east" => ([pos[0] + 1, pos[1], pos[2]], Direction::West),
+        _ => ([pos[0], pos[1], pos[2] - 1], Direction::South),
+    };
+    let powered = level.signal(&*host, front, into).unwrap_or(0) > 0;
+    run_sequencer_tick(&data, &mut state, powered);
+    write_sequencer(&mut event.entity.nbt, &data, &state);
+    let wanted = if state.output { SENSOR_ON } else { SENSOR_OFF };
+    if wanted != cached_signal(&*host, level, pos) {
+        host.set_block_property(pos, KEY_SIGNAL, if state.output { "1" } else { "0" });
+        if let Some(block_state) = level.block_state(&*host, pos) {
+            let _ = level.update_neighbors(host, pos, block_state, NeighbourUpdate::Neighbours);
+        }
+    }
+}
+
+/// The sequencer's one Part: a block entity with a tick, and the two redstone methods that make
+/// its cached 15/0 a real vanilla signal (`getRedstoneOutput`/`isSignalSource` in `LogicSupport`).
+struct SequencerPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for SequencerPart {
+    fn is_signal_source(&self, _level: &dyn LevelHost, event: &mut IsSignalSourceEvent) {
+        event.source = true;
+    }
+
+    fn block_signal(&self, level: &dyn LevelHost, event: &mut BlockSignalEvent) {
+        let Some(name) = level.state_string(event.state) else {
+            return;
+        };
+        if sensor_state_property(&name, KEY_SIGNAL) == Some("1") {
+            event.signal = SENSOR_ON;
+        }
+    }
+}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for SequencerPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        sequencer_block_tick(host, event);
+    }
+}
+
 /// `/rftoolsutility analyzer <pos> [nonce]`: the harness's readout of the passive analyzer block.
 /// It finds the adjacent dialed transmitter and prints the receiver-check status the transmitter
 /// keeps (`green=ok` → 15, `yellow=unknown` → 7, `red=warn` → 0). The artefact has no redstone
@@ -2371,6 +2572,19 @@ impl Hooks for Mod {
                 "rftoolsutility: the sensor part was refused: {error}"
             ));
         }
+
+        // Slice 12: the sequencer's block entity, pattern state machine and redstone Part, on the
+        // same iron-block template and `signal` state as its sibling the sensor.
+        let _ = SEQUENCER_ITEM.set(r.item_key(SEQUENCER));
+        let sequencer_kind = r
+            .block_entity_type(SEQUENCER_TYPE)
+            .blocks(&[SEQUENCER])
+            .build();
+        if let Err(error) = r.block_entity_part(&sequencer_kind, SequencerPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the sequencer part was refused: {error}"
+            ));
+        }
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -2514,6 +2728,12 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(SEQUENCER) {
+            if let Some(item) = SEQUENCER_ITEM.get() {
+                carry_machine(level, event, *item, SEQUENCER_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -2611,6 +2831,15 @@ impl Hooks for Mod {
             "rftoolsutility sensor-set <pos:block_pos> <kind:word> <target:id> <area:integer> <group:word> <facing:word>",
             2,
         ));
+        // Slice 12: the sequencer's GUI-equivalent controls — a readout of its parsed state and a
+        // way to write the 64-bit pattern and mode the GUI would teach.
+        event.commands.push(Command::new(
+            "rftoolsutility sequencer <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility sequencer-set <pos:block_pos> <mode:word> <bits:word> <delay:integer> <count:integer> <endstate:word> <facing:word>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -2646,6 +2875,8 @@ impl Hooks for Mod {
                     | "analyzer"
                     | "sensor"
                     | "sensor-set"
+                    | "sequencer"
+                    | "sequencer-set"
                     | "recipes"
             ]
         );
@@ -3081,6 +3312,113 @@ impl Hooks for Mod {
                     &format!(
                         "Sensor at {pos:?} checks {} to the {facing} (area 1, group one).",
                         config.target.as_deref().unwrap_or("any occluding block")
+                    ),
+                );
+            }
+            ["rftoolsutility", "sequencer"] => {
+                let Some(entity) = machine_at(&*host, level, pos, SEQUENCER) else {
+                    feedback(host, "No sequencer there.");
+                    return Flow::Cancel;
+                };
+                let Some(nbt) = entity.data(&*host) else {
+                    feedback(host, "No sequencer there.");
+                    return Flow::Cancel;
+                };
+                let data = sequencer_data(&nbt);
+                let state = sequencer_state(&nbt, &data);
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let facing = read_text(&nbt, KEY_SEQ_FACING).unwrap_or_else(|| "north".to_owned());
+                feedback(host, &sequencer_line(pos, &data, &state, &facing, nonce));
+            }
+            ["rftoolsutility", "sequencer-set"] => {
+                let Some(entity) = machine_at(&*host, level, pos, SEQUENCER) else {
+                    feedback(host, "No sequencer there.");
+                    return Flow::Cancel;
+                };
+                let usage = "Usage: /rftoolsutility sequencer-set <pos> <mode> <bits> <delay> <count> <endstate> <facing>";
+                let Some(CommandArgumentValue::String(mode)) = invocation.argument("mode") else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                let Some(mode) = SequencerMode::from_name(mode) else {
+                    feedback(
+                        host,
+                        "unknown sequencer mode (Once1|Once2|Loop1|Loop2|Loop3|Step|Loop4).",
+                    );
+                    return Flow::Cancel;
+                };
+                let Some(CommandArgumentValue::String(bits)) = invocation.argument("bits") else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                let Some(bits) = parse_bits(bits) else {
+                    feedback(
+                        host,
+                        "the pattern must be a 64-bit decimal or 0x hex number.",
+                    );
+                    return Flow::Cancel;
+                };
+                let iarg = |name: &str| match invocation.argument(name) {
+                    Some(CommandArgumentValue::Integer(value)) => Some(*value),
+                    _ => None,
+                };
+                let (Some(delay), Some(count)) = (iarg("delay"), iarg("count")) else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                if !(1..=64).contains(&delay) || !(1..=64).contains(&count) {
+                    feedback(host, "delay and count must be between 1 and 64.");
+                    return Flow::Cancel;
+                }
+                let Some(CommandArgumentValue::String(endstate)) = invocation.argument("endstate")
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                let endstate = match endstate.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        feedback(host, "endstate must be true or false.");
+                        return Flow::Cancel;
+                    }
+                };
+                let Some(CommandArgumentValue::String(facing)) = invocation.argument("facing")
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                if !sequencer_front(facing) {
+                    feedback(host, "unknown sequencer facing (north|south|east|west).");
+                    return Flow::Cancel;
+                }
+                let data = SequencerData {
+                    bits,
+                    mode,
+                    delay,
+                    stepcount: count,
+                    endstate,
+                };
+                let state = SequencerState::for_mode(&data);
+                let Some(mut nbt) = entity.data(&*host) else {
+                    feedback(host, "No sequencer there.");
+                    return Flow::Cancel;
+                };
+                write_sequencer(&mut nbt, &data, &state);
+                write_text(&mut nbt, KEY_SEQ_FACING, facing);
+                if entity.replace_data(host, nbt).is_err() {
+                    feedback(host, "No sequencer there.");
+                    return Flow::Cancel;
+                }
+                feedback(
+                    host,
+                    &format!(
+                        "Sequencer at {pos:?}: mode {} pattern {bits} over {count} steps, output {}.",
+                        mode.as_str(),
+                        state.output as i32 * SENSOR_ON
                     ),
                 );
             }
@@ -4178,5 +4516,38 @@ mod tests {
             sensor_line([200, 101, 8], 0, "any", "none", "south", None),
             "/rftoolsutility: sensor at [200, 101, 8]: signal=0 type=any target=none area=1 group=one facing=south"
         );
+    }
+
+    // -- the sequencer's harness readout and pattern parsing (slice 12) ----------
+
+    #[test]
+    fn the_sequencer_readout_is_the_line_the_harness_parses() {
+        let data = SequencerData {
+            bits: 5,
+            mode: SequencerMode::Step,
+            delay: 1,
+            stepcount: 4,
+            endstate: false,
+        };
+        let state = SequencerState {
+            step: 2,
+            prev_in: false,
+            timer: 1,
+            output: true,
+        };
+        assert_eq!(
+            sequencer_line([201, 101, 0], &data, &state, "north", Some("9")),
+            "/rftoolsutility: sequencer at [201, 101, 0]: step=2 bits=5 mode=Step output=15 delay=1 count=4 endstate=false facing=north nonce=9"
+        );
+    }
+
+    #[test]
+    fn the_sequencer_pattern_accepts_decimal_and_hex() {
+        assert_eq!(parse_bits("5"), Some(5));
+        assert_eq!(parse_bits("0x5"), Some(5));
+        assert_eq!(parse_bits("0xffffffffffffffff"), Some(u64::MAX));
+        assert_eq!(parse_bits("nonsense"), None);
+        assert!(sequencer_front("north"));
+        assert!(!sequencer_front("up"));
     }
 }

@@ -1,14 +1,16 @@
-# RFTools Utility for Horizon — slices 1–11: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family and the sensor
+# RFTools Utility for Horizon — slices 1–12: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor and the sequencer
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–11, the tank, the crafter tiers, the spawner's matter gate, the matter
-beamer, the matter transmitter / receiver / booster, the destination analyzer and the sensor.**
+**Status: slices 1–12, the tank, the crafter tiers, the spawner's matter gate, the matter
+beamer, the matter transmitter / receiver / booster, the destination analyzer, the sensor and
+the sequencer.**
 One flat SDK package (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the
-models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 11 — the sensor",
+models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 12 — the sequencer",
+§ "Slice 11 — the sensor",
 § "Slice 10 — the destination analyzer", § "Slice 9 — the teleporter family",
 § "Slice 8 — the matter beamer", § "Slice 7 — the spawner's matter gate", § "Slice 6 — the tick's own dimension",
 § "Slice 5 — the crafter tiers", § "Slice 4 — the spawner", § "Slice 3 — the crafter" and
@@ -89,6 +91,15 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
    GROUP_ONE are carried); an unknown type/facing is refused. The jar's 24 cosmetic slab
    rotations are dropped, so the input side is a saved setting, and a broken sensor's item
    carries that setting and the last signal.
+- `rftoolsutility:sequencer` — a **64-step pattern** driven by **rising edges** of an input
+   redstone signal (`pulse = powered && !prevIn`, the artefact's own rule) and emitted as a real
+   15/0 signal through the same hook as the sensor. `Step` advances one step per pulse, `Once1/2`
+   run one cycle, `Loop1/2` cycle forever, `Loop3/4` follow the signal level and `Loop4` resets
+   when it ends. `checkOutput()` reads the pattern bit at the current step, or the `endstate` when
+   stopped at step −1; the checker runs every `delay` ticks (default 1 over 64 steps). A vanilla
+   lever on any side supplies the edges through `Level.getBestNeighborSignal`; `/rftoolsutility
+   sequencer-set <pos> <mode> <bits> <delay> <count> <endstate> <facing>` is the GUI's equivalent
+   (bits in decimal or `0x` hex), and a broken sequencer's item carries its whole state.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
@@ -102,10 +113,14 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
   `/rftoolsutility sensor <pos> [nonce]` and `sensor-set <pos> <kind> <target> <area> <group>
   <facing>` for the sensor (the readout prints `signal=<0|15> type=… target=… facing=…`).
 
+  The sequencer's commands are `/rftoolsutility sequencer <pos> [nonce]` and `sequencer-set
+  <pos> <mode> <bits> <delay> <count> <endstate> <facing>`; its readout prints `step=… bits=…
+  mode=… output=<0|15> …`.
+
 ## What does not (yet)
 
 The dialing device, destination GUI, screens and their 30 modules, the rest of the logic
-blocks (the sensor is ported), the environmental controller and its modules, the tank's GUI and filter slot, the
+blocks (the sensor and sequencer are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
 fluid quad inside its window, the crafter's GUI, the spawner's GUI, the syringe that sets the
 mob, six-way facing, the item tooltips, the wrench item (a command links the beamer instead),
 the infusing power discount and the analyzer's vanilla redstone output (the artefact has none —

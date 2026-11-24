@@ -520,3 +520,42 @@ matches the tree`; R9 holds (SDK path dep only, no `[workspace]`, no packed lock
 replay was deliberately not re-run: it flaked twice in its late teleporter phase under load
 (those flakes predate this slice), so the focused teleporter and analyzer legs prove the two
 earlier families green without weakening any assertion.
+
+## Slice 12 — the sequencer (0.2.11, forwarded to AdLf-PC)
+
+All Rust ladder steps went through `build-slot.sh run --job W1-rftoolsutility --port
+ports/rftoolsutility --step test|lint|build|check`, each printing `build-slot: forwarding … to the
+remote runner` (hostname `AdLf-PC`); `BUILD_LOCAL=1` was never set. The launcher native build and
+the game legs ran locally in `--step native`/`--step e2e` leases. No lease was backgrounded.
+
+| # | check | command | result |
+|---|---|---|---|
+| 1 | red, runtime | 16 sequencer rules stubbed `todo!()` behind their tests, `cargo test --offline` | **FAILED. 98 passed; 16 failed**, each at `not yet implemented` (`slice12-red-full.log`) |
+| 2 | red, glue | `sequencer_line` stubbed behind its test | **FAILED. 4 passed; 1 failed** (`slice12-glue-red.log`) |
+| 3 | green | `cargo test --offline` | **116 passed; 0 failed** (`slice12-runtime-green.log`, `sdk-test.log` regenerated for 0.2.11) |
+| 4 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`slice12-lint.log`) |
+| 5 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **178,533 B**, sha `6184edc9…71389`, 228 entries, no `Cargo.lock` (`slice12-build-a.sha`, `-b.sha`) |
+| 6 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.11 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`slice12-check-fits.log`) |
+| 7 | fits the pin | `fits … --build 0a875da` | `0a875da  made for`, **FITS_EXIT:0** |
+| 8 | fits another build | `fits … --build 0b14f8a` | `0b14f8a  fits`, **FITS_OTHER_EXIT:0** |
+| 9 | gate | `verify-sdk-package.py rftoolsutility` | **1/1** (package matches the tree, R9, skills gate; `slice12-package-gate.log`) |
+| 10 | native build | `launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-7822e8161c41` (`slice12-native-build.log`); the stale 0.2.10 and first-0.2.11 tags were removed first |
+| 11 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e-sequencer.sh` | **PASS**, `EXIT:0` — AL–AL6 (`e2e-slice12-sequencer.log`): lever pulses drive bits 0,1,2,3 and wrap into a real lamp; redstone-block control, all-zero differential and refused id all assert parsed values |
+| 12 | in game, c/f | `SELFTEST=1 SELFTEST_AT=sequencer` | **FAIL: bit 2 lit the lamp, expected it to stay dark**, `EXIT:1` (`e2e-slice12-sequencer-selftest.log`) |
+| 13 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: ctl place rftoolsutility:sequencer … was refused three times**, `EXIT:1` (`e2e-slice12-sequencer-control.log`) |
+| 14 | no regression | the same game, `e2e-teleporter.sh`, `e2e-analyzer.sh` and `e2e-sensor.sh` | each **PASS**, `EXIT:0` — AI–AI2, AJ–AJ3 and AK–AK4 (`e2e-slice12-teleporter.log`, `-analyzer.log`, `-sensor.log`) |
+| 15 | log gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=58 ok=58 missing-exit=0 bad-exit=0`, `EXIT:0` (`slice12-e2e-gate.log`) |
+
+**Traps handled:** the first leg found a real integration defect — `getBestNeighborSignal` includes
+this block's own emitted 15, so a high output latched a phantom rising edge and advanced the
+pattern by itself (`e2e-slice12-selfprobe.log`, `step=1 output=0` where step 0 was expected). The
+tick now reads the input-side neighbour's directional `SignalGetter.getSignal`, and the leg mounts
+the vanilla lever on that side; the fix was rebuilt, re-packed and re-proved red→green. Under
+concurrent campaign load the game's control socket dropped twice and the analyzer's 8-tick wait
+for a 20-tick check flaked once; both were reaped and rerun serially to clean `PASS` logs with no
+assertion weakened. The remote pull-back excludes `*.rs`, so `rustfmt` was applied locally before
+the final lint run; the manifest, README, crate doc and content were edited **before** the final
+build and the gate confirmed `package matches the tree`; R9 holds (SDK path dep only, no
+`[workspace]`, no packed lock); no local type or variant is named `Block`/`Item`, so neither `fits`
+run false-failed; `E2E_TMP` and all four path exports came from `launcher-game.sh env`, never
+`/tmp`.

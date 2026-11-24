@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "signal=0": {
+      "model": "rftoolsutility:block/sequencer_0"
+    },
+    "signal=1": {
+      "model": "rftoolsutility:block/sequencer_0"
+    }
+  }
+}

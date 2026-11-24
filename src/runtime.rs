@@ -1041,6 +1041,199 @@ pub fn sensor_due(game_time: i64) -> bool {
     game_time.rem_euclid(SENSOR_TICKS) == 0
 }
 
+// ---- slice 12: the sequencer (`SequencerTileEntity`) ----
+
+/// The seven `SequencerMode`s, in the artefact's own order. `as_str` is the serialized spelling
+/// (`SequencerMode.getSerializedName`), which is what the harness writes and reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequencerMode {
+    Once1,
+    Once2,
+    Loop1,
+    Loop2,
+    Loop3,
+    Step,
+    Loop4,
+}
+
+impl SequencerMode {
+    /// `SequencerMode.getSerializedName` — `Once1`, `Step`, …
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Once1 => "Once1",
+            Self::Once2 => "Once2",
+            Self::Loop1 => "Loop1",
+            Self::Loop2 => "Loop2",
+            Self::Loop3 => "Loop3",
+            Self::Step => "Step",
+            Self::Loop4 => "Loop4",
+        }
+    }
+
+    /// Resolve an artefact spelling, refusing an unknown one.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Once1" => Some(Self::Once1),
+            "Once2" => Some(Self::Once2),
+            "Loop1" => Some(Self::Loop1),
+            "Loop2" => Some(Self::Loop2),
+            "Loop3" => Some(Self::Loop3),
+            "Step" => Some(Self::Step),
+            "Loop4" => Some(Self::Loop4),
+            _ => None,
+        }
+    }
+
+    /// `setMode`'s `currentStep`: `Once1/Once2/Loop3/Loop4` start at -1, the rest at 0.
+    #[must_use]
+    pub fn initial_step(self) -> i32 {
+        match self {
+            Self::Once1 | Self::Once2 | Self::Loop3 | Self::Loop4 => -1,
+            Self::Loop1 | Self::Loop2 | Self::Step => 0,
+        }
+    }
+}
+
+/// `SequencerData` (the record the artefact keeps): a 64-step bit pattern, the mode, the delay
+/// between checks, the number of steps in a cycle and the output while stopped at step -1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SequencerData {
+    pub bits: u64,
+    pub mode: SequencerMode,
+    pub delay: i32,
+    pub stepcount: i32,
+    pub endstate: bool,
+}
+
+impl Default for SequencerData {
+    fn default() -> Self {
+        // `SequencerData.createDefault()`.
+        Self {
+            bits: 0,
+            mode: SequencerMode::Once1,
+            delay: 1,
+            stepcount: 64,
+            endstate: false,
+        }
+    }
+}
+
+/// The block entity's live tick state: `currentStep`, `prevIn`, `timer` and the cached `rs` output
+/// the redstone hook reads — exactly the four fields `SequencerTileEntity` saves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SequencerState {
+    pub step: i32,
+    pub prev_in: bool,
+    pub timer: i32,
+    pub output: bool,
+}
+
+impl SequencerState {
+    /// A freshly set mode's state (`setMode` writes `currentStep` and the data's delay).
+    #[must_use]
+    pub fn for_mode(data: &SequencerData) -> Self {
+        Self {
+            step: data.mode.initial_step(),
+            prev_in: false,
+            timer: data.delay,
+            output: false,
+        }
+    }
+}
+
+/// `pulse = (powerLevel > 0) && !prevIn` — a rising edge of the input, not its level.
+#[must_use]
+pub fn rising_edge(powered: bool, prev_in: bool) -> bool {
+    powered && !prev_in
+}
+
+/// `(bits >> bit) & 1` — the bit at a step of the 64-step pattern. A stopped (-1) or out-of-range
+/// step has no bit, so it reads false rather than panicking on a negative shift.
+#[must_use]
+pub fn cycle_bit(bits: u64, step: i32) -> bool {
+    step >= 0 && step < u64::BITS as i32 && ((bits >> (step as u32)) & 1) == 1
+}
+
+/// `checkOutput()`: step -1 reads `endstate`, any other step reads its pattern bit.
+#[must_use]
+pub fn sequencer_output(data: &SequencerData, step: i32) -> bool {
+    if step < 0 {
+        data.endstate
+    } else {
+        cycle_bit(data.bits, step)
+    }
+}
+
+/// `nextStep()`: advance one step, wrapping to 0 at `stepcount`.
+#[must_use]
+pub fn next_step(step: i32, stepcount: i32) -> i32 {
+    let next = step + 1;
+    if next >= stepcount { 0 } else { next }
+}
+
+/// `nextStepAndStop()`: advance one step, stopping at -1 at `stepcount`.
+#[must_use]
+pub fn next_step_and_stop(step: i32, stepcount: i32) -> i32 {
+    let next = step + 1;
+    if next >= stepcount { -1 } else { next }
+}
+
+/// One `tickOnServer()`: latch the input, handle a pulse, then — when `timer--` reaches zero —
+/// refresh the cached output and handle the mode's per-tick cycle. The order is the artefact's:
+/// `pulse` is computed from the old input, `prevIn` is latched, `handlePulse` runs, then the timer
+/// decides whether to re-emit and advance.
+pub fn sequencer_tick(data: &SequencerData, state: &mut SequencerState, powered: bool) {
+    if rising_edge(powered, state.prev_in) {
+        // `handlePulse()`.
+        match data.mode {
+            SequencerMode::Once1 => {
+                if state.step == -1 {
+                    state.step = 0;
+                }
+            }
+            SequencerMode::Once2 | SequencerMode::Loop2 => state.step = 0,
+            SequencerMode::Loop1 | SequencerMode::Loop3 | SequencerMode::Loop4 => {}
+            SequencerMode::Step => state.step = next_step(state.step, data.stepcount),
+        }
+    }
+    state.prev_in = powered;
+
+    state.timer -= 1;
+    if state.timer <= 0 {
+        state.timer = data.delay;
+        // `support.setRedstoneState(this, checkOutput() ? 15 : 0)` then `handleCycle(powered)`.
+        state.output = sequencer_output(data, state.step);
+        match data.mode {
+            SequencerMode::Once1 | SequencerMode::Once2 => {
+                if state.step != -1 {
+                    state.step = next_step_and_stop(state.step, data.stepcount);
+                }
+            }
+            SequencerMode::Loop1 | SequencerMode::Loop2 => {
+                state.step = next_step(state.step, data.stepcount);
+            }
+            SequencerMode::Loop3 => {
+                if powered {
+                    state.step = next_step(state.step, data.stepcount);
+                }
+            }
+            SequencerMode::Loop4 => {
+                if powered {
+                    state.step = next_step(state.step, data.stepcount);
+                } else {
+                    state.step = -1;
+                }
+            }
+            SequencerMode::Step => {}
+        }
+    } else if state.timer > data.delay {
+        // A lowered delay setting must not leave a stale, longer countdown.
+        state.timer = data.delay;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2188,5 +2381,287 @@ mod tests {
             Some("minecraft:stone"),
             true
         ));
+    }
+
+    // Slice 12: the sequencer.
+
+    #[test]
+    fn the_artefacts_default_sequencer_data_is_once1_delay_one_stepcount_64() {
+        let data = SequencerData::default();
+        assert_eq!(data.mode, SequencerMode::Once1);
+        assert_eq!(data.delay, 1);
+        assert_eq!(data.stepcount, 64);
+        assert_eq!(data.bits, 0);
+        assert!(!data.endstate);
+    }
+
+    #[test]
+    fn every_sequencer_mode_round_trips_its_artefact_spelling() {
+        for mode in [
+            SequencerMode::Once1,
+            SequencerMode::Once2,
+            SequencerMode::Loop1,
+            SequencerMode::Loop2,
+            SequencerMode::Loop3,
+            SequencerMode::Step,
+            SequencerMode::Loop4,
+        ] {
+            assert_eq!(SequencerMode::from_name(mode.as_str()), Some(mode));
+        }
+        assert_eq!(SequencerMode::from_name("Step"), Some(SequencerMode::Step));
+        assert_eq!(SequencerMode::from_name("step"), None);
+        assert_eq!(SequencerMode::from_name("Once3"), None);
+    }
+
+    #[test]
+    fn set_mode_starts_once_and_loop3_at_minus_one_and_the_rest_at_zero() {
+        for mode in [
+            SequencerMode::Once1,
+            SequencerMode::Once2,
+            SequencerMode::Loop3,
+            SequencerMode::Loop4,
+        ] {
+            assert_eq!(mode.initial_step(), -1, "{mode:?} starts stopped");
+        }
+        for mode in [
+            SequencerMode::Loop1,
+            SequencerMode::Loop2,
+            SequencerMode::Step,
+        ] {
+            assert_eq!(mode.initial_step(), 0, "{mode:?} starts at the first step");
+        }
+    }
+
+    #[test]
+    fn a_rising_edge_is_a_high_input_after_a_low_one() {
+        assert!(rising_edge(true, false));
+        assert!(!rising_edge(false, false));
+        assert!(!rising_edge(true, true));
+        assert!(!rising_edge(false, true));
+    }
+
+    #[test]
+    fn a_pattern_bit_is_read_at_its_own_step() {
+        let bits = (1u64 << 0) | (1u64 << 2) | (1u64 << 63);
+        assert!(cycle_bit(bits, 0));
+        assert!(!cycle_bit(bits, 1));
+        assert!(cycle_bit(bits, 2));
+        assert!(cycle_bit(bits, 63));
+        assert!(!cycle_bit(bits, 64), "a step past the 64 bits is zero");
+        assert!(!cycle_bit(bits, -1), "a stopped sequencer has no step bit");
+    }
+
+    #[test]
+    fn a_stopped_sequencer_outputs_its_endstate() {
+        let mut data = SequencerData::default();
+        assert!(!sequencer_output(&data, -1));
+        data.endstate = true;
+        assert!(sequencer_output(&data, -1));
+        assert!(
+            !sequencer_output(&data, 0),
+            "bit 0 of a zero pattern is zero"
+        );
+    }
+
+    #[test]
+    fn step_advances_one_step_per_pulse_and_a_held_input_does_not() {
+        let data = SequencerData {
+            mode: SequencerMode::Step,
+            stepcount: 4,
+            ..SequencerData::default()
+        };
+        let mut state = SequencerState::for_mode(&data);
+        assert_eq!(state.step, 0);
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(state.step, 1, "the rising edge advances one step");
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(state.step, 1, "a held input is not a new pulse");
+        sequencer_tick(&data, &mut state, false);
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(state.step, 2, "the next rising edge advances again");
+    }
+
+    #[test]
+    fn the_step_output_follows_successive_bits() {
+        let data = SequencerData {
+            mode: SequencerMode::Step,
+            bits: 0b101, // bit 0 and bit 2
+            stepcount: 4,
+            ..SequencerData::default()
+        };
+        let mut state = SequencerState::for_mode(&data);
+        sequencer_tick(&data, &mut state, false);
+        assert_eq!(state.step, 0);
+        assert!(state.output, "step 0's bit is set");
+        for expected in [false, true, false, true] {
+            sequencer_tick(&data, &mut state, true);
+            sequencer_tick(&data, &mut state, false);
+            assert_eq!(state.output, expected, "step {} bit", state.step);
+        }
+    }
+
+    #[test]
+    fn an_all_zero_pattern_never_lights_the_output() {
+        let data = SequencerData {
+            mode: SequencerMode::Step,
+            bits: 0,
+            ..SequencerData::default()
+        };
+        let mut state = SequencerState::for_mode(&data);
+        for _ in 0..8 {
+            sequencer_tick(&data, &mut state, false);
+            assert!(!state.output);
+            sequencer_tick(&data, &mut state, true);
+            sequencer_tick(&data, &mut state, false);
+            assert!(!state.output);
+        }
+    }
+
+    #[test]
+    fn once1_runs_one_cycle_then_stops_at_the_endstate() {
+        let data = SequencerData {
+            mode: SequencerMode::Once1,
+            stepcount: 3,
+            bits: 0b111,
+            endstate: false,
+            ..SequencerData::default()
+        };
+        let mut state = SequencerState::for_mode(&data);
+        assert_eq!(state.step, -1);
+        for _ in 0..5 {
+            sequencer_tick(&data, &mut state, false);
+        }
+        assert_eq!(state.step, -1, "no pulse, no cycle");
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(
+            state.step, 1,
+            "the pulse starts the cycle and this due tick advances it"
+        );
+        for step in 2..3 {
+            sequencer_tick(&data, &mut state, false);
+            assert_eq!(state.step, step);
+        }
+        sequencer_tick(&data, &mut state, false);
+        assert_eq!(state.step, -1, "nextStepAndStop stops at stepcount");
+        sequencer_tick(&data, &mut state, false);
+        assert!(
+            !state.output,
+            "the next due tick emits the stopped endstate"
+        );
+        sequencer_tick(&data, &mut state, true);
+        sequencer_tick(&data, &mut state, false);
+        assert_eq!(
+            state.step, 2,
+            "a new pulse restarts and advances after the cycle ended"
+        );
+    }
+
+    #[test]
+    fn once2_restarts_the_cycle_on_a_new_pulse() {
+        let data = SequencerData {
+            mode: SequencerMode::Once2,
+            stepcount: 4,
+            ..SequencerData::default()
+        };
+        let mut state = SequencerState::for_mode(&data);
+        sequencer_tick(&data, &mut state, true);
+        sequencer_tick(&data, &mut state, false);
+        assert_eq!(state.step, 2);
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(
+            state.step, 1,
+            "Once2 restarts instead of ignoring the pulse"
+        );
+    }
+
+    #[test]
+    fn loop1_cycles_forever_without_any_input() {
+        let data = SequencerData {
+            mode: SequencerMode::Loop1,
+            stepcount: 3,
+            ..SequencerData::default()
+        };
+        let mut state = SequencerState::for_mode(&data);
+        assert_eq!(state.step, 0);
+        for step in [1, 2, 0, 1] {
+            sequencer_tick(&data, &mut state, false);
+            assert_eq!(state.step, step);
+        }
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(
+            state.step, 2,
+            "Loop1 ignores redstone pulses: the high tick only advances its own cycle step"
+        );
+    }
+
+    #[test]
+    fn loop2_advances_forever_but_a_pulse_resets_it() {
+        let data = SequencerData {
+            mode: SequencerMode::Loop2,
+            stepcount: 4,
+            ..SequencerData::default()
+        };
+        let mut state = SequencerState::for_mode(&data);
+        sequencer_tick(&data, &mut state, false);
+        sequencer_tick(&data, &mut state, false);
+        assert_eq!(state.step, 2);
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(
+            state.step, 1,
+            "Loop2's pulse resets to the start and this due tick advances"
+        );
+    }
+
+    #[test]
+    fn loop3_advances_only_while_the_input_is_high() {
+        let data = SequencerData {
+            mode: SequencerMode::Loop3,
+            stepcount: 4,
+            ..SequencerData::default()
+        };
+        let mut state = SequencerState::for_mode(&data);
+        assert_eq!(state.step, -1);
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(state.step, 0, "Loop3's first high step starts");
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(state.step, 1);
+        sequencer_tick(&data, &mut state, false);
+        assert_eq!(state.step, 1, "Loop3 holds its step when the signal ends");
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(state.step, 2, "Loop3 ignores pulses and follows the level");
+    }
+
+    #[test]
+    fn loop4_stops_at_minus_one_when_the_input_ends() {
+        let data = SequencerData {
+            mode: SequencerMode::Loop4,
+            stepcount: 4,
+            ..SequencerData::default()
+        };
+        let mut state = SequencerState::for_mode(&data);
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(state.step, 0);
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(state.step, 1);
+        sequencer_tick(&data, &mut state, false);
+        assert_eq!(state.step, -1, "Loop4 resets when power ends");
+    }
+
+    #[test]
+    fn a_delay_longer_than_one_defers_the_output_refresh() {
+        let data = SequencerData {
+            mode: SequencerMode::Step,
+            bits: 0b10,
+            delay: 3,
+            ..SequencerData::default()
+        };
+        let mut state = SequencerState::for_mode(&data);
+        sequencer_tick(&data, &mut state, true);
+        assert_eq!(state.step, 1);
+        assert!(!state.output, "the due tick has not arrived yet");
+        sequencer_tick(&data, &mut state, false);
+        assert!(!state.output);
+        sequencer_tick(&data, &mut state, false);
+        assert!(state.output, "the third tick refreshes the new bit");
     }
 }

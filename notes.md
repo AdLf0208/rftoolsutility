@@ -1,9 +1,11 @@
-# RFTools Utility — port notes (slices 1–11: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer and the sensor)
+# RFTools Utility — port notes (slices 1–12: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor and the sequencer)
 
-> **Current state (2026-11-24): slice 11, package 0.2.10 at pin
+> **Current state (2026-11-24): slice 12, package 0.2.11 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 11 — the sensor (2026-11-24)`** first: the switch from the dialing device to the
-> sensor, its real redstone output and the fail-capable lamp leg. Then
+> **`## Slice 12 — the sequencer (2026-11-24)`** first: the rising-edge rule, the seven modes and
+> the vanilla-lever-driven lamp leg (including the self-feedback trap). Then
+> **`## Slice 11 — the sensor (2026-11-24)`**: the sensor, its real redstone output and the
+> fail-capable lamp leg. Then
 > **`## Slice 9 — the teleporter family (2026-11-24)`**: the transmitter, receiver and
 > booster are the **player teleporter** family (not a matter mover — the artefact wins over the
 > brief's "matter fell / receiver rose" wording, which this mod does not have). Then
@@ -2415,3 +2417,204 @@ endstate`. The concrete assertion: set a known 64-bit pattern and `Step` mode by
 state follows bit 0, then bit 1, then bit 2 (a vanilla redstone block as the positive control,
 as in AK); `SELFTEST_AT=sequencer` inverts one step and must `EXIT:1`. If the pin cannot express a
 clean edge-triggered input, stop with `blocked(<symbol>)` rather than invent a GUI.
+
+## Slice 12 — the sequencer (2026-11-24)
+
+**Chosen from the port's own gap list** (the same line slice 11's report named and the 0.2.9
+`## Next slice` proposed), verbatim:
+
+> **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`, `digit`, `logic`,
+> `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+
+It is the sensor's sibling and fits the ledger's **machines** tier exactly: one block entity, a
+64-bit pattern, seven modes, an input redstone level and the real `block_signal` surface slice 11
+proved in game — no renderer, no entity AI, no new client half. **Pin**
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, API
+`0.2`, game 26.3. **Version 0.2.11.** Class **content**, tier **machines** (ledger).
+
+### The artefact's edge and mode rules (read first, not inferred from the name)
+
+Read from the jar and the upstream `1.21_neo` clone at the artefact's own commit
+`f799314007d68042df8504e83cd549360f2627c7` (analysis only):
+
+- `SequencerTileEntity.tickOnServer`: `pulse = (powerLevel > 0) && !prevIn`, then `prevIn =
+  powerLevel > 0`; `handlePulse()` runs on that **rising edge**. `timer--`; when it reaches 0,
+  reset it to `data.delay()`, emit `checkOutput() ? 15 : 0` and run `handleCycle(powerLevel > 0)`.
+- `checkOutput()`: `currentStep == -1 ? data.endstate() : getCycleBit(currentStep)`, where
+  `getCycleBit(bit) = ((bits >> bit) & 1) == 1` — the 64-bit pattern, LSB = step 0.
+- `setMode` starts `currentStep` at **-1** for `Once1/Once2/Loop3/Loop4` and at **0** for
+  `Loop1/Loop2/Step`. `nextStep()` wraps to 0 at `stepcount`; `nextStepAndStop()` stops at -1.
+- `handlePulse`: `Once1` starts a cycle only when stopped, `Once2`/`Loop2` restart at 0, `Step`
+  advances one step, `Loop1/3/4` ignore pulses. `handleCycle`: `Once1/2` advance-and-stop,
+  `Loop1/2` advance forever, `Loop3` advances while powered and `Loop4` resets to -1 when power
+  ends, `Step` does nothing (pulses alone advance it).
+- `SequencerData.createDefault()`: `bits=0`, `Once1`, `delay=1`, `stepcount=64`, `endstate=false`.
+
+The pin expresses a clean edge: `LevelRef::signal(host, input_side_neighbour, direction)` is
+`SignalGetter.getSignal(pos, dir)` — the neighbour's own emitted power. **Not** `blocked`.
+
+### What it does
+
+- **The block.** `rftoolsutility:sequencer` on `minecraft:iron_block` with a `signal` state
+  (`0`/`1`, default `0`) that caches the strength for the redstone hook, exactly as the sensor's.
+  The jar's four slab models, top texture, item model, recipe, advancement and loot table are
+  carried; its 24 `logic_facing` rotations are replaced by the two `signal` variants.
+- **The tick.** Reads the input-side neighbour's signal, runs the artefact's state machine, writes
+  the four live fields (`step`, `prevIn`, `timer`, `rs`) back into the block entity's compound and
+  mirrors the cached 15/0 into the block state, then wakes the neighbours so a vanilla lamp reacts.
+- **The redstone.** `BlockPart::block_signal` reports 15 when the cached state is `1` (direct and
+  indirect) and `is_signal_source` marks it a source. This is a **real vanilla redstone signal**.
+- **The harness.** `/rftoolsutility sequencer <pos> [nonce]` prints
+  `step=… bits=… mode=… output=<0|15> delay=… count=… endstate=… facing=<n>`; `sequencer-set <pos>
+  <mode> <bits> <delay> <count> <endstate> <facing>` is the GUI's equivalent (bits decimal or
+  `0x` hex; an unknown mode/facing, a count outside 1…64 and a bad bit string are refused). A
+  broken sequencer's item carries its whole state (`minecraft:block_entity_data`).
+
+### Red → green (unit, verbatim)
+
+All 16 pure rules were `todo!()` stubs behind their tests first (`slice12-red-full.log`):
+
+```
+failures:
+    runtime::tests::a_delay_longer_than_one_defers_the_output_refresh
+    runtime::tests::a_pattern_bit_is_read_at_its_own_step
+    runtime::tests::a_rising_edge_is_a_high_input_after_a_low_one
+    runtime::tests::a_stopped_sequencer_outputs_its_endstate
+    runtime::tests::an_all_zero_pattern_never_lights_the_output
+    runtime::tests::every_sequencer_mode_round_trips_its_artefact_spelling
+    runtime::tests::loop1_cycles_forever_without_any_input
+    runtime::tests::loop2_advances_forever_but_a_pulse_resets_it
+    runtime::tests::loop3_advances_only_while_the_input_is_high
+    runtime::tests::loop4_stops_at_minus_one_when_the_input_ends
+    runtime::tests::once1_runs_one_cycle_then_stops_at_the_endstate
+    runtime::tests::once2_restarts_the_cycle_on_a_new_pulse
+    runtime::tests::set_mode_starts_once_and_loop3_at_minus_one_and_the_rest_at_zero
+    runtime::tests::step_advances_one_step_per_pulse_and_a_held_input_does_not
+    runtime::tests::the_artefacts_default_sequencer_data_is_once1_delay_one_stepcount_64
+    runtime::tests::the_step_output_follows_successive_bits
+
+test result: FAILED. 98 passed; 16 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Each new failure was `panicked at src/runtime.rs:…: not yet implemented`. Two expectations were
+wrong on the first *green* run and were corrected against the artefact's tick order (a pulse and a
+cycle can share a due tick; Once1 emits the endstate on the tick **after** the stop) — the red leg
+above is the before-implementation run. The harness formatter was stubbed behind its own test
+(`slice12-glue-red.log`): `FAILED. 4 passed; 1 failed` at `not yet implemented`.
+
+Green: **116 passed; 0 failed** (`slice12-runtime-green.log`, `sdk-test.log` regenerated for
+0.2.11) — 60 runtime and 56 glue tests. `cargo fmt --check` clean, clippy `-D warnings` 0 warnings
+(`slice12-lint.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-sequencer.sh` — a focused, fail-capable leg reusing the launcher-built game; one lease
+per leg, every log ends with its exit. The assertion is a **vanilla redstone lamp** beside the
+sequencer, driven by a **vanilla lever** on its north input side.
+
+| log | verdict |
+|---|---|
+| `e2e-slice12-sequencer.log` | **PASS**, `EXIT:0` — AL–AL6 |
+| `e2e-slice12-sequencer-selftest.log` | **FAIL: SELFTEST sequencer: bit 2 lit the lamp, expected it to stay dark**, `EXIT:1` |
+| `e2e-slice12-sequencer-control.log` | **FAIL: ctl place rftoolsutility:sequencer … was refused three times** (unmodded Nightly), `EXIT:1` |
+| `e2e-slice12-teleporter.log`, `-analyzer.log`, `-sensor.log` | each **PASS**, `EXIT:0` — the 0.2.8/0.2.9/0.2.10 families, no regression |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=58 ok=58 missing-exit=0 bad-exit=0`
+(the saved first self-probe log is one of them).
+
+The phases, each asserting a parsed value (verbatim from the green transcript):
+
+```
+AL-control: lamp with a vanilla redstone block: minecraft:redstone_lamp[lit=true]
+            lamp after removing it: minecraft:redstone_lamp[lit=false]
+AL0: /rftoolsutility: sequencer at [201, 101, 0]: step=0 bits=5 mode=Step output=15 delay=1 count=4 endstate=false facing=north nonce=1   (lamp lit)
+AL1: … step=1 … output=0 … nonce=2     (lamp dark — one lever pulse)
+AL2: … step=2 … output=15 … nonce=3    (lamp lit — second pulse)
+AL3: … step=3 … output=0 … nonce=4     (lamp dark — third pulse)
+AL4: … step=0 … output=15 … nonce=5    (wrap to bit 0, lamp lit)
+AL5: … step=1 bits=0 … output=0 … nonce=7   (all-zero pattern stays dark)
+AL6: give rftoolsutility:not_a_sequencer → rc=1 {"error":"unknown item rftoolsutility:not_a_sequencer"}
+```
+
+AL places the sequencer at `[201,101,0]`, a lamp at `[202,101,0]`, a lever at `[201,101,-1]`
+(wall-mounted on the north input side), and a redstone block at `[203,101,0]` for the positive
+control. Counterfactuals: the redstone-block control proves the lamp and its parser work; the
+all-zero pattern is the differential; AL1/AL3 prove a zero bit actually darkens the lamp;
+`SELFTEST_AT=sequencer` inverts AL2 and fails as designed, so the edge case can fail. `CONTROL=1`
+runs the same script on the unmodded Nightly, where the sequencer item does not exist.
+
+### Measured traps this slice cost
+
+1. **`getBestNeighborSignal` self-feedback.** The first leg set a high output and the *next* tick
+   read the sequencer's own 15 back as an input edge, advancing the pattern by itself (`step=1`
+   with `output=0` where step 0 was expected). Root cause: this engine's best-neighbour read
+   includes the block's own signal when it `isSignalSource`. **Fix:** read the input-side
+   neighbour's directional `SignalGetter.getSignal(neighbour, into)` instead; the lever is placed
+   on that side and no self edge is possible. The first leg is kept as `e2e-slice12-selfprobe.log`.
+2. **A floor lever on top is not the input side.** With the directional read, a lever above the
+   sequencer is invisible; the leg mounts it as `face=wall,facing=south` at the north neighbour so
+   it powers the sequencer in the direction the glue reads.
+3. **Under parallel load the game can drop its control socket** between arena setup and placement
+   (three other campaign games were live). No code defect; the focused leg was reaped and rerun
+   serially to a clean `PASS`. The analyzer leg's 8-tick wait for a 20-tick check also flaked once;
+   both earlier legs are green on the delivered bytes.
+4. **Clippy/fmt:** the mode enum has no `Display` (the feedback uses `mode.as_str()`), and the
+   remote pull-back excludes `*.rs`, so `rustfmt` was applied **locally** before the final lint run.
+
+### Deviations and content adaptations
+
+- **The input side is a saved advisory.** The jar's 24 `logic_facing` slab rotations cannot be a
+  26.3 content block's states; the four horizontal facings are written by `/rftoolsutility
+  sequencer-set` and the tick reads that neighbour's signal. A user cannot orient the block by
+  placement (the sensor's and the analyzer's deviation).
+- **Only the matcher-facing subset of the GUI is carried**: the seven other `SensorType`s and the
+  larger areas apply to the sensor, not the sequencer; the sequencer's GUI (pattern editor, mode
+  buttons, delay/stepcount/endstate fields) is replaced by one harness command. All seven modes,
+  the full 64-bit pattern, the delay, the stepcount and the endstate are implemented and tested.
+- **No new upstream defect was adopted.** The rising-edge rule, the mode table and the 15/0 output
+  are the artefact's own; the self-feedback above is an engine-integration finding, not a Java bug.
+- The carried recipe needs `rftoolsbase:machine_base`, so the e2e gives the block, as every
+  machine slice has. No comparator/TOP/Jade, no sounds, no infusing bonus, no GUI.
+
+### Coverage after slice 12
+
+| family | status |
+|---|---|
+| `rftoolsutility:sequencer` (block, item, recipe, advancement, loot, texture, `signal` state) | tested — AL: placed and read back; content regenerated by `assemble_content.py` |
+| the rising-edge detector and the seven modes | tested — AL0–AL4 (Step pulses 0→1→2→3→0 with the lamp following), unit rules for Once1/2, Loop1–4 and held inputs |
+| the 64-bit pattern, delay, stepcount and endstate | tested — AL0/AL5 (pattern 5 vs all zeros) and the 16 unit rules; `sequencer-set` refuses a bad mode/facing/count |
+| the real 15/0 redstone output | tested — AL-control, AL0/AL2/AL4 lit vs AL1/AL3/AL5 dark; `SELFTEST_AT=sequencer` inverts AL2 |
+| the item carrying the sequencer's state | carried (`block_drops` + `minecraft:block_entity_data`, the same path as the other machines); no dedicated phase |
+| a `rftoolsbase:machine_base` recipe craft | blocked(`rftoolsbase:machine_base`) — the parent port's item; the e2e gives the block |
+| the GUI (pattern editor, mode/delay/stepcount fields) | not ported (no menu; `sequencer-set` is its equivalent) |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices, rust-review, rust-port
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 178,533 B | `6184edc93fc748a0a1eab067bf15905d0ab25cd24ac87d402e1a418d0b671389` | 228 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice12-build-a.sha`, `-b.sha`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.11 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`);
+`fits --build 0a875da` → `0a875da  made for`; `fits --build 0b14f8a` → `0b14f8a  fits`;
+`verify-sdk-package.py rftoolsutility` → **1/1** (package matches the tree, R9, skills gate).
+The manifest, README, crate doc and content were edited **before** the final build. The launcher's
+`native-build` compiled the mod (`Compiling rftoolsutility (1 of 1)`,
+`native-0a875da-7822e8161c41`) after the stale 0.2.10 and first-0.2.11 tags were removed; all Rust
+ladder steps printed `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no
+`BUILD_LOCAL=1` was set, and no lease was backgrounded.
+
+## Next slice
+
+The next logic-family gap on the same line is the **timer** (`rftoolsutility:timer`,
+`TimerTileEntity`), the other simple redstone machine: a delay counter set by a GUI command that
+measures a rising edge and emits a timed pulse. Before dispatching, read its `tickServer` and
+`TimerData` from the artefact first and check the same `LevelRef::signal` input surface this slice
+proved; the concrete assertion would be: set a known delay by command, pulse the vanilla lever on
+the input side, and assert the adjacent lamp's `lit` state turns on after exactly that many ticks
+and off after the pulse length (redstone-block control, no-pulse differential,
+`SELFTEST_AT=timer` `EXIT:1`). If the artefact needs a GUI-only setting that cannot be a command,
+stop with `blocked(<symbol>)` rather than inventing one.
