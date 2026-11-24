@@ -190,3 +190,29 @@ two-value `signal` state and the blockstate below keys the front-facing slab mod
 
 The recipe's other ingredients are plain ids (comparator, redstone) and `rftoolsbase:machine_base`,
 the parent port's item, so the e2e gives the block, as every machine slice has.
+
+## Slice 18 — the redstone transmitter/receiver
+
+`tools/assemble_content.py` regenerates both families from the same artefact jar, deterministically:
+
+| File | What |
+|---|---|
+| `assets/rftoolsutility/models/block/redstone_{transmitter,receiver}_{0..3}.json` | the jar's four slab models per machine, their `rftoolsbase:` machine-base textures re-pointed into this namespace |
+| `assets/rftoolsutility/models/item/redstone_{transmitter,receiver}.json` | the jar's item models |
+| `assets/rftoolsutility/textures/block/logic/machineredstone{transmitter,receiver}.png` | the jar's two top textures |
+| `assets/rftoolsutility/blockstates/redstone_transmitter.json` | one empty variant — the transmitter is a redstone sink with no cached state |
+| `assets/rftoolsutility/blockstates/redstone_receiver.json` | 16 `signal=0..15` variants, all pointing at `block/redstone_receiver_0` (the receiver can preserve an exact strength) |
+| `assets/rftoolsutility/items/redstone_{transmitter,receiver}.json` | the 26.3 item definitions (`minecraft:model`) |
+| `data/rftoolsutility/horizon/block/redstone_transmitter.json` | the `minecraft:iron_block` template, hardness 2.0 / blast 2.0, correct tool, metal sound, no state properties |
+| `data/rftoolsutility/horizon/block/redstone_receiver.json` | the same template with the declared 16-value `signal` state (default 0) |
+| `data/rftoolsutility/{recipe,advancement/recipes/misc,loot_table/blocks}/redstone_{transmitter,receiver}.json` | the jar's two recipes, advancements and loot tables (recipes upgraded to 26.3 ingredient form; loot `copy_components` stripped, the port's `block_drops` writes the machine data instead) |
+| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json` | both machines added to the tab |
+| `data/minecraft/tags/block/{mineable/pickaxe,needs_iron_tool}.json` | both added to each tag |
+| `assets/rftoolsutility/lang/en_us.json` | the four jar lang lines (`block.…` and `message.….header`) |
+
+The jar's 24 `logic_facing` rotations are not a 26.3 content block's state; the saved input side
+written by `/rftoolsutility redstone-set` replaces them, as with every logic sibling. The recipes'
+middle ingredient is `rftoolsbase:machine_base` (the parent port's item), so the e2e gives both
+blocks, as every machine slice has. The deterministic regeneration is part of the package build;
+running `python3 tools/assemble_content.py --check`-style comparison against a fresh run produces
+the same bytes (the script is the only writer of `assets/` and `data/`).

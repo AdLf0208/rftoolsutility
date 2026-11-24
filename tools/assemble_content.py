@@ -218,6 +218,28 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/invchecker.json",
     "data/rftoolsutility/recipe/invchecker.json",
     "data/rftoolsutility/loot_table/blocks/invchecker.json",
+    # Slice 18: the redstone transmitter/receiver, the last logic-row family. Their four slab
+    # models, top texture, item models, recipes, advancements and loot tables are the jar's own;
+    # the 24 `logic_facing` rotations are replaced below by the `signal` variants the native
+    # redstone hook caches (the receiver emits an exact 0..15, the transmitter is a sink).
+    "assets/rftoolsutility/models/block/redstone_transmitter_0.json",
+    "assets/rftoolsutility/models/block/redstone_transmitter_1.json",
+    "assets/rftoolsutility/models/block/redstone_transmitter_2.json",
+    "assets/rftoolsutility/models/block/redstone_transmitter_3.json",
+    "assets/rftoolsutility/models/item/redstone_transmitter.json",
+    "assets/rftoolsutility/textures/block/logic/machineredstonetransmitter.png",
+    "assets/rftoolsutility/models/block/redstone_receiver_0.json",
+    "assets/rftoolsutility/models/block/redstone_receiver_1.json",
+    "assets/rftoolsutility/models/block/redstone_receiver_2.json",
+    "assets/rftoolsutility/models/block/redstone_receiver_3.json",
+    "assets/rftoolsutility/models/item/redstone_receiver.json",
+    "assets/rftoolsutility/textures/block/logic/machineredstonereceiver.png",
+    "data/rftoolsutility/advancement/recipes/misc/redstone_transmitter.json",
+    "data/rftoolsutility/recipe/redstone_transmitter.json",
+    "data/rftoolsutility/loot_table/blocks/redstone_transmitter.json",
+    "data/rftoolsutility/advancement/recipes/misc/redstone_receiver.json",
+    "data/rftoolsutility/recipe/redstone_receiver.json",
+    "data/rftoolsutility/loot_table/blocks/redstone_receiver.json",
 ]
 # Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
 # upstream's "living?" form, and these tags are the yield a living item carries
@@ -294,6 +316,15 @@ TELEPORTER_MODELS = [
     "assets/rftoolsutility/models/block/invchecker_1.json",
     "assets/rftoolsutility/models/block/invchecker_2.json",
     "assets/rftoolsutility/models/block/invchecker_3.json",
+    # Slice 18: the eight redstone pair slab models name the same base textures.
+    "assets/rftoolsutility/models/block/redstone_transmitter_0.json",
+    "assets/rftoolsutility/models/block/redstone_transmitter_1.json",
+    "assets/rftoolsutility/models/block/redstone_transmitter_2.json",
+    "assets/rftoolsutility/models/block/redstone_transmitter_3.json",
+    "assets/rftoolsutility/models/block/redstone_receiver_0.json",
+    "assets/rftoolsutility/models/block/redstone_receiver_1.json",
+    "assets/rftoolsutility/models/block/redstone_receiver_2.json",
+    "assets/rftoolsutility/models/block/redstone_receiver_3.json",
 ]
 # The teleporter family's three blocks (McJtyLib `STANDARD_IRON`; the booster is
 # `.strength(2, 6)`). The transmitter and receiver carry a block entity; the booster is a plain
@@ -353,6 +384,8 @@ TAB = {
         f"{MOD}:analog",
         f"{MOD}:logic",
         f"{MOD}:invchecker",
+        f"{MOD}:redstone_transmitter",
+        f"{MOD}:redstone_receiver",
     ],
 }
 
@@ -573,6 +606,40 @@ INVCHECKER_BLOCK = {
     "item": True,
 }
 
+# `RedstoneTransmitterTileEntity` is a LogicSlabBlock on McJtyLib's `STANDARD_IRON`, but it is a
+# redstone sink — it has no `setRedstoneState`, so no `signal` state is needed. The jar's 24
+# `logic_facing` rotations are replaced by the saved input side `/rftoolsutility redstone-set`.
+RED_TX_BLOCK = {
+    "template": "minecraft:iron_block",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "item": True,
+}
+
+# `RedstoneReceiverTileEntity.tickServer` hands `checkOutput()` to `setRedstoneState`: digital
+# mode emits 15 and analog mode preserves the transmitter's exact 0..15 strength, so the cached
+# state has all sixteen values, like the analog's (unlike its 15/0 logic siblings).
+RED_RX_BLOCK = {
+    "template": "minecraft:iron_block",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "state_properties": {
+        "signal": {"type": "enum", "values": [str(level) for level in range(16)]}
+    },
+    "default_state": {"signal": "0"},
+    "item": True,
+}
+
 # The jar's recipes name `c:` convention tags the prepared 26.3 root does not
 # ship (it ships `minecraft` tags only), and an unknown tag is an empty
 # ingredient. These are the smallest honest memberships, the same ones this
@@ -618,6 +685,10 @@ LANG_KEYS = [
     "message.rftoolsutility.logic.header",
     "block.rftoolsutility.invchecker",
     "message.rftoolsutility.invchecker.header",
+    "block.rftoolsutility.redstone_transmitter",
+    "message.rftoolsutility.redstone_transmitter.header",
+    "block.rftoolsutility.redstone_receiver",
+    "message.rftoolsutility.redstone_receiver.header",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -908,6 +979,29 @@ def main() -> None:
         assets / "blockstates" / "invchecker.json",
         {"variants": {f"signal={value}": {"model": f"{MOD}:block/invchecker_0"} for value in ("0", "1")}},
     )
+    # Slice 18: the transmitter is a sink with no cached strength, so its blockstate has the one
+    # empty variant; the receiver caches the exact 0..15 like the analog's.
+    dump(
+        assets / "items" / "redstone_transmitter.json",
+        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/redstone_transmitter"}},
+    )
+    dump(
+        assets / "blockstates" / "redstone_transmitter.json",
+        {"variants": {"": {"model": f"{MOD}:block/redstone_transmitter_0"}}},
+    )
+    dump(
+        assets / "items" / "redstone_receiver.json",
+        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/redstone_receiver"}},
+    )
+    dump(
+        assets / "blockstates" / "redstone_receiver.json",
+        {
+            "variants": {
+                f"signal={strength}": {"model": f"{MOD}:block/redstone_receiver_0"}
+                for strength in range(16)
+            }
+        },
+    )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
@@ -924,6 +1018,8 @@ def main() -> None:
     dump(data_dir / "horizon" / "block" / "analog.json", ANALOG_BLOCK)
     dump(data_dir / "horizon" / "block" / "logic.json", LOGIC_BLOCK)
     dump(data_dir / "horizon" / "block" / "invchecker.json", INVCHECKER_BLOCK)
+    dump(data_dir / "horizon" / "block" / "redstone_transmitter.json", RED_TX_BLOCK)
+    dump(data_dir / "horizon" / "block" / "redstone_receiver.json", RED_RX_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
@@ -946,6 +1042,8 @@ def main() -> None:
                 f"{MOD}:analog",
                 f"{MOD}:logic",
                 f"{MOD}:invchecker",
+                f"{MOD}:redstone_transmitter",
+                f"{MOD}:redstone_receiver",
             ]
         },
     )
@@ -968,6 +1066,8 @@ def main() -> None:
                 f"{MOD}:analog",
                 f"{MOD}:logic",
                 f"{MOD}:invchecker",
+                f"{MOD}:redstone_transmitter",
+                f"{MOD}:redstone_receiver",
             ]
         },
     )

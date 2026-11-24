@@ -9,6 +9,8 @@
 // fluid at a time, fills and drains from a bucket in the player's hand, and maps
 // its contents to a 0..8 render level.
 
+use std::collections::BTreeMap;
+
 /// `TankConfiguration.MAXCAPACITY`'s default: the tank's size in millibuckets.
 pub const CAPACITY: i32 = 32_000;
 /// One bucket of fluid: vanilla's bucket holds 1,000 mB.
@@ -1649,6 +1651,125 @@ pub fn invchecker_countdown(counter: i32) -> i32 {
         INVCHECKER_TICKS
     } else {
         counter - 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The redstone transmitter/receiver pair (slice 18) — `RedstoneChannels`, the
+// world-saved channel table the transmitter writes and the receiver reads
+// ---------------------------------------------------------------------------
+
+/// `RedstoneChannelData.createDefault()`'s unset channel. An unset machine is inert until a
+/// channel is written (upstream's GUI/button path, this port's `redstone-set`).
+pub const CHANNEL_UNSET: i32 = -1;
+/// A vanilla redstone strength, the range `powerLevel` can take.
+pub const MAX_SIGNAL: i32 = 15;
+
+/// Upstream `RedstoneChannels`: a monotonic id allocator and one strength per channel. The
+/// pin persists this through `ServerHost::world_data_files` (see `src/lib.rs`); this type is
+/// the pure codec and rules, with no game access. The GUI-only channel `name` is not carried.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RedstoneChannels {
+    /// `lastId`: the id the next `newChannel()` hands out (the first is 1).
+    pub last_id: i32,
+    /// The strength of every channel that has been written; absent channels read as no signal.
+    pub values: BTreeMap<i32, i32>,
+}
+
+impl RedstoneChannels {
+    /// `RedstoneChannels.newChannel()`: bump `lastId` and return the new id. Upstream does not
+    /// create an entry here — a channel exists in the table only once a transmitter writes it.
+    #[must_use]
+    pub fn new_channel(&mut self) -> i32 {
+        self.last_id += 1;
+        self.last_id
+    }
+
+    /// `getOrCreateChannel(id)`: a channel written for the first time starts at strength 0.
+    pub fn get_or_create(&mut self, channel: i32) -> &mut i32 {
+        self.values.entry(channel).or_insert(0)
+    }
+
+    /// `getChannel(id).getValue()`: `None` for an unset or never-written channel.
+    #[must_use]
+    pub fn value(&self, channel: i32) -> Option<i32> {
+        (channel != CHANNEL_UNSET)
+            .then(|| {
+                self.values
+                    .get(&channel)
+                    .copied()
+                    .map(|v| v.clamp(0, MAX_SIGNAL))
+            })
+            .flatten()
+    }
+
+    /// `getOrCreateChannel(channel).setValue(value)`, clamped to a valid redstone strength.
+    pub fn set_value(&mut self, channel: i32, value: i32) {
+        *self.get_or_create(channel) = value.clamp(0, MAX_SIGNAL);
+    }
+}
+
+/// The file's deterministic text codec: `lastId=<n>` then `<id> <strength>` lines in id order.
+/// An empty or unreadable file is a fresh table (upstream's new-world constructor).
+#[must_use]
+pub fn format_channels(channels: &RedstoneChannels) -> String {
+    let mut out = format!("lastId={}\n", channels.last_id);
+    for (channel, strength) in &channels.values {
+        out.push_str(&format!("{channel} {strength}\n"));
+    }
+    out
+}
+
+/// Parse [`format_channels`]' text, ignoring blank lines and malformed ones.
+#[must_use]
+pub fn parse_channels(text: &str) -> RedstoneChannels {
+    let mut channels = RedstoneChannels::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("lastId=") {
+            if let Ok(last_id) = rest.parse::<i32>() {
+                channels.last_id = last_id;
+            }
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        if let (Some(channel), Some(strength)) = (parts.next(), parts.next())
+            && let (Ok(channel), Ok(strength)) = (channel.parse::<i32>(), strength.parse::<i32>())
+        {
+            channels
+                .values
+                .insert(channel, strength.clamp(0, MAX_SIGNAL));
+        }
+    }
+    channels
+}
+
+/// `RedstoneTransmitterTileEntity.update()`: with no channel it does nothing. On a changed
+/// input strength it returns the new `prevIn` and the `(channel, strength)` to write into the
+/// table; an unchanged strength writes nothing. `prevIn` starts at -1, so the first read writes.
+#[must_use]
+pub fn transmitter_update(prev_in: i32, power: i32, channel: i32) -> (i32, Option<(i32, i32)>) {
+    if channel == CHANNEL_UNSET || power == prev_in {
+        return (prev_in, None);
+    }
+    (power, Some((channel, power.clamp(0, MAX_SIGNAL))))
+}
+
+/// `RedstoneReceiverTileEntity.checkOutput()`: no channel or a missing channel is 0; digital
+/// mode (`analog = false`) emits 15 for any nonzero strength, analog mode preserves 0..15.
+#[must_use]
+pub fn receiver_output(channel: i32, value: Option<i32>, analog: bool) -> i32 {
+    let Some(strength) = value else {
+        return 0;
+    };
+    if channel == CHANNEL_UNSET {
+        return 0;
+    }
+    let strength = strength.clamp(0, MAX_SIGNAL);
+    if !analog && strength > 0 {
+        MAX_SIGNAL
+    } else {
+        strength
     }
 }
 
@@ -3654,5 +3775,89 @@ mod tests {
             ticks_until_due += 1;
         }
         assert_eq!(ticks_until_due, 9);
+    }
+
+    #[test]
+    fn a_fresh_channel_table_hands_out_one_then_two() {
+        let mut channels = RedstoneChannels::default();
+        assert_eq!(channels.new_channel(), 1);
+        assert_eq!(channels.new_channel(), 2);
+        assert_eq!(channels.last_id, 2);
+        assert_eq!(
+            channels.value(1),
+            None,
+            "a new id is not in the table until written"
+        );
+    }
+
+    #[test]
+    fn a_channel_is_created_when_a_transmitter_first_writes_it() {
+        let mut channels = RedstoneChannels::default();
+        channels.set_value(3, 9);
+        assert_eq!(channels.value(3), Some(9));
+        assert_eq!(channels.get_or_create(4), &0);
+        assert_eq!(channels.value(4), Some(0));
+    }
+
+    #[test]
+    fn a_written_strength_is_clamped_to_the_redstone_range() {
+        let mut channels = RedstoneChannels::default();
+        channels.set_value(1, 99);
+        assert_eq!(channels.value(1), Some(MAX_SIGNAL));
+        channels.set_value(1, -3);
+        assert_eq!(channels.value(1), Some(0));
+    }
+
+    #[test]
+    fn the_channel_table_round_trips_through_its_text_codec() {
+        let mut channels = RedstoneChannels {
+            last_id: 5,
+            ..RedstoneChannels::default()
+        };
+        channels.set_value(1, 15);
+        channels.set_value(4, 7);
+        let text = format_channels(&channels);
+        assert_eq!(text, "lastId=5\n1 15\n4 7\n");
+        assert_eq!(parse_channels(&text), channels);
+        assert_eq!(parse_channels(""), RedstoneChannels::default());
+        assert_eq!(parse_channels("garbage\n1 x\n2 3"), {
+            let mut expected = RedstoneChannels::default();
+            expected.set_value(2, 3);
+            expected
+        });
+    }
+
+    #[test]
+    fn a_transmitter_with_no_channel_writes_nothing() {
+        assert_eq!(transmitter_update(-1, 15, CHANNEL_UNSET), (-1, None));
+    }
+
+    #[test]
+    fn a_transmitter_writes_only_when_the_input_strength_changes() {
+        assert_eq!(transmitter_update(-1, 15, 2), (15, Some((2, 15))));
+        assert_eq!(transmitter_update(15, 15, 2), (15, None));
+        assert_eq!(transmitter_update(15, 0, 2), (0, Some((2, 0))));
+        assert_eq!(transmitter_update(0, 0, 2), (0, None));
+    }
+
+    #[test]
+    fn a_receiver_on_an_unset_or_missing_channel_stays_dark() {
+        assert_eq!(receiver_output(CHANNEL_UNSET, Some(15), false), 0);
+        assert_eq!(receiver_output(2, None, false), 0);
+        assert_eq!(receiver_output(2, None, true), 0);
+    }
+
+    #[test]
+    fn a_digital_receiver_emits_full_strength_for_any_signal() {
+        assert_eq!(receiver_output(1, Some(1), false), MAX_SIGNAL);
+        assert_eq!(receiver_output(1, Some(15), false), MAX_SIGNAL);
+        assert_eq!(receiver_output(1, Some(0), false), 0);
+    }
+
+    #[test]
+    fn an_analog_receiver_preserves_the_exact_strength() {
+        assert_eq!(receiver_output(1, Some(7), true), 7);
+        assert_eq!(receiver_output(1, Some(15), true), MAX_SIGNAL);
+        assert_eq!(receiver_output(1, Some(0), true), 0);
     }
 }

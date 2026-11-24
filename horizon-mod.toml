@@ -1,6 +1,6 @@
 id = "rftoolsutility"
 name = "RFTools Utility"
-version = "0.2.16"
+version = "0.2.17"
 description = """A port of RFTools Utility for Horizon: the tank, a 32,000 mB fluid tank that holds
 one fluid at a time, takes and gives a bucket on a right click, exposes the fluid
 capability on every face and shows its fill level through the jar's own nine textures;
@@ -28,7 +28,11 @@ previous output), written by `/rftoolsutility logic-set` in place of the GUI; an
 checker, which reads the live item slots of the neighbour on its input side every ten ticks and
 emits 15 when the configured slot holds at least the configured count of a matching item (the
 matcher, damage mode, tag and input side are written by `/rftoolsutility invchecker-set` in place
-of the GUI). The display-only digit is not ported: upstream has no redstone output, only a client
+of the GUI); and the redstone transmitter and receiver, which carry a redstone strength on a
+world-persistent numbered channel — the transmitter writes the input-side signal into the save's
+own `<world>/horizon-mod-data/rftoolsutility/` file and the receiver emits 15 in digital mode or
+the exact 0..15 strength in analog mode, with `/rftoolsutility redstone-set` replacing the two GUIs.
+The display-only digit is not ported: upstream has no redstone output, only a client
 sprite renderer."""
 authors = ["McJty", "Horizon native mod contributors"]
 # A native mod: Rust in src/, compiled by the launcher against the game build [native] pins,

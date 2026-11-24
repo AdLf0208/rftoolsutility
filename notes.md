@@ -1,8 +1,12 @@
 # RFTools Utility — port notes (slices 1–17: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer, the timer, the counter, the analog, the logic gate and the inventory checker)
 
-> **Current state (2026-11-24): slice 17, package 0.2.16 at pin
+> **Current state (2026-11-24): slice 18, package 0.2.17 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 17 — the inventory checker (2026-11-24)`** first: the artefact's `checkOutput`/
+> **`## Slice 18 — the redstone transmitter/receiver (2026-11-24)`** first: the
+> persistence gate (the world-saved `RedstoneChannels` table maps to this pin's per-save file
+> store), the channel/signal rules, the lamp leg with game-time stamps and the relaunch that
+> proves the table was really persisted. Then
+> **`## Slice 17 — the inventory checker (2026-11-24)`**: the artefact's `checkOutput`/
 > `isItemMatching` and `IncCheckerData.createDefault()`, the capability gate proving a vanilla
 > chest's live slots are readable with no provider of ours, and the count/threshold lamp leg.
 > Then **`## Slice 16 — the logic gate (2026-11-24)`**: the artefact's eight-cell truth table, the
@@ -3550,3 +3554,236 @@ GUI is replaced, and make the concrete in-game assertion: a redstone block feeds
 channel N, a receiver on the same channel emits the artefact's declared strength to a vanilla lamp
 beside it, a receiver on another channel stays dark, and `SELFTEST_AT=redstone` ends `EXIT:1`.
 Redistribute the modified brief from the orchestrator; this report proposes it, it does not dispatch it.
+
+## Slice 18 — the redstone transmitter/receiver (2026-11-24)
+
+**Chosen from the port's own `## Next slice`** (the section immediately above this one at the
+previous slice), verbatim:
+
+> The next logic-family gap on the same line is the **`redstone_transmitter/receiver`** pair
+> (`rftoolsutility:redstone_transmitter`, `rftoolsutility:redstone_receiver`,
+> `RedstoneTransmitterTileEntity`/`RedstoneReceiverTileEntity`, `RedstoneChannelTileEntity`), the
+> wireless-channel siblings. It fits **machines**: two block entities, a channel setting and a 0..15
+> signal, with the proven `LevelRef::signal` + `BlockPart::block_signal` surface. **Gate first:**
+> read the artefact at `f799314` and check the world-saved `RedstoneChannels` table the transmitter
+> writes (`channels.getOrCreateChannel`/`setDirty`/`save` in `RedstoneTransmitterTileEntity.update()`)
+> against this pin's world-file surface; if the pin cannot persist that table, stop with
+> `blocked(<symbol>)` and the grep evidence rather than inventing an inert channel. If it is
+> expressible, replace the channel GUI with `/rftoolsutility redstone-set` as every logic sibling's
+> GUI is replaced, and make the concrete in-game assertion: a redstone block feeds a transmitter on
+> channel N, a receiver on the same channel emits the artefact's declared strength to a vanilla lamp
+> beside it, a receiver on another channel stays dark, and `SELFTEST_AT=redstone` ends `EXIT:1`.
+
+and the shared gap line `## Gaps (the rest of the mod)`:
+
+> **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`, `digit`, `logic`,
+> `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+
+It fits the ledger's **machines** tier exactly: two block entities, an input-side signal read, a
+world-saved channel table and the real `block_signal` surface slices 11–17 proved in game — no
+renderer, no entity AI, no new client half. **Pin** `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` /
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, API `0.2`, game 26.3. **Version 0.2.17.** Class
+**content**, tier **machines** (ledger). MIT, ours on main → an **Update** of the entry (never a
+first `Add`).
+
+### Persistence gate — PASSED, not `blocked`
+
+Read from the upstream `1.21_neo` clone at the artefact's own commit
+`f799314007d68042df8504e83cd549360f2627c7` (analysis only, clone at `/tmp/opencode`):
+
+- `RedstoneChannels extends AbstractWorldData<RedstoneChannels>` stores `"RfToolsRedstoneChannels"`
+  as a `ListTag` of `{channel, value, name}` plus `lastId`; `newChannel()` is `lastId++`,
+  `getOrCreateChannel(id)` creates a zero-valued channel, `getChannel(id)` is its read.
+- `RedstoneTransmitterTileEntity.update()` (from `neighborChanged`/`setPlacedBy`): server,
+  `getChannel() != -1`, `powerLevel != prevIn` → `prevIn = powerLevel`,
+  `getOrCreateChannel(getChannel()).setValue(powerLevel)`, `channels.save()`. `prevIn` is saved in
+  NBT (`prevIn`, with the boolean backwards-compatibility read).
+- `RedstoneReceiverTileEntity.checkOutput()` reads `channels.getChannel(channel).getValue()` and
+  maps it: `channel == -1` or a missing channel → 0; `!analog && v > 0` → 15; analog → the exact
+  `v`. `tickServer()` calls `setRedstoneState(this, checkOutput())` every tick; `rs` is saved.
+- Both are `LogicSlabBlock`s: the input side is `getFacing(state).getInputSide()`, the output goes
+  to every side through `LogicSupport`, and `collectImplicitComponents` moves the channel/analog
+  data onto the item.
+
+**This pin can persist the table.** `ServerHost::world_data_files()` returns `&dyn ConfigFiles`
+whose `read`/`write` own `<save>/horizon-mod-data/<mod id>/`, "copied, backed up and deleted with
+that save", `NoWorld` without one (`ports/_shared/sdk/0a875da/crates/horizon-mod-vocab/src/host/
+config.rs`, `content/config_files.rs`). It is a real per-save store already in use by
+`ports/solcarrot/src/store.rs`, `ports/moredragoneggs/src/support.rs` and
+`ports/dynamictrees/src/glue.rs`. The port writes `redstone-channels.tsv` there atomically through
+`ConfigFiles::write` and reads it back on each tick — no chat-command stand-in. The relaunch phase
+R4 below proves the bytes survive a real world restart. So **not** `blocked(<symbol>)`.
+
+### What it does
+
+- **The blocks.** `rftoolsutility:redstone_transmitter` (no cached state — it is a sink) and
+  `rftoolsutility:redstone_receiver` (a 16-value `signal` state, like the analog's) on the full-cube
+  `minecraft:iron_block` template, the jar's four slab models, top texture, item models, recipes,
+  advancements and loot tables carried by `tools/assemble_content.py`. Their 24 `logic_facing`
+  rotations and two GUIs are replaced by a saved input side and `/rftoolsutility redstone-set`.
+- **The transmitter.** Its tick reads the input-side neighbour's own emitted signal (directional
+  `LevelRef::signal`, never `getBestNeighborSignal`, which would see its own output as a phantom
+  input), compares with the saved `prevIn`, and on a change writes the strength into the channel's
+  row of the world file. With channel `-1` it does nothing; `redstone-set … -1 …` allocates a fresh
+  id from the world table (`lastId++`), as upstream's GUI `getChannel(true)` does.
+- **The receiver.** Its tick reads the channel's strength from the world file, maps it through
+  `receiver_output` (digital 15/0 or exact analog 0..15), mirrors the exact strength into the
+  `signal` block state and wakes the neighbours on a change — a real vanilla redstone signal.
+- **The item.** `block_drops` moves both machines' saved compound onto their items as vanilla's
+  `minecraft:block_entity_data`, as every machine's does (upstream's `collectImplicitComponents`).
+- **The harness.** `/rftoolsutility redstone <pos> [nonce]` prints the parsed channel, power,
+  `prevIn`, table value, output, change stamp, lamp state, facing and game time;
+  `redstone-set <pos> <channel> <analog> <facing>` writes the two GUIs' fields.
+
+### Red → green (unit, verbatim)
+
+Nine pure rules were `todo!()` stubs behind their tests first (`slice18-red.log`):
+
+```
+failures:
+    runtime::tests::a_channel_is_created_when_a_transmitter_first_writes_it
+    runtime::tests::a_digital_receiver_emits_full_strength_for_any_signal
+    runtime::tests::a_fresh_channel_table_hands_out_one_then_two
+    runtime::tests::a_receiver_on_an_unset_or_missing_channel_stays_dark
+    runtime::tests::a_transmitter_with_no_channel_writes_nothing
+    runtime::tests::a_transmitter_writes_only_when_the_input_strength_changes
+    runtime::tests::a_written_strength_is_clamped_to_the_redstone_range
+    runtime::tests::an_analog_receiver_preserves_the_exact_strength
+    runtime::tests::the_channel_table_round_trips_through_its_text_codec
+
+test result: FAILED. 161 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Each new failure was `panicked at src/runtime.rs:…: not yet implemented`. The first green attempt
+failed one expectation (`a_fresh_channel_table_hands_out_one_then_two` read `Some(0)` where an
+absent, never-written channel must read `None`); the rule was corrected to keep absence distinct
+from a stored zero, then green. Final: **172 passed; 0 failed** (`sdk-test.log`, regenerated for
+0.2.17 after the final build) — 94 `runtime` (the nine new channel/signal rules among them) and
+78 glue tests (`the_redstone_readout_is_the_line_the_harness_parses`,
+`the_channel_codec_keeps_ids_sorted_and_strengths_in_range`). `cargo fmt --check` clean,
+`cargo clippy --all-targets --offline -- -D warnings` 0 warnings (`sdk-clippy.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-redstone.sh` — a focused, fail-capable leg reusing the launcher-built game; one lease per
+leg, every log ends with its exit. The assertion is a **vanilla redstone lamp** beside each receiver;
+a vanilla redstone block powers the same lamp first as the positive control.
+
+| log | verdict |
+|---|---|
+| `e2e-slice18-redstone.log` | **PASS**, `EXIT:0` — R–R5 |
+| `e2e-slice18-redstone-selftest.log` | **FAIL: SELFTEST redstone: the fed receiver reads 15, expected it inverted**, `EXIT:1` |
+| `e2e-slice18-redstone-control.log` | **FAIL: ctl place rftoolsutility:redstone_transmitter at 202,101,0 was refused three times**, `EXIT:1` (unmodded Nightly) |
+| `e2e-slice18-{sensor,sequencer,timer,counter,analog,logic,invchecker}.log` | each **PASS**, `EXIT:0` — the earlier logic families, no regression on the final bytes |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=107 ok=107 missing-exit=0 bad-exit=0`
+(`slice18-e2e-gate.log`).
+
+The phases, each asserting a parsed value (verbatim from the green transcript):
+
+```
+R0: transmitter channel=1 power=0 prev=0 value=0 lamp=dark ... nonce=1
+    receiver channel=1 analog=false value=0 output=0 changed=-1 lamp=dark ... nonce=2
+R1: transmitter channel=1 power=15 prev=15 value=15 ... nonce=3
+    receiver channel=1 analog=false value=15 output=15 changed=410 lamp=lit ... nonce=4
+    receiver channel=2 analog=false value=0 output=0 changed=-1 lamp=dark ... nonce=5
+R2: receiver channel=1 analog=false value=0 output=0 changed=461 lamp=dark ... nonce=6
+R3: transmitter channel=1 power=11 prev=11 value=11 ... nonce=7
+    receiver channel=1 analog=true value=11 output=11 changed=542 lamp=lit ... nonce=8
+R4: receiver channel=1 analog=true value=11 output=11 changed=542 lamp=lit ... nonce=9  (after relaunch)
+R5: give rftoolsutility:not_a_redstone → rc=1 Unknown item
+```
+
+Counterfactuals: the redstone-block lamp control proves the lamp and its parser work; R0's unfed
+channel and R2's removed source are the zero differentials against R1; the receiver on channel 2
+differs from the one on channel 1 only in its channel; R3's 11-strength wire (five wire steps from
+a redstone block) is the differential between digital 15 and analog 11; R4 is the same machine
+after a real relaunch; `SELFTEST_AT=redstone` inverts R1's exact output and fails as designed;
+`CONTROL=1` runs the same script on the unmodded Nightly. Every assertion reads a parsed reply and
+the game's own block state, never the absence of an error.
+
+### Measured traps this slice cost
+
+1. **The first wire phase overwrote its own source.** R3 first put a redstone block at `INZ-1`
+   and then laid wires over `INZ-4..INZ`, which replaced the block at `INZ-1` — the transmitter
+   read power 0 and the leg failed. The block now goes at `INZ-5`, beyond the wire run, and the
+   leg reads a real partial strength of 11; a harness fix only, no product code changed.
+2. **`cargo fmt --check` and clippy run on the remote copy.** The forwarded runner's pull-back
+   excludes `*.rs`, so `cargo fmt` was applied locally and the corrected sources re-synced before
+   the final lint; clippy then asked for `#[expect(clippy::too_many_arguments, …)]` on `red_line`
+   and for struct-update syntax in two tests, both applied before the final green run.
+3. **The forwarded pull-back clobbers `sdk-test.log`/`sdk-clippy.log`.** Each forwarded run
+   restored the stale 0.2.8 (85-pass) log over the locally-teed one; the final 172-pass and
+   0-warning logs were teed to unique names and copied back, and the package gate re-run last
+   (it then reported 172 passed, 0 warnings).
+
+### Deviations and content adaptations
+
+- **The world file, not a Java world-data tag.** The artefact's `RfToolsRedstoneChannels` is a
+  vanilla `AbstractWorldData`; the pin has no such registry a mod may add, but its per-save
+  `horizon-mod-data/<mod id>/` file store has the same lifetime (backed up, deleted with the save,
+  `NoWorld` before one opens). The channel `name` is not carried: upstream only writes and shows it
+  in the GUI, which this port replaces with a numeric `redstone-set`. A user notices: channels are
+  numbered, not named.
+- **The GUI is a command.** `redstone-set` writes the channel, the receiver's `analog` flag and the
+  saved input side; `channel = -1` allocates a fresh id, as the GUI's `getChannel(true)` does.
+- **The input side is a saved advisory.** The jar's 24 `logic_facing` slab rotations cannot be
+  content states; four horizontal sides are written by `redstone-set`, as every logic sibling's.
+- **The transmitter is sampled every tick**, not on `neighborChanged`: the pin's block-entity tick
+  reads the same directional signal, and the changed-only write keeps upstream's `prevIn` rule.
+- No GUI, no comparator/TOP/Jade, no sounds, no item tooltip — the standing machines-tier gaps.
+- **No new upstream defect** was adopted: the changed-only write, the digital/analog mapping and
+  the world table are the artefact's own. `digit` stays blocked (`no-redstone-output:DigitTileEntity`).
+
+### Coverage after slice 18
+
+| family | status |
+|---|---|
+| `rftoolsutility:redstone_transmitter` (block, item, recipe, advancement, loot, model) | tested — R: placed and read back; R0/R1/R3: power, `prevIn` and table value asserted |
+| `rftoolsutility:redstone_receiver` (block, item, 16-value `signal` state) | tested — R: placed and read back; R1/R2/R3/R4: digital 15, zero, analog 11 and the persisted 11 |
+| the world-saved channel table (`lastId`, `getOrCreate`, value, text codec) | tested — R0 (allocation from `-1`), R1/R2 (write/drain), R4 (survives a real relaunch), unit codec round-trip |
+| the digital 15/0 and analog exact-strength mapping | tested — R1 (15), R2 (0), R3 (partial 11 preserved); unit `a_digital_receiver…`, `an_analog_receiver…` |
+| the input side (four horizontal facings, unknown refused) | tested in code (`logic_neighbours`, `redstone-set` refusal); R uses north |
+| the item carrying each machine's data | carried (`block_drops` + `minecraft:block_entity_data`, the same path as the other machines); no dedicated phase |
+| `redstone-set` / `redstone` commands and unknown-id refusal | tested — R0–R5; the parsed reply and the refused `ctl give` |
+| a `rftoolsbase:machine_base` recipe craft | blocked(`rftoolsbase:machine_base`) — the parent port's item; the e2e gives the blocks, as every machine's |
+| the channel `name` and the two GUIs | not ported (no menu; `redstone-set` is the equivalent) |
+| `rftoolsutility:wire`, `redstone_information` | not ported — next logic gaps |
+
+Skills: superpowers/using-superpowers, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices (brainstorming and rust-review/rust-port did not apply: the slice was fixed by the orchestrator's Next slice and this is a clean-room rewrite, not an audit or a translation)
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 246,711 B | `224a3fbba5a7d93c4cbef0e8b2ef73495c9a588bd036c0e7a3985ee8245b5684` | 313 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice18-build-1.log`, `-2.log`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.17 (native-mod, format
+native-1/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/e59da9094f0c2fdda6c627fe9eff22dec6a906f0, for
+26.3)`); `fits --build 0a875da` → `0a875da  made for`; `fits --build 0b14f8a` → `0b14f8a  fits`;
+`verify-sdk-package.py rftoolsutility` → **1/1** (172 passed, 0 clippy warnings, package matches the
+tree, R9, skills gate; `slice18-package-gate-final.log`). The manifest, README, crate doc and
+content were edited **before** the final build; the later `notes.md`/`VALIDATION.md`/`CONTENT.md`
+edits and the harness-only e2e fix are not packed, and the gate still reports `package matches the
+tree`. The launcher's `native-build` compiled the mod (`Compiling rftoolsutility (1 of 1)`,
+`native-0a875da-34bb3642449d`) for the in-game legs. All Rust ladder steps printed
+`build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no `BUILD_LOCAL=1` was set,
+and no lease was backgrounded.
+
+## Next slice
+
+The next logic-family gap on the same line is `wire` (`rftoolsutility:wire`, `WireTileEntity`), the
+last redstone-logic sibling. It is a `LogicSlabBlock` whose `getRedstoneOutput` returns the input
+side's `powerLevel` only on the output side and whose `checkRedstone` propagates a neighbour change
+(`WireTileEntity.java` at `f799314`), so it fits **machines** with the same `LevelRef::signal` +
+`BlockPart::block_signal` surface. **Gate first:** confirm the artefact's wire is a block (not a
+Java-only network hook) and that its states are expressible as a content block; if not, stop with
+`blocked(<symbol>)`. The concrete assertion: a redstone block feeds a short wire run built from
+`rftoolsutility:wire`, a vanilla lamp at the far end lights at the artefact's declared strength
+while a broken link stays dark, with a redstone-block lamp control and `SELFTEST_AT=wire`
+ending `EXIT:1`. The other remaining gap, `redstone_information`, is an item whose whole behaviour
+is the `GuiRedstoneInformation` tablet screen — check for a menu path before proposing it as a
+slice; do not invent a GUI. Redistribute the modified brief from the orchestrator; this report
+proposes it, it does not dispatch it.

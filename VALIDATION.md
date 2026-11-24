@@ -745,3 +745,44 @@ packed, and the gate still reports `package matches the tree`. R9 holds (SDK pat
 `DamageMode`/`InvCheckerData`/`CheckStack`), so neither `fits` run false-failed; `E2E_TMP` and all
 path exports came from `launcher-game.sh env`, never `/tmp`. All nine slice-17 logs plus the 88
 earlier logs are strict-green.
+
+## Slice 18 — the redstone transmitter/receiver (0.2.17, forwarded to AdLf-PC)
+
+All Rust ladder steps went through `build-slot.sh run --job W1-rftoolsutility --port
+ports/rftoolsutility --step test|lint|build|check`, each printing `build-slot: forwarding … to the
+remote runner` (hostname `AdLf-PC`); `BUILD_LOCAL=1` was never set. The launcher native build and
+the game legs ran locally in `--step native`/`--step e2e` leases. No lease was backgrounded.
+
+| # | check | command | result |
+|---|---|---|---|
+| 1 | persistence gate | grep the pin's SDK for a world-file service | `ServerHost::world_data_files()` → `&dyn ConfigFiles` over `<save>/horizon-mod-data/<mod id>/`, backed up/deleted with the save (`horizon-mod-vocab/src/host/config.rs`, `content/config_files.rs`); used by `solcarrot`, `moredragoneggs`, `dynamictrees` — **not blocked** |
+| 2 | red, runtime | nine channel/signal rules stubbed `todo!()` behind their tests, `cargo test --offline` | **FAILED. 161 passed; 9 failed**, each at `not yet implemented` (`slice18-red.log`) |
+| 3 | green | `cargo test --offline` | **172 passed; 0 failed** (`sdk-test.log`, regenerated for 0.2.17 after the final build) |
+| 4 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`sdk-clippy.log`); `#[expect(clippy::too_many_arguments)]` on `red_line` and struct-update syntax in two tests applied before the final run |
+| 5 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **246,711 B**, sha `224a3fbba5a7d93c4cbef0e8b2ef73495c9a588bd036c0e7a3985ee8245b5684`, 313 entries, no `Cargo.lock` (`slice18-build-1.log`, `-2.log`) |
+| 6 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.17 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`slice18-check-fits.log`) |
+| 7 | fits the pin | `fits … --build 0a875da` | `0a875da  made for`, **FITS_EXIT:0** |
+| 8 | fits another build | `fits … --build 0b14f8a` | `0b14f8a  fits`, **FITS_OTHER_EXIT:0** (`slice18-fits-other.log`) |
+| 9 | gate | `verify-sdk-package.py rftoolsutility` | **1/1** (172 passed, 0 clippy warnings, package matches the tree, R9, skills gate; `slice18-package-gate-final.log`) |
+| 10 | native build | `launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-34bb3642449d` (`slice18-native-build.log`); no stale rftoolsutility tag existed |
+| 11 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e-redstone.sh` | **PASS**, `EXIT:0` — R–R5 (`e2e-slice18-redstone.log`) |
+| 12 | in game, c/f | `SELFTEST=1 SELFTEST_AT=redstone` | **FAIL: SELFTEST redstone: the fed receiver reads 15, expected it inverted**, `EXIT:1` (`e2e-slice18-redstone-selftest.log`) |
+| 13 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: ctl place rftoolsutility:redstone_transmitter … was refused three times**, `EXIT:1` (`e2e-slice18-redstone-control.log`) |
+| 14 | no regression | the same game, `e2e-{sensor,sequencer,timer,counter,analog,logic,invchecker}.sh` | each **PASS**, `EXIT:0` (`e2e-slice18-{sensor,sequencer,timer,counter,analog,logic,invchecker}.log`) |
+| 15 | log gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=107 ok=107 missing-exit=0 bad-exit=0`, `EXIT:0` (`slice18-e2e-gate.log`) |
+
+**Gate:** the artefact's world-saved `RedstoneChannels` table is expressible — `world_data_files()`
+owns a per-save file store with the same lifetime as upstream's `AbstractWorldData`; the port writes
+`redstone-channels.tsv` through `ConfigFiles::write` and R4 proves a real relaunch still reads
+`value=11 output=11 lamp=lit`. **Traps handled:** the first R3 wire run overwrote its own redstone
+block source (the leg read power 0); the source now sits one step beyond the wire run and the leg
+reads a genuine partial strength of 11, proving analog preservation against digital 15. The
+forwarded pull-back repeatedly clobbered the locally-teed `sdk-test.log`/`sdk-clippy.log` with the
+stale 0.2.8 logs; the final logs were teed to unique names, copied back, and the package gate re-run
+last (172 passed, 0 warnings). The manifest, README, crate doc and content were edited **before**
+the final build; the later notes/VALIDATION/CONTENT edits and the harness fix are not packed, and
+the gate still reports `package matches the tree`. R9 holds (SDK path dep only, no `[workspace]`, no
+packed lock); no local type or variant is named `Block`/`Item` (the new types are `RedstoneChannels`
+and the two `Red*Part`s), so neither `fits` run false-failed; `E2E_TMP` and all path exports came
+from `launcher-game.sh env`, never `/tmp`. All ten slice-18 logs plus the 97 earlier logs are
+strict-green.

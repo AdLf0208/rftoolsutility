@@ -1,15 +1,16 @@
-# RFTools Utility for Horizon — slices 1–17: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer, the timer, the counter, the analog, the logic gate and the inventory checker
+# RFTools Utility for Horizon — slices 1–18: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer, the timer, the counter, the analog, the logic gate, the inventory checker and the redstone transmitter/receiver
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–17, the tank, the crafter tiers, the spawner's matter gate, the matter
+**Status: slices 1–18, the tank, the crafter tiers, the spawner's matter gate, the matter
 beamer, the matter transmitter / receiver / booster, the destination analyzer, the sensor,
-the sequencer, the timer, the counter, the analog, the logic gate and the inventory checker.**
+the sequencer, the timer, the counter, the analog, the logic gate, the inventory checker and the
+redstone transmitter / receiver.**
 One flat SDK package (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the
-models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 17 — the inventory checker",
+models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 18 — the redstone transmitter/receiver", § "Slice 17 — the inventory checker",
 § "Slice 16 — the logic gate",
 § "Slice 15 — the analog",
 § "Slice 14 — the counter",
@@ -157,6 +158,16 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
    and the readout `/rftoolsutility invchecker <pos> [nonce]` prints `seen=… count=… amount=… slot=…
    matched=… output=… changed=… lamp=… facing=… time=…`, so a leg can assert the count/threshold
    from a vanilla chest, a vanilla lamp and the reply's own game-time stamps.
+- `rftoolsutility:redstone_transmitter` and `rftoolsutility:redstone_receiver` — the wireless
+   channel pair. The transmitter reads the input-side neighbour's redstone strength and writes it
+   into a numbered channel in the save's own `<world>/horizon-mod-data/rftoolsutility/
+   redstone-channels.tsv` file (the pin's equivalent of the artefact's world-saved
+   `RedstoneChannels` table); the receiver reads that channel every tick and drives **15** in
+   digital mode (the default) or the exact **0..15** strength in analog mode. `/rftoolsutility
+   redstone-set <pos> <channel> <analog> <facing>` replaces the two GUIs (`channel = -1` allocates
+   a fresh id), and `/rftoolsutility redstone <pos> [nonce]` prints the parsed channel, power,
+   table value, output, lamp and game time — so a leg can prove a lamp beside a receiver on the
+   fed channel lights while one on another channel stays dark, across a relaunch.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
@@ -197,10 +208,15 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
    prints `seen=… count=… amount=… slot=… matched=… output=… changed=… lamp=… facing=… time=…`
    (`changed`/`time` are game-time stamps, `output` is the 15/0 the redstone hook reports).
 
+   The redstone pair's commands are `/rftoolsutility redstone <pos> [nonce]` and
+   `redstone-set <pos> <channel> <analog> <facing>`; the readout prints `channel=… power=…
+   prev=… value=… output=… changed=… lamp=… facing=… time=…` (`changed`/`time` are game-time
+   stamps, `output` is the exact strength the redstone hook reports).
+
 ## What does not (yet)
 
 The dialing device, destination GUI, screens and their 30 modules, the rest of the logic
-blocks (the sensor, sequencer, timer, counter, analog, logic gate and inventory checker are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
+blocks (the sensor, sequencer, timer, counter, analog, logic gate, inventory checker and redstone transmitter/receiver are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
 fluid quad inside its window, the crafter's GUI, the spawner's GUI, the syringe that sets the
 mob, six-way facing, the item tooltips, the wrench item (a command links the beamer instead),
 the infusing power discount and the analyzer's vanilla redstone output (the artefact has none —

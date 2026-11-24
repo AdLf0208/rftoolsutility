@@ -16,6 +16,8 @@
     "rftoolsutility:counter",
     "rftoolsutility:analog",
     "rftoolsutility:logic",
-    "rftoolsutility:invchecker"
+    "rftoolsutility:invchecker",
+    "rftoolsutility:redstone_transmitter",
+    "rftoolsutility:redstone_receiver"
   ]
 }

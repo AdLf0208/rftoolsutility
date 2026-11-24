@@ -18,10 +18,14 @@
 //! table (`-1` keeps the previous output). [`InvCheckerPart`] checks the live item slots of the
 //! neighbour on its input side every ten ticks and emits 15 when the configured slot holds at
 //! least the configured count of a matching item; its matcher, damage mode, tag and input side are
-//! written by `/rftoolsutility invchecker-set` in place of `GuiInvChecker`. (The display-only
-//! `digit` is not ported: upstream's whole behaviour is a client renderer, with no redstone output
-//! for a fail-capable lamp assertion.) The `/rftoolsutility …` commands serve the harness, because
-//! upstream's controls are its GUIs.
+//! written by `/rftoolsutility invchecker-set` in place of `GuiInvChecker`. [`RedTransmitterPart`]
+//! and [`RedReceiverPart`] are the wireless channel pair: the transmitter writes the input-side
+//! redstone strength into a numbered channel in the save's own mod-data file (the pin's equivalent
+//! of the artefact's world-saved `RedstoneChannels`), and the receiver emits 15 in digital mode or
+//! the exact 0..15 strength in analog mode; `/rftoolsutility redstone-set` replaces the two GUIs.
+//! (The display-only `digit` is not ported: upstream's whole behaviour is a client renderer, with
+//! no redstone output for a fail-capable lamp assertion.) The `/rftoolsutility …` commands serve
+//! the harness, because upstream's controls are its GUIs.
 //!
 //! The numbers — the capacity, the fill level, what a bucket click does, the craft loop, the
 //! spawn cost — are in [`runtime`], a plain module with no `mod_api` types, so `cargo test`
@@ -29,7 +33,7 @@
 use mod_api::{
     self, BlockClick, BlockDropsEvent, BlockEntityPart, BlockEntityRef, BlockEntityTickEvent,
     BlockEntityTickReply, BlockEntityTicksEvent, BlockPart, BlockSignalEvent, Command,
-    CommandArgumentValue, CommandSource, Compound, CraftingGrid, CraftingRecipeCodec,
+    CommandArgumentValue, CommandSource, Compound, ConfigPath, CraftingGrid, CraftingRecipeCodec,
     CraftingRecipeKind, Direction, Flow, FluidResource, FluidStack, Hand, Hooks, Host,
     HostBlockStates, HostSide, HostTransaction, ITEM_FLUIDS, ITEMS, Identifier, InteractionResult,
     IsSignalSourceEvent, ItemKey, ItemPart, ItemPlace, ItemStack, LevelHost, LevelRef,
@@ -43,20 +47,21 @@ pub mod runtime;
 
 use runtime::{
     AVERAGE_YIELD, AnalogData, BEAMER_CAPACITY, BEAMER_RECEIVE, BOOST_RF, BUCKET, BUFFER_IN,
-    BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY, CRAFTER_RECEIVE,
-    CRAFTER_SLOTS, CheckStack, Click, CounterData, CounterState, CraftMode, CrafterTier,
-    DamageMode, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, InvCheckerData, LOW_YIELD, LogicInputs,
-    LogicTable, MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe, RECEIVER_CAPACITY,
-    RECEIVER_RECEIVE, RF_PER_TICK, SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE,
-    SensorKind, SequencerData, SequencerMode, SequencerState, Speed, TRANSMITTER_CAPACITY,
-    TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter, analog_branch, analog_neighbours,
-    analog_output, analyzer_due, analyzer_status, beam_due, beam_reach, beam_send, bucket_click,
-    carried, check_output, clamped, counter_signal, counter_tick as run_counter_tick, fill_level,
-    in_beam, invchecker_countdown, invchecker_due, invchecker_signal, logic_cell, logic_neighbours,
-    logic_output, placements, plan, receiver_ready, recipe_for, result_range, rising_edge,
+    BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CHANNEL_UNSET, CRAFTER_CAPACITY,
+    CRAFTER_RECEIVE, CRAFTER_SLOTS, CheckStack, Click, CounterData, CounterState, CraftMode,
+    CrafterTier, DamageMode, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, InvCheckerData, LOW_YIELD,
+    LogicInputs, LogicTable, MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe,
+    RECEIVER_CAPACITY, RECEIVER_RECEIVE, RF_PER_TICK, RedstoneChannels, SENSOR_OFF, SENSOR_ON,
+    SPAWNER_CAPACITY, SPAWNER_RECEIVE, SensorKind, SequencerData, SequencerMode, SequencerState,
+    Speed, TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter,
+    analog_branch, analog_neighbours, analog_output, analyzer_due, analyzer_status, beam_due,
+    beam_reach, beam_send, bucket_click, carried, check_output, clamped, counter_signal,
+    counter_tick as run_counter_tick, fill_level, format_channels, in_beam, invchecker_countdown,
+    invchecker_due, invchecker_signal, logic_cell, logic_neighbours, logic_output, parse_channels,
+    placements, plan, receiver_output, receiver_ready, recipe_for, result_range, rising_edge,
     sensor_due, sensor_front, sensor_sees, sensor_signal, sequencer_tick as run_sequencer_tick,
     spawn_at, spawn_cycle, spend, start_cost, start_time, steps, timer_signal,
-    timer_tick as run_timer_tick,
+    timer_tick as run_timer_tick, transmitter_update,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -415,6 +420,34 @@ const KEY_INV_MATCHED: &str = "invMatched";
 const KEY_INV_CHANGED_AT: &str = "invChangedAt";
 /// An inventory checker's item, resolved once in `register` for `block_drops`.
 static INVCHECKER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+/// `LogicBlockModule.REDSTONE_TRANSMITTER` / `REDSTONE_RECEIVER`: the wireless-channel pair,
+/// the last logic-row family. The channel table is world-persistent through the SDK's
+/// per-save file service (the artefact's `RedstoneChannels` world data); the GUI-only channel
+/// and analog settings are written by `/rftoolsutility redstone-set`.
+const RED_TRANSMITTER: &str = "rftoolsutility:redstone_transmitter";
+const RED_RECEIVER: &str = "rftoolsutility:redstone_receiver";
+const RED_TX_TYPE: &str = "redstone_transmitter";
+const RED_RX_TYPE: &str = "redstone_receiver";
+const RED_TX_TYPE_ID: &str = "rftoolsutility:redstone_transmitter";
+const RED_RX_TYPE_ID: &str = "rftoolsutility:redstone_receiver";
+/// `RedstoneChannelData.channel` / `RedstoneReceiverData.analog` / the transmitter's `prevIn`.
+const KEY_RED_CHANNEL: &str = "channel";
+const KEY_RED_ANALOG: &str = "analog";
+const KEY_RED_PREV_IN: &str = "prevIn";
+/// Harness observations: the input strength the transmitter read, the channel's table value, the
+/// game time of the last output change, and the receiver's chosen input side.
+const KEY_RED_POWER: &str = "redPower";
+const KEY_RED_VALUE: &str = "redValue";
+const KEY_RED_CHANGED_AT: &str = "redChangedAt";
+const KEY_RED_FACING: &str = "redFacing";
+/// `<save>/horizon-mod-data/rftoolsutility/redstone-channels.tsv`: the world file the port
+/// persists instead of upstream's `RfToolsRedstoneChannels` world data. One file, one table;
+/// `ConfigFiles::write` replaces it atomically and the save's backup carries it.
+const RED_CHANNELS_FILE: &str = "redstone-channels.tsv";
+/// The transmitter's and receiver's items, resolved once in `register` for `block_drops`.
+static RED_TX_ITEM: OnceLock<ItemKey> = OnceLock::new();
+static RED_RX_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -2966,6 +2999,197 @@ impl BlockEntityPart for InvCheckerPart {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The redstone transmitter / receiver glue (slice 18) — `RedstoneChannels` world data,
+// the transmitter's input-side write and the receiver's real 0..15 redstone output
+// ---------------------------------------------------------------------------
+
+/// Load the world-saved channel table. A missing, unreadable or malformed file is a fresh
+/// table (upstream's new-world constructor), never a failed world open — the same shape
+/// `solcarrot/src/store.rs` uses for its per-save food history.
+fn load_channels(host: &dyn ServerHost) -> RedstoneChannels {
+    let Ok(path) = ConfigPath::new(RED_CHANNELS_FILE) else {
+        return RedstoneChannels::default();
+    };
+    match host.world_data_files().read(&path) {
+        Ok(bytes) => parse_channels(&String::from_utf8_lossy(&bytes)),
+        Err(_) => RedstoneChannels::default(),
+    }
+}
+
+/// Replace the world-saved channel table. `world_data_files().write` is atomic (a reader never
+/// sees half a file) and the save's backup carries it; a refused write (no world any more)
+/// loses nothing the transmitter's own `setChanged` did not already put on disk.
+fn save_channels(host: &dyn ServerHost, channels: &RedstoneChannels) {
+    let Ok(path) = ConfigPath::new(RED_CHANNELS_FILE) else {
+        return;
+    };
+    let _ = host
+        .world_data_files()
+        .write(&path, format_channels(channels).as_bytes());
+}
+
+/// `RedstoneTransmitterTileEntity.update()` from `neighborChanged`: read the input-side
+/// neighbour's own emitted strength (`SignalGetter.getSignal`, never `getBestNeighborSignal`,
+/// which would see the receiver's own output as a phantom input), compare it with the saved
+/// `prevIn`, and on a change write the strength into the world-saved channel table. With channel
+/// -1 it does nothing. `prevIn` starts at -1, so the first read always creates the channel.
+fn red_transmitter_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let channel = read_int_or(&event.entity.nbt, KEY_RED_CHANNEL, CHANNEL_UNSET);
+    let prev_in = read_int_or(&event.entity.nbt, KEY_RED_PREV_IN, CHANNEL_UNSET);
+    let facing = read_text(&event.entity.nbt, KEY_RED_FACING).unwrap_or_else(|| "north".to_owned());
+    write_text(&mut event.entity.nbt, KEY_RED_FACING, &facing);
+
+    let power = ticking_level(&*host)
+        .and_then(|level| {
+            let neighbours = logic_neighbours(pos, &facing)?;
+            let into = logic_into_directions(&facing)[0];
+            level.signal(&*host, neighbours[0], into)
+        })
+        .unwrap_or(0);
+    write_int(&mut event.entity.nbt, KEY_RED_POWER, power);
+
+    let (next_prev, write) = transmitter_update(prev_in, power, channel);
+    write_int(&mut event.entity.nbt, KEY_RED_PREV_IN, next_prev);
+    if let Some((id, strength)) = write {
+        let mut channels = load_channels(&*host);
+        channels.set_value(id, strength);
+        save_channels(&*host, &channels);
+        write_int(&mut event.entity.nbt, KEY_RED_VALUE, strength);
+    } else if channel != CHANNEL_UNSET {
+        write_int(
+            &mut event.entity.nbt,
+            KEY_RED_VALUE,
+            load_channels(&*host).value(channel).unwrap_or(0),
+        );
+    }
+}
+
+/// `RedstoneReceiverTileEntity.tickServer()`/`checkOutput()`: read the channel's strength from
+/// the world-saved table, apply the digital 15/0 or analog 0..15 mapping, mirror the exact
+/// strength into the block state (so `BlockPart::block_signal` reports a real vanilla signal),
+/// and wake the neighbours on a change. `rs` is saved as upstream's `saveAdditional` does.
+fn red_receiver_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let channel = read_int_or(&event.entity.nbt, KEY_RED_CHANNEL, CHANNEL_UNSET);
+    let analog = read_flag(&event.entity.nbt, KEY_RED_ANALOG);
+    let facing = read_text(&event.entity.nbt, KEY_RED_FACING).unwrap_or_else(|| "north".to_owned());
+    let channels = load_channels(&*host);
+    let value = channels.value(channel);
+    let output = receiver_output(channel, value, analog);
+    write_text(&mut event.entity.nbt, KEY_RED_FACING, &facing);
+    write_int(&mut event.entity.nbt, KEY_RED_VALUE, value.unwrap_or(0));
+
+    let Some(level) = ticking_level(&*host) else {
+        return;
+    };
+    let prior = analog_cached_signal(&*host, level, pos);
+    if output != prior {
+        write_int(
+            &mut event.entity.nbt,
+            KEY_RED_CHANGED_AT,
+            level.game_time(&*host).unwrap_or(0) as i32,
+        );
+        host.set_block_property(pos, KEY_SIGNAL, &output.to_string());
+        if let Some(state) = level.block_state(&*host, pos) {
+            let _ = level.update_neighbors(host, pos, state, NeighbourUpdate::Neighbours);
+        }
+    }
+}
+
+/// The transmitter's Part: a block entity with a server tick. It is a redstone sink — no
+/// `is_signal_source` and no `block_signal`, unlike its receiver and the other logic siblings.
+struct RedTransmitterPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for RedTransmitterPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for RedTransmitterPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        red_transmitter_tick(host, event);
+    }
+}
+
+/// The receiver's one Part: the two redstone methods that make its cached 0..15 a real signal
+/// (`LogicSupport.getRedstoneOutput`/`isSignalSource`), and its server tick. The exact strength
+/// is read from the block state as the analog's is (`analog_signal_from_state`).
+struct RedReceiverPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for RedReceiverPart {
+    fn is_signal_source(&self, _level: &dyn LevelHost, event: &mut IsSignalSourceEvent) {
+        event.source = true;
+    }
+
+    fn block_signal(&self, level: &dyn LevelHost, event: &mut BlockSignalEvent) {
+        let Some(name) = level.state_string(event.state) else {
+            return;
+        };
+        event.signal = analog_signal_from_state(&name);
+    }
+}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for RedReceiverPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        red_receiver_tick(host, event);
+    }
+}
+
+/// `/rftoolsutility redstone <pos> [nonce]`: a parsed readout of either machine. The
+/// transmitter prints its input power, saved `prevIn` and the channel's table value; the
+/// receiver prints its channel, analog mode, table value, emitted strength, the lamp's live
+/// state and the game time of the last change. Every field comes from the game, never wall time.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the readout carries the parsed channel/power/value/strength and game-time evidence"
+)]
+fn red_line(
+    pos: [i32; 3],
+    role: &str,
+    channel: i32,
+    detail: String,
+    facing: &str,
+    time: i64,
+    lamp: &str,
+    nonce: Option<&str>,
+) -> String {
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: redstone {role} at {pos:?}: channel={channel} {detail} lamp={lamp} facing={facing} time={time}{suffix}"
+    )
+}
+
+/// Whether a vanilla lamp around `pos` is lit, read from the game's own block state.
+fn red_lamp(host: &dyn ServerHost, level: LevelRef, pos: [i32; 3]) -> bool {
+    [
+        [pos[0], pos[1], pos[2] - 1],
+        [pos[0], pos[1], pos[2] + 1],
+        [pos[0] - 1, pos[1], pos[2]],
+        [pos[0] + 1, pos[1], pos[2]],
+    ]
+    .iter()
+    .any(|&around| {
+        level
+            .block_state(host, around)
+            .and_then(|state| host.block_state_string(state))
+            .is_some_and(|name| {
+                name.contains("redstone_lamp")
+                    && sensor_state_property(&name, "lit") == Some("true")
+            })
+    })
+}
+
 /// `/rftoolsutility analyzer <pos> [nonce]`: the harness's readout of the passive analyzer block.
 /// It finds the adjacent dialed transmitter and prints the receiver-check status the transmitter
 /// keeps (`green=ok` → 15, `yellow=unknown` → 7, `red=warn` → 0). The artefact has no redstone
@@ -3655,6 +3879,31 @@ impl Hooks for Mod {
                 "rftoolsutility: the invchecker part was refused: {error}"
             ));
         }
+
+        // Slice 18: the redstone transmitter and receiver. Both are block entities on the
+        // iron-block template; the transmitter writes the world-saved channel table from its
+        // input-side neighbour, the receiver reads it back as a real 0..15 redstone signal.
+        // No menu or renderer is declared — `redstone-set` replaces the two GUIs.
+        let _ = RED_TX_ITEM.set(r.item_key(RED_TRANSMITTER));
+        let tx_kind = r
+            .block_entity_type(RED_TX_TYPE)
+            .blocks(&[RED_TRANSMITTER])
+            .build();
+        if let Err(error) = r.block_entity_part(&tx_kind, RedTransmitterPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the redstone transmitter part was refused: {error}"
+            ));
+        }
+        let _ = RED_RX_ITEM.set(r.item_key(RED_RECEIVER));
+        let rx_kind = r
+            .block_entity_type(RED_RX_TYPE)
+            .blocks(&[RED_RECEIVER])
+            .build();
+        if let Err(error) = r.block_entity_part(&rx_kind, RedReceiverPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the redstone receiver part was refused: {error}"
+            ));
+        }
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -3834,6 +4083,18 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(RED_TRANSMITTER) {
+            if let Some(item) = RED_TX_ITEM.get() {
+                carry_machine(level, event, *item, RED_TX_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
+        if block == Some(RED_RECEIVER) {
+            if let Some(item) = RED_RX_ITEM.get() {
+                carry_machine(level, event, *item, RED_RX_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -3986,6 +4247,15 @@ impl Hooks for Mod {
             "rftoolsutility invchecker-set <pos:block_pos> <amount:integer> <slot:integer> <damage:word> <matcher:word> <mdamage:integer> <tag:word> <facing:word>",
             2,
         ));
+        // Slice 18: the pair's GUI-equivalent controls — the channel table's readout and the
+        // channel/analog/input-side settings the two `GuiRedstone*` screens would write.
+        event.commands.push(Command::new(
+            "rftoolsutility redstone <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility redstone-set <pos:block_pos> <channel:integer> <analog:word> <facing:word>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -4033,6 +4303,8 @@ impl Hooks for Mod {
                     | "logic-set"
                     | "invchecker"
                     | "invchecker-set"
+                    | "redstone"
+                    | "redstone-set"
                     | "recipes"
             ]
         );
@@ -5148,6 +5420,135 @@ impl Hooks for Mod {
                         "Inventory checker at {pos:?}: amount={amount} slot={slot} damage={damage} matcher={} tag={} input to the {facing}.",
                         matcher.as_ref().map_or("-".to_owned(), |m| m.id.clone()),
                         data.tag.as_deref().unwrap_or("-")
+                    ),
+                );
+            }
+            ["rftoolsutility", "redstone"] => {
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let time = level.game_time(&*host).unwrap_or(0);
+                let lamp = if red_lamp(&*host, level, pos) {
+                    "lit"
+                } else {
+                    "dark"
+                };
+                if let Some(entity) = machine_at(&*host, level, pos, RED_TRANSMITTER) {
+                    let Some(nbt) = entity.data(&*host) else {
+                        feedback(host, "No redstone transmitter there.");
+                        return Flow::Cancel;
+                    };
+                    let channel = read_int_or(&nbt, KEY_RED_CHANNEL, CHANNEL_UNSET);
+                    let power = read_int_or(&nbt, KEY_RED_POWER, 0);
+                    let prev = read_int_or(&nbt, KEY_RED_PREV_IN, CHANNEL_UNSET);
+                    let value = read_int_or(&nbt, KEY_RED_VALUE, 0);
+                    let facing =
+                        read_text(&nbt, KEY_RED_FACING).unwrap_or_else(|| "north".to_owned());
+                    feedback(
+                        host,
+                        &red_line(
+                            pos,
+                            "transmitter",
+                            channel,
+                            format!("power={power} prev={prev} value={value}"),
+                            &facing,
+                            time,
+                            lamp,
+                            nonce,
+                        ),
+                    );
+                    return Flow::Cancel;
+                }
+                if let Some(entity) = machine_at(&*host, level, pos, RED_RECEIVER) {
+                    let Some(nbt) = entity.data(&*host) else {
+                        feedback(host, "No redstone receiver there.");
+                        return Flow::Cancel;
+                    };
+                    let channel = read_int_or(&nbt, KEY_RED_CHANNEL, CHANNEL_UNSET);
+                    let analog = read_flag(&nbt, KEY_RED_ANALOG);
+                    let value = read_int_or(&nbt, KEY_RED_VALUE, 0);
+                    let changed = read_int_or(&nbt, KEY_RED_CHANGED_AT, -1);
+                    let facing =
+                        read_text(&nbt, KEY_RED_FACING).unwrap_or_else(|| "north".to_owned());
+                    let output = analog_cached_signal(&*host, level, pos);
+                    feedback(
+                        host,
+                        &red_line(
+                            pos,
+                            "receiver",
+                            channel,
+                            format!(
+                                "analog={} value={value} output={output} changed={changed}",
+                                if analog { "true" } else { "false" }
+                            ),
+                            &facing,
+                            time,
+                            lamp,
+                            nonce,
+                        ),
+                    );
+                    return Flow::Cancel;
+                }
+                feedback(host, "No redstone transmitter or receiver there.");
+            }
+            ["rftoolsutility", "redstone-set"] => {
+                let usage = "Usage: /rftoolsutility redstone-set <pos> <channel> <analog> <facing>";
+                let Some(CommandArgumentValue::Integer(channel)) = invocation.argument("channel")
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                let mut channel = *channel;
+                let (
+                    Some(CommandArgumentValue::String(analog)),
+                    Some(CommandArgumentValue::String(facing)),
+                ) = (invocation.argument("analog"), invocation.argument("facing"))
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                if !matches!(analog.as_str(), "true" | "false")
+                    || logic_neighbours(pos, facing).is_none()
+                {
+                    feedback(
+                        host,
+                        "unknown analog mode (true|false) or facing (north|south|east|west).",
+                    );
+                    return Flow::Cancel;
+                }
+                let transmitter = machine_at(&*host, level, pos, RED_TRANSMITTER);
+                let receiver = machine_at(&*host, level, pos, RED_RECEIVER);
+                let Some(entity) = transmitter.or(receiver) else {
+                    feedback(host, "No redstone transmitter or receiver there.");
+                    return Flow::Cancel;
+                };
+                let Some(mut nbt) = entity.data(&*host) else {
+                    feedback(host, "No redstone transmitter or receiver there.");
+                    return Flow::Cancel;
+                };
+                // `channel = -1` is upstream's GUI `getChannel(true)`: allocate an id from the
+                // world table and keep it on the machine, as a fresh channel is created on link.
+                if channel == CHANNEL_UNSET {
+                    let mut channels = load_channels(&*host);
+                    channel = channels.new_channel();
+                    save_channels(&*host, &channels);
+                }
+                write_int(&mut nbt, KEY_RED_CHANNEL, channel);
+                write_flag(&mut nbt, KEY_RED_ANALOG, analog == "true");
+                write_text(&mut nbt, KEY_RED_FACING, facing);
+                // A fresh setting starts a new observation: the next power read writes its
+                // channel, and the change stamp is re-taken from the game clock.
+                write_int(&mut nbt, KEY_RED_PREV_IN, CHANNEL_UNSET);
+                write_int(&mut nbt, KEY_RED_CHANGED_AT, -1);
+                if entity.replace_data(host, nbt).is_err() {
+                    feedback(host, "No redstone transmitter or receiver there.");
+                    return Flow::Cancel;
+                }
+                feedback(
+                    host,
+                    &format!(
+                        "Redstone channel set to {channel}, analog={analog}, input to the {facing}."
                     ),
                 );
             }
@@ -6491,5 +6892,47 @@ mod tests {
             ),
             "/rftoolsutility: invchecker at [201, 101, 0]: seen=minecraft:stone count=1 amount=2 slot=0 damage=Ignore tag=- slots=27 matched=false output=0 changed=-1 facing=north time=312 lamp=dark nonce=7"
         );
+    }
+
+    #[test]
+    fn the_redstone_readout_is_the_line_the_harness_parses() {
+        assert_eq!(
+            red_line(
+                [200, 101, 0],
+                "transmitter",
+                3,
+                "power=15 prev=15 value=15".to_owned(),
+                "north",
+                252,
+                "lit",
+                Some("8")
+            ),
+            "/rftoolsutility: redstone transmitter at [200, 101, 0]: channel=3 power=15 prev=15 value=15 lamp=lit facing=north time=252 nonce=8"
+        );
+        assert_eq!(
+            red_line(
+                [200, 101, 4],
+                "receiver",
+                3,
+                "analog=false value=15 output=15 changed=252".to_owned(),
+                "north",
+                312,
+                "lit",
+                None
+            ),
+            "/rftoolsutility: redstone receiver at [200, 101, 4]: channel=3 analog=false value=15 output=15 changed=252 lamp=lit facing=north time=312"
+        );
+    }
+
+    #[test]
+    fn the_channel_codec_keeps_ids_sorted_and_strengths_in_range() {
+        let mut channels = RedstoneChannels {
+            last_id: 4,
+            ..RedstoneChannels::default()
+        };
+        channels.set_value(4, 99);
+        channels.set_value(1, 7);
+        assert_eq!(format_channels(&channels), "lastId=4\n1 7\n4 15\n");
+        assert_eq!(parse_channels("lastId=4\n1 7\n4 15\n"), channels);
     }
 }

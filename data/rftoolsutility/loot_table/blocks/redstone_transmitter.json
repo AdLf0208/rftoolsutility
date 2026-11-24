@@ -1,0 +1,23 @@
+{
+  "pools": [
+    {
+      "bonus_rolls": 0.0,
+      "entries": [
+        {
+          "functions": [
+            {
+              "function": "minecraft:copy_name",
+              "source": "block_entity"
+            }
+          ],
+          "name": "rftoolsutility:redstone_transmitter",
+          "type": "minecraft:item"
+        }
+      ],
+      "name": "redstone_transmitter",
+      "rolls": 1.0
+    }
+  ],
+  "random_sequence": "rftoolsutility:blocks/redstone_transmitter",
+  "type": "minecraft:block"
+}
