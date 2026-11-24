@@ -668,3 +668,40 @@ variant is named `Block`/`Item` (the new enum is `AnalogBranch`), so neither `fi
 `E2E_TMP` and all four path exports came from `launcher-game.sh env`, never `/tmp`. `digit` was
 not shipped: `DigitTileEntity` has no `setRedstoneState`/`getRedstoneOutput` and its whole behaviour
 is the client `DigitRenderer`, so the mandated lamp assertion cannot be made (`blocked(no-redstone-output:DigitTileEntity)`).
+
+## Slice 16 — the logic gate (0.2.15, forwarded to AdLf-PC)
+
+All Rust ladder steps went through `build-slot.sh run --job W1-rftoolsutility --port
+ports/rftoolsutility --step test|lint|build|check`, each printing `build-slot: forwarding … to the
+remote runner` (hostname `AdLf-PC`); `BUILD_LOCAL=1` was never set. The launcher native build and
+the game legs ran locally in `--step native`/`--step e2e` leases. No lease was backgrounded.
+
+| # | check | command | result |
+|---|---|---|---|
+| 1 | red, runtime | seven truth-table rules stubbed `todo!()` behind their tests, focused `cargo test --offline logic` | `FAILED. 0 passed; 7 failed; 139 filtered out`, each at `not yet implemented` (`slice16-red.log`) |
+| 2 | green | `cargo test --offline` | **148 passed; 0 failed** (`slice16-green.log`, copied to `sdk-test.log` regenerated for 0.2.15 after the final build) |
+| 3 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`slice16-lint.log`, copied to `sdk-clippy.log`) |
+| 4 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **217,281 B**, sha `5d59ce3f…d604d`, 276 entries, no `Cargo.lock` (`slice16-build-1.log`, `-2.log`) |
+| 5 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.15 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`slice16-check.log`) |
+| 6 | fits the pin | `fits … --build 0a875da` | `0a875da  made for`, **FITS_EXIT:0** (`slice16-fits.log`) |
+| 7 | fits another build | `fits … --build 0b14f8a` | `0b14f8a  fits`, **FITS_OTHER_EXIT:0** (`slice16-fits-other.log`) |
+| 8 | gate | `verify-sdk-package.py rftoolsutility` | **1/1** (148 passed, 0 clippy warnings, package matches the tree, R9, skills gate; `slice16-package-gate-final.log`) |
+| 9 | native build | `launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-dd35d19365bd` (`slice16-native-build.log`); the stale 0.2.14 tag was removed first |
+| 10 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e-logic.sh` | **PASS**, `EXIT:0` — LO–LO6 (`e2e-slice16-logic.log`) |
+| 11 | in game, c/f | `SELFTEST=1 SELFTEST_AT=logic` | **FAIL: SELFTEST logic: the cell=1 output reads 15, expected it inverted**, `EXIT:1` (`e2e-slice16-logic-selftest.log`) |
+| 12 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: Unknown item 'rftoolsutility:logic'**, `EXIT:1` (`e2e-slice16-logic-control.log`) |
+| 13 | no regression | the same game, `e2e-sensor.sh`, `e2e-sequencer.sh`, `e2e-timer.sh`, `e2e-counter.sh`, `e2e-analog.sh` | each **PASS**, `EXIT:0` (`e2e-slice16-{sensor,sequencer,timer,counter,analog}.log`) |
+| 14 | log gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=88 ok=88 missing-exit=0 bad-exit=0`, `EXIT:0` (`slice16-e2e-gate.log`) |
+
+**First gate:** `invchecker` is not blocked — the SDK reaches a vanilla neighbour's live item slots
+through `level.capability(&ITEMS, pos, side)` (`hooks/notes.rs:598`, `parts/capabilities.rs:295`) and
+its matcher/data fields are `@GuiValue`s replaceable by a `-set` command like every logic sibling's;
+it is simply the more expensive slice (neighbour-capability read plus count/damage/tag matching).
+`logic` was chosen as the cheapest expressible of the two. **Traps handled:** the forwarded pull-back
+overwrote a locally-teed `sdk-test.log` with an older 85-test log, so the correct 148-test log was
+re-copied and the gate re-run locally — it then reported 148 passed; the manifest, README, crate doc
+and content were edited **before** the final build, and the gate still reports `package matches the
+tree`. R9 holds (SDK path dep only, no `[workspace]`, no packed lock); no local type or variant is
+named `Block`/`Item` (the new types are `LogicInputs`/`LogicTable`), so neither `fits` run false-failed;
+`E2E_TMP` and all path exports came from `launcher-game.sh env`, never `/tmp`. All eight slice-16 logs
+plus the 80 earlier logs are strict-green.

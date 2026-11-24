@@ -1468,6 +1468,59 @@ pub fn analog_neighbours(pos: [i32; 3], facing: &str) -> Option<[[i32; 3]; 3]> {
     Some([i, a, b])
 }
 
+// ---------------------------------------------------------------------------
+// The logic gate (slice 16) — `ThreeLogicTileEntity.checkRedstone`, `ThreeLogicData`
+// ---------------------------------------------------------------------------
+
+/// `ThreeLogicData.logicTable`: eight cells, each `-1` (keep), `0` (off) or `1` (on).
+/// `createDefault()` is all zeroes, so a freshly placed block keeps driving 0.
+// `ThreeLogicData.createDefault()` is eight zero cells — the derived `[i32; 8]` default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogicTable {
+    pub cells: [i32; 8],
+}
+
+/// The three side signals `checkRedstone` reads, in artefact order: left (bit 0), input
+/// (bit 1), right (bit 2). It adds `1`/`2`/`4` for whichever neighbours are powered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogicInputs {
+    pub left: bool,
+    pub input: bool,
+    pub right: bool,
+}
+
+impl LogicInputs {
+    /// `powered1 + powered2 + powered3`, the index into the eight-cell logic table.
+    #[must_use]
+    pub fn index(self) -> usize {
+        usize::from(self.left) | (usize::from(self.input) << 1) | (usize::from(self.right) << 2)
+    }
+}
+
+/// The cell `ThreeLogicTileEntity.checkRedstone` selects for these three side signals.
+#[must_use]
+pub fn logic_cell(table: &LogicTable, inputs: LogicInputs) -> i32 {
+    table.cells[inputs.index()]
+}
+
+/// `checkRedstone`'s output: `-1` keeps the previous strength, `1` drives 15, anything
+/// else drives 0 (`s == 1 ? 15 : 0` in the artefact).
+#[must_use]
+pub fn logic_output(cell: i32, prior: i32) -> i32 {
+    match cell {
+        -1 => prior,
+        1 => 15,
+        _ => 0,
+    }
+}
+
+/// The three neighbours a floor slab reads for the given input side: `[I, A(left), B(right)]`.
+/// Same geometry as the analog's, since both are `LogicSlabBlock`s on the same artefact.
+#[must_use]
+pub fn logic_neighbours(pos: [i32; 3], facing: &str) -> Option<[[i32; 3]; 3]> {
+    analog_neighbours(pos, facing)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3233,5 +3286,75 @@ mod tests {
         assert_eq!(a, [200, 101, 1]);
         assert_eq!(b, [200, 101, -1]);
         assert!(analog_neighbours([200, 101, 0], "up").is_none());
+    }
+
+    // ---- Slice 16: the logic gate (all from `ThreeLogicTileEntity.checkRedstone`) ----
+
+    fn inputs(left: bool, input: bool, right: bool) -> LogicInputs {
+        LogicInputs { left, input, right }
+    }
+
+    #[test]
+    fn a_logic_table_starts_with_every_cell_off() {
+        let table = LogicTable::default();
+        assert_eq!(table.cells, [0; 8], "ThreeLogicData.createDefault()");
+        for bits in 0..8 {
+            let selected = inputs(bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+            assert_eq!(logic_cell(&table, selected), 0);
+            assert_eq!(logic_output(logic_cell(&table, selected), 15), 0);
+        }
+    }
+
+    #[test]
+    fn a_logic_index_is_left_bit_input_bit_right_bit() {
+        assert_eq!(inputs(false, false, false).index(), 0);
+        assert_eq!(inputs(true, false, false).index(), 1);
+        assert_eq!(inputs(false, true, false).index(), 2);
+        assert_eq!(inputs(false, false, true).index(), 4);
+        assert_eq!(inputs(true, true, true).index(), 7);
+    }
+
+    #[test]
+    fn a_logic_selects_the_cell_named_by_the_input_mask() {
+        let table = LogicTable {
+            cells: [0, 1, 0, 1, 0, 1, 0, -1],
+        };
+        assert_eq!(logic_cell(&table, inputs(true, true, false)), 1, "index 3");
+        assert_eq!(logic_cell(&table, inputs(true, false, true)), 1, "index 5");
+        assert_eq!(logic_cell(&table, inputs(true, true, true)), -1, "index 7");
+    }
+
+    #[test]
+    fn a_logic_on_cell_drives_full_strength() {
+        assert_eq!(logic_output(1, 0), 15, "s == 1 drives full strength");
+    }
+
+    #[test]
+    fn a_logic_off_cell_drives_no_signal() {
+        assert_eq!(logic_output(0, 15), 0, "s == 0 drives no signal");
+        assert_eq!(
+            logic_output(2, 15),
+            0,
+            "a value other than 1 or -1 drives 0"
+        );
+    }
+
+    #[test]
+    fn a_logic_keep_cell_holds_the_previous_strength() {
+        assert_eq!(logic_output(-1, 15), 15, "s == -1 keeps a lit output");
+        assert_eq!(logic_output(-1, 0), 0, "s == -1 keeps a dark output");
+    }
+
+    #[test]
+    fn a_logic_reads_the_input_and_its_two_side_neighbours() {
+        let [input, a, b] = logic_neighbours([200, 101, 0], "north").unwrap();
+        assert_eq!(input, [200, 101, -1]);
+        assert_eq!(a, [201, 101, 0], "A is the left (east) side");
+        assert_eq!(b, [199, 101, 0], "B is the right (west) side");
+        let [input, a, b] = logic_neighbours([200, 101, 0], "south").unwrap();
+        assert_eq!(input, [200, 101, 1]);
+        assert_eq!(a, [199, 101, 0]);
+        assert_eq!(b, [201, 101, 0]);
+        assert!(logic_neighbours([200, 101, 0], "up").is_none());
     }
 }

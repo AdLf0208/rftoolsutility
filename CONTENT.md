@@ -145,3 +145,25 @@ slice's lamp assertion cannot prove it; the block is `blocked(no-redstone-output
 
 The carried recipe needs `rftoolsbase:machine_base`, the parent port's item, so the e2e gives the
 block, as every machine slice has.
+
+## Slice 16 — the logic gate (`rftoolsutility:logic`)
+
+The logic gate's four slab models (`models/block/logic_0…3.json`), item model, top texture
+(`textures/block/logic/machinelogictop.png`), recipe, advancement and loot table are carried from the
+RFTools Utility jar byte for byte (the loot table's `copy_components` function is removed by the same
+`upgrade_loot` pass as the other logic blocks). Its model's `rftoolsbase:` machine-base textures are
+re-pointed into this namespace. Its jar blockstate is all 24 `logic_facing` slab rotations, which a
+content block cannot express, so the native code caches the 15/0 output in a two-value `signal` state
+and the blockstate below keys the front-facing slab model on those two values.
+
+| File | What |
+|---|---|
+| `assets/rftoolsutility/blockstates/logic.json` | 2 `signal=0/1` variants (the jar's 24 `logic_facing` rotations are not expressible as content states), both pointing at `block/logic_0` |
+| `assets/rftoolsutility/items/logic.json` | the 26.3 item definition (`minecraft:model` → `rftoolsutility:item/logic`) |
+| `data/rftoolsutility/horizon/block/logic.json` | the block: `minecraft:iron_block` template, hardness 2.0 / blast 2.0, correct tool, metal sound, and the declared 2-value `signal` state (default 0) |
+| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json` | the logic gate added to the tab |
+| `data/minecraft/tags/block/{mineable/pickaxe,needs_iron_tool}.json` | the logic gate added to both (upstream's `ironPickaxeTags()`) |
+| `assets/rftoolsutility/lang/en_us.json` | the two jar lang lines (`block.rftoolsutility.logic`, `message.rftoolsutility.logic.header`) |
+
+The carried recipe needs `rftoolsbase:machine_base`, the parent port's item, so the e2e gives the
+block, as every machine slice has.

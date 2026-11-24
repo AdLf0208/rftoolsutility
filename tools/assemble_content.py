@@ -194,6 +194,18 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/analog.json",
     "data/rftoolsutility/recipe/analog.json",
     "data/rftoolsutility/loot_table/blocks/analog.json",
+    # Slice 16: the three-input logic gate, the last redstone-output logic sibling. Its four slab
+    # models, top texture, item model, recipe, advancement and loot table are the jar's own; the 24
+    # `logic_facing` rotations are replaced below by the `signal` variants the redstone hook caches.
+    "assets/rftoolsutility/models/block/logic_0.json",
+    "assets/rftoolsutility/models/block/logic_1.json",
+    "assets/rftoolsutility/models/block/logic_2.json",
+    "assets/rftoolsutility/models/block/logic_3.json",
+    "assets/rftoolsutility/models/item/logic.json",
+    "assets/rftoolsutility/textures/block/logic/machinelogictop.png",
+    "data/rftoolsutility/advancement/recipes/misc/logic.json",
+    "data/rftoolsutility/recipe/logic.json",
+    "data/rftoolsutility/loot_table/blocks/logic.json",
 ]
 # Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
 # upstream's "living?" form, and these tags are the yield a living item carries
@@ -260,6 +272,11 @@ TELEPORTER_MODELS = [
     "assets/rftoolsutility/models/block/analog_1.json",
     "assets/rftoolsutility/models/block/analog_2.json",
     "assets/rftoolsutility/models/block/analog_3.json",
+    # Slice 16: the four logic slab models name the same `rftoolsbase:` base textures.
+    "assets/rftoolsutility/models/block/logic_0.json",
+    "assets/rftoolsutility/models/block/logic_1.json",
+    "assets/rftoolsutility/models/block/logic_2.json",
+    "assets/rftoolsutility/models/block/logic_3.json",
 ]
 # The teleporter family's three blocks (McJtyLib `STANDARD_IRON`; the booster is
 # `.strength(2, 6)`). The transmitter and receiver carry a block entity; the booster is a plain
@@ -317,6 +334,7 @@ TAB = {
         f"{MOD}:timer",
         f"{MOD}:counter",
         f"{MOD}:analog",
+        f"{MOD}:logic",
     ],
 }
 
@@ -496,6 +514,27 @@ ANALOG_BLOCK = {
     "item": True,
 }
 
+# `ThreeLogicTileEntity.createBlock` uses the same McJtyLib `STANDARD_IRON` builder as its logic
+# siblings, so the full-cube iron-block template and the generated `signal` state are identical.
+# Its output is a 15/0 latch chosen from the eight-cell truth table, so the cache has two values,
+# like the sensor's and the counter's. The jar's 24 `logic_facing` rotations and the truth-table
+# editor GUI are replaced by the saved input side and `/rftoolsutility logic-set`.
+LOGIC_BLOCK = {
+    "template": "minecraft:iron_block",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "state_properties": {
+        "signal": {"type": "enum", "values": ["0", "1"]}
+    },
+    "default_state": {"signal": "0"},
+    "item": True,
+}
+
 # The jar's recipes name `c:` convention tags the prepared 26.3 root does not
 # ship (it ships `minecraft` tags only), and an unknown tag is an empty
 # ingredient. These are the smallest honest memberships, the same ones this
@@ -535,6 +574,8 @@ LANG_KEYS = [
     "message.rftoolsutility.counter.header",
     "block.rftoolsutility.analog",
     "message.rftoolsutility.analog.header",
+    "block.rftoolsutility.logic",
+    "message.rftoolsutility.logic.header",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -805,6 +846,16 @@ def main() -> None:
             }
         },
     )
+    # Slice 16: the logic gate's 24 jar rotations are replaced by the cached `signal` variants,
+    # as its four 15/0 logic siblings are; the front-facing slab model shows on both strengths.
+    dump(
+        assets / "items" / "logic.json",
+        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/logic"}},
+    )
+    dump(
+        assets / "blockstates" / "logic.json",
+        {"variants": {f"signal={value}": {"model": f"{MOD}:block/logic_0"} for value in ("0", "1")}},
+    )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
@@ -819,6 +870,7 @@ def main() -> None:
     dump(data_dir / "horizon" / "block" / "timer.json", TIMER_BLOCK)
     dump(data_dir / "horizon" / "block" / "counter.json", COUNTER_BLOCK)
     dump(data_dir / "horizon" / "block" / "analog.json", ANALOG_BLOCK)
+    dump(data_dir / "horizon" / "block" / "logic.json", LOGIC_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
@@ -839,6 +891,7 @@ def main() -> None:
                 f"{MOD}:timer",
                 f"{MOD}:counter",
                 f"{MOD}:analog",
+                f"{MOD}:logic",
             ]
         },
     )
@@ -859,6 +912,7 @@ def main() -> None:
                 f"{MOD}:timer",
                 f"{MOD}:counter",
                 f"{MOD}:analog",
+                f"{MOD}:logic",
             ]
         },
     )

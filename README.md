@@ -1,15 +1,16 @@
-# RFTools Utility for Horizon — slices 1–15: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer, the timer, the counter and the analog
+# RFTools Utility for Horizon — slices 1–16: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer, the timer, the counter, the analog and the logic gate
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–15, the tank, the crafter tiers, the spawner's matter gate, the matter
+**Status: slices 1–16, the tank, the crafter tiers, the spawner's matter gate, the matter
 beamer, the matter transmitter / receiver / booster, the destination analyzer, the sensor,
-the sequencer, the timer, the counter and the analog.**
+the sequencer, the timer, the counter, the analog and the logic gate.**
 One flat SDK package (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the
-models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 15 — the analog",
+models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 16 — the logic gate",
+§ "Slice 15 — the analog",
 § "Slice 14 — the counter",
 § "Slice 13 — the timer",
 § "Slice 12 — the sequencer",
@@ -135,6 +136,15 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
    <add_eq> <add_less> <add_greater> <facing>`; the readout `/rftoolsutility analog <pos> [nonce]`
    prints `input=… a=… b=… branch=… mul=… add=… output=… changed=… lamp=… facing=… time=…`, so the
    leg can assert the exact declared strength and its game-time stamp from a vanilla lamp beside it.
+- `rftoolsutility:logic` — a **three-input logic gate** (`ThreeLogicTileEntity`, `ThreeLogicData`).
+   It reads its left (bit 0), input (bit 1) and right (bit 2) side neighbours' own emitted signals,
+   sums them into a 0…7 mask, and drives the mask's cell of an eight-cell truth table as **15** for
+   `1`, **0** for `0`, or the previous output for `-1` (keep) — the artefact's `s == 1 ? 15 : 0` rule.
+   The eight GUI cells are written by `/rftoolsutility logic-set <pos> <l0>…<l7> <facing>`; the
+   readout `/rftoolsutility logic <pos> [nonce]` prints `mask=… cell=… output=… changed=… lamp=…
+   facing=… time=…`, so a leg can assert the declared 15/0 from a vanilla lamp and the reply's own
+   game-time stamps. As with every logic sibling, the jar's 24 cosmetic slab rotations are dropped
+   and the input side is a saved setting.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
@@ -165,10 +175,15 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
    `input=… a=… b=… branch=… output=… changed=… lamp=… facing=… time=…` (`changed`/`time` are
    game-time stamps, `output` is the exact 0..15 strength the redstone hook reports).
 
+   The logic gate's commands are `/rftoolsutility logic <pos> [nonce]` and `logic-set <pos> <l0>
+   <l1> <l2> <l3> <l4> <l5> <l6> <l7> <facing>`; its readout prints `mask=… cell=… output=…
+   changed=… lamp=… facing=… time=…` (`changed`/`time` are game-time stamps, `output` is the 15/0
+   the redstone hook reports).
+
 ## What does not (yet)
 
 The dialing device, destination GUI, screens and their 30 modules, the rest of the logic
-blocks (the sensor, sequencer, timer, counter and analog are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
+blocks (the sensor, sequencer, timer, counter, analog and logic gate are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
 fluid quad inside its window, the crafter's GUI, the spawner's GUI, the syringe that sets the
 mob, six-way facing, the item tooltips, the wrench item (a command links the beamer instead),
 the infusing power discount and the analyzer's vanilla redstone output (the artefact has none —

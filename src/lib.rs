@@ -12,11 +12,12 @@
 //! blocks: a ten-tick block check, a rising-edge-driven 64-step pattern, a rising-edge-reloaded
 //! delay that emits a one-tick 15 pulse every `delay` ticks, and a rising-edge pulse counter that
 //! latches 15 when its count reaches the limit, all emitting a real 15/0 redstone signal.
-//! [`AnalogPart`] is the last redstone-output sibling: it compares two side inputs and emits the
-//! artefact's own multiply-and-offset arithmetic clamped to 0..15. (Its display-only sibling
-//! `digit` is not ported: upstream's whole behaviour is a client renderer, with no redstone
-//! output for a fail-capable lamp assertion.) The `/rftoolsutility …` commands serve the harness,
-//! because upstream's controls are its GUIs.
+//! [`AnalogPart`] and [`LogicPart`] are the last two redstone-output siblings: the analog compares
+//! two side inputs and emits the artefact's own multiply-and-offset arithmetic clamped to 0..15,
+//! and the logic gate combines three side signals into one 15/0 output through an eight-cell truth
+//! table (`-1` keeps the previous output). (The display-only `digit` is not ported: upstream's whole
+//! behaviour is a client renderer, with no redstone output for a fail-capable lamp assertion.) The
+//! `/rftoolsutility …` commands serve the harness, because upstream's controls are its GUIs.
 //!
 //! The numbers — the capacity, the fill level, what a bucket click does, the craft loop, the
 //! spawn cost — are in [`runtime`], a plain module with no `mod_api` types, so `cargo test`
@@ -40,14 +41,15 @@ use runtime::{
     AVERAGE_YIELD, AnalogData, BEAMER_CAPACITY, BEAMER_RECEIVE, BOOST_RF, BUCKET, BUFFER_IN,
     BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY, CRAFTER_RECEIVE,
     CRAFTER_SLOTS, Click, CounterData, CounterState, CraftMode, CrafterTier, GHOST_INPUT,
-    GHOST_RESULT, HIGH_YIELD, LOW_YIELD, MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource,
-    MobRecipe, RECEIVER_CAPACITY, RECEIVER_RECEIVE, RF_PER_TICK, SENSOR_OFF, SENSOR_ON,
-    SPAWNER_CAPACITY, SPAWNER_RECEIVE, SensorKind, SequencerData, SequencerMode, SequencerState,
-    Speed, TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter,
-    analog_branch, analog_neighbours, analog_output, analyzer_due, analyzer_status, beam_due,
-    beam_reach, beam_send, bucket_click, carried, clamped, counter_signal,
-    counter_tick as run_counter_tick, fill_level, in_beam, placements, plan, receiver_ready,
-    recipe_for, result_range, rising_edge, sensor_due, sensor_front, sensor_sees, sensor_signal,
+    GHOST_RESULT, HIGH_YIELD, LOW_YIELD, LogicInputs, LogicTable, MATTER_STORAGE,
+    MAX_BEAM_DISTANCE, MatterSource, MobRecipe, RECEIVER_CAPACITY, RECEIVER_RECEIVE, RF_PER_TICK,
+    SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE, SensorKind, SequencerData,
+    SequencerMode, SequencerState, Speed, TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank,
+    TimerData, TimerState, add_matter, analog_branch, analog_neighbours, analog_output,
+    analyzer_due, analyzer_status, beam_due, beam_reach, beam_send, bucket_click, carried, clamped,
+    counter_signal, counter_tick as run_counter_tick, fill_level, in_beam, logic_cell,
+    logic_neighbours, logic_output, placements, plan, receiver_ready, recipe_for, result_range,
+    rising_edge, sensor_due, sensor_front, sensor_sees, sensor_signal,
     sequencer_tick as run_sequencer_tick, spawn_at, spawn_cycle, spend, start_cost, start_time,
     steps, timer_signal, timer_tick as run_timer_tick,
 };
@@ -343,6 +345,37 @@ const KEY_ANALOG_A: &str = "analogA";
 const KEY_ANALOG_B: &str = "analogB";
 /// An analog's item, resolved once in `register` for `block_drops`.
 static ANALOG_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// The logic gate (slice 16) — `ThreeLogicTileEntity`, `ThreeLogicData`
+// ---------------------------------------------------------------------------
+
+/// `LogicBlockModule.LOGIC`: the three-input truth-table sibling on the same logic row. Its eight
+/// cells are `@GuiValue`s upstream only writes from `GuiThreeLogic`, so this port writes them with
+/// `/rftoolsutility logic-set` (the same stand-in the other logic blocks use for their GUIs).
+const LOGIC: &str = "rftoolsutility:logic";
+const LOGIC_TYPE: &str = "logic";
+const LOGIC_TYPE_ID: &str = "rftoolsutility:logic";
+/// The eight truth-table cells (`ThreeLogicData`'s `l0`…`l7`, each `-1` keep / `0` off / `1` on),
+/// stored under their artefact codec names so the saved compound reads like the record.
+const KEY_LOGIC_L0: &str = "l0";
+const KEY_LOGIC_L1: &str = "l1";
+const KEY_LOGIC_L2: &str = "l2";
+const KEY_LOGIC_L3: &str = "l3";
+const KEY_LOGIC_L4: &str = "l4";
+const KEY_LOGIC_L5: &str = "l5";
+const KEY_LOGIC_L6: &str = "l6";
+const KEY_LOGIC_L7: &str = "l7";
+/// The saved input side (the jar's 24 `logic_facing` slab rotations cannot be content states).
+const KEY_LOGIC_FACING: &str = "logicFacing";
+/// Harness-only observations: the game time of the last output change and the three input bits
+/// that produced it. They let the leg assert the truth-table output from the reply's own numbers.
+const KEY_LOGIC_CHANGED_AT: &str = "logicChangedAt";
+const KEY_LOGIC_LEFT: &str = "logicLeft";
+const KEY_LOGIC_INPUT: &str = "logicInput";
+const KEY_LOGIC_RIGHT: &str = "logicRight";
+/// A logic gate's item, resolved once in `register` for `block_drops`.
+static LOGIC_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -2548,6 +2581,159 @@ impl BlockEntityPart for AnalogPart {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The logic gate's glue (slice 16) — `ThreeLogicTileEntity.checkRedstone`, `ThreeLogicData`
+// ---------------------------------------------------------------------------
+
+/// `ThreeLogicData` out of the saved compound. A freshly placed block entity has an empty
+/// compound, so the artefact's all-off `createDefault()` supplies the eight GUI cells.
+fn logic_table(nbt: &Compound) -> LogicTable {
+    LogicTable {
+        cells: [
+            read_int_or(nbt, KEY_LOGIC_L0, 0),
+            read_int_or(nbt, KEY_LOGIC_L1, 0),
+            read_int_or(nbt, KEY_LOGIC_L2, 0),
+            read_int_or(nbt, KEY_LOGIC_L3, 0),
+            read_int_or(nbt, KEY_LOGIC_L4, 0),
+            read_int_or(nbt, KEY_LOGIC_L5, 0),
+            read_int_or(nbt, KEY_LOGIC_L6, 0),
+            read_int_or(nbt, KEY_LOGIC_L7, 0),
+        ],
+    }
+}
+
+/// Write the eight cells back under their artefact codec names (`l0`…`l7`).
+fn write_logic_table(nbt: &mut Compound, table: &LogicTable) {
+    for (name, cell) in [
+        KEY_LOGIC_L0,
+        KEY_LOGIC_L1,
+        KEY_LOGIC_L2,
+        KEY_LOGIC_L3,
+        KEY_LOGIC_L4,
+        KEY_LOGIC_L5,
+        KEY_LOGIC_L6,
+        KEY_LOGIC_L7,
+    ]
+    .into_iter()
+    .zip(table.cells)
+    {
+        write_int(nbt, name, cell);
+    }
+}
+
+/// The direction from each of the three neighbours back into the logic gate, in the `[I, A, B]`
+/// order of [`logic_neighbours`]. Identical to the analog's floor-slab geometry.
+fn logic_into_directions(facing: &str) -> [Direction; 3] {
+    analog_into_directions(facing)
+}
+
+/// `/rftoolsutility logic <pos> [nonce]`: the harness reads the three input bits, the selected
+/// table cell and the exact 15/0 strength cached in the block state. `changed` is the game time of
+/// the last output change and `lamp` is a live read of the adjacent vanilla lamp, so a leg can say
+/// "this input pattern produced this output at this tick" from the reply alone.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the readout carries the three inputs, the chosen cell and game-time evidence"
+)]
+fn logic_line(
+    pos: [i32; 3],
+    index: usize,
+    cell: i32,
+    output: i32,
+    changed: i32,
+    facing: &str,
+    time: i32,
+    lamp: &str,
+    nonce: Option<&str>,
+) -> String {
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: logic at {pos:?}: mask={index} cell={cell} output={output} changed={changed} lamp={lamp} facing={facing} time={time}{suffix}"
+    )
+}
+
+/// `ThreeLogicTileEntity.checkRedstone`: read the left, input and right neighbours' own emitted
+/// signals (never `getBestNeighborSignal`, which would see this block's own output as a phantom
+/// input), build the three-bit index, look up the truth-table cell, and drive 15 for `1`, 0 for
+/// `0` or hold the previous strength for `-1`. The cached 15/0 is mirrored into the block state
+/// and the neighbours woken only when it changes.
+fn logic_block_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let table = logic_table(&event.entity.nbt);
+    let Some(level) = ticking_level(&*host) else {
+        return;
+    };
+    let facing =
+        read_text(&event.entity.nbt, KEY_LOGIC_FACING).unwrap_or_else(|| "north".to_owned());
+    let Some(neighbours) = logic_neighbours(pos, &facing) else {
+        return;
+    };
+    let intos = logic_into_directions(&facing);
+    let mut powered = [false; 3];
+    for (slot, neighbour) in neighbours.iter().enumerate() {
+        powered[slot] = level.signal(&*host, *neighbour, intos[slot]).unwrap_or(0) > 0;
+    }
+    let inputs = LogicInputs {
+        left: powered[1],
+        input: powered[0],
+        right: powered[2],
+    };
+    let cell = logic_cell(&table, inputs);
+    let output = logic_output(cell, cached_signal(&*host, level, pos));
+    write_logic_table(&mut event.entity.nbt, &table);
+    write_text(&mut event.entity.nbt, KEY_LOGIC_FACING, &facing);
+    write_int(
+        &mut event.entity.nbt,
+        KEY_LOGIC_INPUT,
+        i32::from(powered[0]),
+    );
+    write_int(&mut event.entity.nbt, KEY_LOGIC_LEFT, i32::from(powered[1]));
+    write_int(
+        &mut event.entity.nbt,
+        KEY_LOGIC_RIGHT,
+        i32::from(powered[2]),
+    );
+    if output != cached_signal(&*host, level, pos) {
+        let time = level.game_time(&*host).unwrap_or(0) as i32;
+        write_int(&mut event.entity.nbt, KEY_LOGIC_CHANGED_AT, time);
+        host.set_block_property(pos, KEY_SIGNAL, if output == SENSOR_ON { "1" } else { "0" });
+        if let Some(state) = level.block_state(&*host, pos) {
+            let _ = level.update_neighbors(host, pos, state, NeighbourUpdate::Neighbours);
+        }
+    }
+}
+
+/// The logic gate's one Part: a block entity with a tick, and the two redstone methods that make
+/// its cached 15/0 a real vanilla signal (`LogicSupport.getRedstoneOutput`/`isSignalSource`).
+struct LogicPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for LogicPart {
+    fn is_signal_source(&self, _level: &dyn LevelHost, event: &mut IsSignalSourceEvent) {
+        event.source = true;
+    }
+
+    fn block_signal(&self, level: &dyn LevelHost, event: &mut BlockSignalEvent) {
+        let Some(name) = level.state_string(event.state) else {
+            return;
+        };
+        if sensor_state_property(&name, KEY_SIGNAL) == Some("1") {
+            event.signal = SENSOR_ON;
+        }
+    }
+}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for LogicPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        logic_block_tick(host, event);
+    }
+}
+
 /// `/rftoolsutility analyzer <pos> [nonce]`: the harness's readout of the passive analyzer block.
 /// It finds the adjacent dialed transmitter and prints the receiver-check status the transmitter
 /// keeps (`green=ok` → 15, `yellow=unknown` → 7, `red=warn` → 0). The artefact has no redstone
@@ -3214,6 +3400,16 @@ impl Hooks for Mod {
                 "rftoolsutility: the analog part was refused: {error}"
             ));
         }
+
+        // Slice 16: the logic gate's block entity, three-input tick and redstone Part, on the same
+        // iron-block template and `signal` state as its four 15/0 logic siblings.
+        let _ = LOGIC_ITEM.set(r.item_key(LOGIC));
+        let logic_kind = r.block_entity_type(LOGIC_TYPE).blocks(&[LOGIC]).build();
+        if let Err(error) = r.block_entity_part(&logic_kind, LogicPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the logic part was refused: {error}"
+            ));
+        }
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -3381,6 +3577,12 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(LOGIC) {
+            if let Some(item) = LOGIC_ITEM.get() {
+                carry_machine(level, event, *item, LOGIC_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -3514,6 +3716,15 @@ impl Hooks for Mod {
             "rftoolsutility analog-set <pos:block_pos> <mul_eq:number> <mul_less:number> <mul_greater:number> <add_eq:integer> <add_less:integer> <add_greater:integer> <facing:word>",
             2,
         ));
+        // Slice 16: the logic gate's GUI-equivalent controls — a readout of its three inputs and
+        // chosen truth-table cell, and a way to write the eight cells `GuiThreeLogic` would set.
+        event.commands.push(Command::new(
+            "rftoolsutility logic <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility logic-set <pos:block_pos> <l0:integer> <l1:integer> <l2:integer> <l3:integer> <l4:integer> <l5:integer> <l6:integer> <l7:integer> <facing:word>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -3557,6 +3768,8 @@ impl Hooks for Mod {
                     | "counter-set"
                     | "analog"
                     | "analog-set"
+                    | "logic"
+                    | "logic-set"
                     | "recipes"
             ]
         );
@@ -4414,6 +4627,128 @@ impl Hooks for Mod {
                     host,
                     &format!(
                         "Analog at {pos:?}: mul={mul_equal},{mul_less},{mul_greater} add={add_equal},{add_less},{add_greater}, input to the {facing}."
+                    ),
+                );
+            }
+            ["rftoolsutility", "logic"] => {
+                let Some(entity) = machine_at(&*host, level, pos, LOGIC) else {
+                    feedback(host, "No logic gate there.");
+                    return Flow::Cancel;
+                };
+                let Some(nbt) = entity.data(&*host) else {
+                    feedback(host, "No logic gate there.");
+                    return Flow::Cancel;
+                };
+                let table = logic_table(&nbt);
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let powered = [
+                    read_int_or(&nbt, KEY_LOGIC_INPUT, 0) != 0,
+                    read_int_or(&nbt, KEY_LOGIC_LEFT, 0) != 0,
+                    read_int_or(&nbt, KEY_LOGIC_RIGHT, 0) != 0,
+                ];
+                let inputs = LogicInputs {
+                    left: powered[1],
+                    input: powered[0],
+                    right: powered[2],
+                };
+                let index = inputs.index();
+                let output = cached_signal(&*host, level, pos);
+                let changed = read_int_or(&nbt, KEY_LOGIC_CHANGED_AT, -1);
+                let facing =
+                    read_text(&nbt, KEY_LOGIC_FACING).unwrap_or_else(|| "north".to_owned());
+                let time = level.game_time(&*host).unwrap_or(0) as i32;
+                // A live read of the adjacent lamp: the change stamp alone could go stale, and a
+                // lamp's own `lit` state is the game-time observation the leg asserts.
+                let lamp = [
+                    [pos[0], pos[1], pos[2] - 1],
+                    [pos[0], pos[1], pos[2] + 1],
+                    [pos[0] - 1, pos[1], pos[2]],
+                    [pos[0] + 1, pos[1], pos[2]],
+                ]
+                .iter()
+                .any(|&around| {
+                    level
+                        .block_state(&*host, around)
+                        .and_then(|state| host.block_state_string(state))
+                        .is_some_and(|name| {
+                            name.contains("redstone_lamp")
+                                && sensor_state_property(&name, "lit") == Some("true")
+                        })
+                });
+                feedback(
+                    host,
+                    &logic_line(
+                        pos,
+                        index,
+                        logic_cell(&table, inputs),
+                        output,
+                        changed,
+                        &facing,
+                        time,
+                        if lamp { "lit" } else { "dark" },
+                        nonce,
+                    ),
+                );
+            }
+            ["rftoolsutility", "logic-set"] => {
+                let Some(entity) = machine_at(&*host, level, pos, LOGIC) else {
+                    feedback(host, "No logic gate there.");
+                    return Flow::Cancel;
+                };
+                let usage = "Usage: /rftoolsutility logic-set <pos> <l0> <l1> <l2> <l3> <l4> <l5> <l6> <l7> <facing>";
+                let cell = |name: &str| match invocation.argument(name) {
+                    Some(CommandArgumentValue::Integer(value)) => Some(*value),
+                    _ => None,
+                };
+                let mut cells = [0i32; 8];
+                for (slot, name) in [
+                    KEY_LOGIC_L0,
+                    KEY_LOGIC_L1,
+                    KEY_LOGIC_L2,
+                    KEY_LOGIC_L3,
+                    KEY_LOGIC_L4,
+                    KEY_LOGIC_L5,
+                    KEY_LOGIC_L6,
+                    KEY_LOGIC_L7,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    // The command argument names are `l0`…`l7`, the same as the saved keys.
+                    let Some(value) = cell(name) else {
+                        feedback(host, usage);
+                        return Flow::Cancel;
+                    };
+                    cells[slot] = value;
+                }
+                let table = LogicTable { cells };
+                let Some(CommandArgumentValue::String(facing)) = invocation.argument("facing")
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                if logic_neighbours(pos, facing).is_none() {
+                    feedback(host, "unknown logic facing (north|south|east|west).");
+                    return Flow::Cancel;
+                }
+                let Some(mut nbt) = entity.data(&*host) else {
+                    feedback(host, "No logic gate there.");
+                    return Flow::Cancel;
+                };
+                write_logic_table(&mut nbt, &table);
+                write_text(&mut nbt, KEY_LOGIC_FACING, facing);
+                if entity.replace_data(host, nbt).is_err() {
+                    feedback(host, "No logic gate there.");
+                    return Flow::Cancel;
+                }
+                feedback(
+                    host,
+                    &format!(
+                        "Logic at {pos:?}: table {:?}, input to the {facing}.",
+                        cells
                     ),
                 );
             }
@@ -5658,5 +5993,44 @@ mod tests {
             analog_signal_from_state("rftoolsutility:analog[signal=0]"),
             0
         );
+    }
+
+    // ---- Slice 16: the logic gate's glue ----
+
+    #[test]
+    fn the_logic_readout_is_the_line_the_harness_parses() {
+        let inputs = LogicInputs {
+            left: true,
+            input: true,
+            right: false,
+        };
+        let table = LogicTable {
+            cells: [0, 0, 0, 1, 0, 0, 0, -1],
+        };
+        assert_eq!(
+            logic_line(
+                [201, 101, 0],
+                inputs.index(),
+                logic_cell(&table, inputs),
+                15,
+                312,
+                "north",
+                320,
+                "lit",
+                Some("1")
+            ),
+            "/rftoolsutility: logic at [201, 101, 0]: mask=3 cell=1 output=15 changed=312 lamp=lit facing=north time=320 nonce=1"
+        );
+    }
+
+    #[test]
+    fn a_logic_tables_eight_cells_round_trip_through_the_saved_compound() {
+        let mut nbt = Compound::new();
+        let table = LogicTable {
+            cells: [0, 1, -1, 0, 1, 1, 0, -1],
+        };
+        write_logic_table(&mut nbt, &table);
+        assert_eq!(logic_table(&nbt), table);
+        assert_eq!(logic_table(&Compound::new()), LogicTable::default());
     }
 }

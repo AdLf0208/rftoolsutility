@@ -1,8 +1,12 @@
-# RFTools Utility — port notes (slices 1–15: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer, the timer, the counter and the analog)
+# RFTools Utility — port notes (slices 1–16: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer, the timer, the counter, the analog and the logic gate)
 
-> **Current state (2026-11-24): slice 15, package 0.2.14 at pin
+> **Current state (2026-11-24): slice 16, package 0.2.15 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 14 — the counter (2026-11-24)`** first: the artefact's count/reset rules, the latched
+> **`## Slice 16 — the logic gate (2026-11-24)`** first: the artefact's eight-cell truth table, the
+> 15/0 lamp leg with its game-time stamps, and the first-gate finding on the invchecker. Then
+> **`## Slice 15 — the analog (2026-11-24)`**: the artefact's arithmetic and the exact-strength lamp
+> leg. Then
+> **`## Slice 14 — the counter (2026-11-24)`**: the artefact's count/reset rules, the latched
 > output and the game-time-stamped lamp leg. Then
 > **`## Slice 13 — the timer (2026-11-24)`**: the delay/edge rules, the one-tick pulse and
 > the game-time-stamped lamp leg. Then
@@ -210,8 +214,8 @@ this slice does not implement. Recorded so slice 2 does not carry it:
   `tablet_redstone`, `screen_link`, `storage_control_module` and the 30 screen
   modules.
 - **Logic:** `wire`, ~~`sensor`~~ (slice 11), ~~`sequencer`~~ (slice 12), ~~`timer`~~ (slice 13),
-  ~~`counter`~~ (slice 14), `analog`, `digit`, `logic`, `invchecker`,
-  `redstone_transmitter/receiver`, `redstone_information`.
+  ~~`counter`~~ (slice 14), ~~`analog`~~ (slice 15), ~~`logic`~~ (slice 16), `digit` (blocked — no
+  redstone output), `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
 - **Environmental controller** and its 23 modules; ~~the **spawner** with its 100
   mob recipes~~ — **the spawner is done in slice 4** (the block, its 200,000 FE buffer, the
   mob setting from the recipe table and the spawn tick, with the jar's **70** mob recipes
@@ -3185,16 +3189,185 @@ edits are not packed, and the gate still reports `package matches the tree`. The
 printed `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no `BUILD_LOCAL=1`
 was set, and no lease was backgrounded.
 
+## Slice 16 — the logic gate (2026-11-24)
+
+**Chosen from the port's own `## Next slice`** (the line immediately above this section at the
+previous slice), verbatim:
+
+> The next logic-family gap on the same line is `logic` / `invchecker` (`rftoolsutility:logic`,
+> `rftoolsutility:invchecker`), the remaining three-input boolean and inventory-check siblings. Read
+> `ThreeLogicTileEntity.checkRedstone` / `InvCheckerTileEntity.checkOutput` and their data records
+> from the artefact at commit `f799314` first, and check whether their inputs can be driven with the
+> proven `LevelRef::signal` + `BlockPart::block_signal` surface (the invchecker additionally needs a
+> container read on the neighbour). The concrete assertion for `logic`: with two redstone inputs on
+> the side neighbours, assert the artefact's declared 15/0 output on the adjacent vanilla lamp from
+> the reply's game-time stamps, with a redstone-block control, a zero-input differential and
+> `SELFTEST_AT=logic` ending `EXIT:1`. If the invchecker needs a GUI-only filter slot or a container
+> surface the pin cannot express, stop with `blocked(<symbol>)` rather than inventing one; the
+> `redstone_transmitter/receiver` family is the following gap.
+
+and the shared gap line `## Gaps (the rest of the mod)`:
+
+> **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`, `digit`, `logic`,
+> `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+
+It fits the ledger's **machines** tier exactly: one block entity, three directional signal inputs, an
+eight-cell truth table and the proven `LevelRef::signal` + `BlockPart::block_signal` surface — no
+renderer, no entity AI, no new client half. **Pin** `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` /
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, API `0.2`, game 26.3. **Version 0.2.15.** Class
+**content**, tier **machines** (ledger). MIT, ours on main → an **Update** of the entry (never a
+first `Add`).
+
+### The artefact's rule (read first, not inferred from the name)
+
+Read from the upstream `1.21_neo` clone at the artefact's own commit
+`f799314007d68042df8504e83cd549360f2627c7` (analysis only, clone at `/tmp/opencode`):
+
+- `ThreeLogicData(int[] logicTable)` with `createDefault() = {0,0,0,0,0,0,0,0}`; each cell is
+  `0` (off), `1` (on) or `-1` (keep). The eight cells are `@GuiValue`s upstream only writes from
+  `GuiThreeLogic`, so this port writes them with `/rftoolsutility logic-set`.
+- `ThreeLogicTileEntity.checkRedstone`:
+  `s = logicTable[powerLevel]`; `s == -1` returns (keep mode, the output is untouched); otherwise
+  `support.setRedstoneState(this, s == 1 ? 15 : 0)` — so **any** other value drives 0, and the output
+  is exactly 15 or 0, never an intermediate strength.
+- `checkRedstone(Level, BlockPos)` builds `powerLevel = powered1 + powered2 + powered3` where
+  `powered1 = getInputStrength(rotateLeft(down,input)) > 0 ? 1 : 0`, `powered2` is the input side
+  (`2`), `powered3` the right side (`4`). For a floor slab with input north, A (left) is east and
+  B (right) is west. `getInputStrength` is `world.getSignal(neighbour, side)` — the directional read
+  the four logic siblings and the analog use, never `getBestNeighborSignal` (sequencer, slice 12).
+
+### First gate: both families are expressible; `logic` is the cheaper one
+
+- **`logic` — expressible.** Three `LevelRef::signal` reads plus the eight-cell boolean table and
+  the `BlockPart::block_signal`/`is_signal_source` surface proven in slices 11–15. No GUI, no
+  container read, no tag matching. Chosen.
+- **`invchecker` — also expressible, but not blocked and not chosen.** The grep evidence: the SDK's
+  `hooks/notes.rs:598` says "a server mod reaches a block's items through its `ITEMS` capability:
+  `level.capability(host, &ITEMS, pos, side)` gives the block entity's slots … by the rules hoppers
+  follow", and `parts/capabilities.rs:295` (`a_mod_reads_a_vanilla_chests_items_from_the_game_with_no_provider_for_it`)
+  proves a vanilla neighbour's live slots are readable (`size(host)`, `resource(host, slot)`). The
+  matcher ghost slot is a `@GuiValue` the other logic slices replace with a `-set` command, so it
+  is not a hard GUI-only wall either. It is the **more expensive** slice: a neighbour capability read
+  plus count/damage/tag matching on a ten-tick cadence, versus three signal reads and a table lookup.
+  Therefore not `blocked(<symbol>)` — queued as the next gate (see `## Next slice`).
+
+### Red → green (unit, verbatim)
+
+Seven new pure rules were `todo!()` stubs behind their tests first (`slice16-red.log`):
+
+```
+test result: FAILED. 0 passed; 7 failed; 0 ignored; 0 measured; 139 filtered out; finished in 0.00s
+  runtime::tests::a_logic_index_is_left_bit_input_bit_right_bit      not yet implemented
+  runtime::tests::a_logic_keep_cell_holds_the_previous_strength      not yet implemented
+  runtime::tests::a_logic_off_cell_drives_no_signal                  not yet implemented
+  runtime::tests::a_logic_on_cell_drives_full_strength               not yet implemented
+  runtime::tests::a_logic_reads_the_input_and_its_two_side_neighbours not yet implemented
+  runtime::tests::a_logic_selects_the_cell_named_by_the_input_mask   not yet implemented
+  runtime::tests::a_logic_table_starts_with_every_cell_off           not yet implemented
+```
+
+Green: **148 passed; 0 failed** (`sdk-test.log`, regenerated for 0.2.15 after the final build) —
+85 runtime and 63 glue tests, including `a_logic_tables_eight_cells_round_trip_through_the_saved_compound`
+and `the_logic_readout_is_the_line_the_harness_parses`. `cargo fmt --check` clean,
+`cargo clippy --all-targets --offline -- -D warnings` 0 warnings (`slice16-lint.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-logic.sh` — a focused, fail-capable leg reusing the launcher-built game; one lease per
+leg, every log ends with its exit. The assertion is a **vanilla redstone lamp** beside the gate, with
+two side neighbours (A east = bit 0, B west = bit 2) driven by `minecraft:redstone_block` for mask 5.
+
+| log | verdict |
+|---|---|
+| `e2e-slice16-logic.log` | **PASS**, `EXIT:0` — LO–LO6 |
+| `e2e-slice16-logic-selftest.log` | **FAIL: SELFTEST logic: the cell=1 output reads 15, expected it inverted**, `EXIT:1` |
+| `e2e-slice16-logic-control.log` | **FAIL: Unknown item 'rftoolsutility:logic'**, `EXIT:1` (unmodded Nightly) |
+| `e2e-slice16-{sensor,sequencer,timer,counter,analog}.log` | each **PASS**, `EXIT:0` — the earlier logic families, no regression on the final bytes |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=88 ok=88 missing-exit=0 bad-exit=0`
+(`slice16-e2e-gate.log`) — the 80 earlier logs plus the 8 new slice-16 logs.
+
+The phases, each asserting a parsed value (verbatim from the green transcript):
+
+```
+LO-control: lamp with a vanilla redstone block: minecraft:redstone_lamp[lit=true] / after removing it: [lit=false]
+LO0:  mask=0 cell=0 output=0 changed=-1 lamp=dark facing=north time=233 nonce=1
+LO1:  mask=5 cell=1 output=15 changed=242 lamp=lit facing=north time=277 nonce=2
+LO2:  mask=5 cell=-1 output=15 changed=242 lamp=lit facing=north time=317 nonce=3
+LO3:  mask=5 cell=0 output=0 changed=323 lamp=dark facing=north time=358 nonce=4
+LO4:  mask=0 cell=0 output=0 changed=323 lamp=dark facing=north time=389 nonce=5
+LO5:  mask=0 cell=1 output=15 changed=395 lamp=lit facing=north time=430 nonce=6
+LO6:  give rftoolsutility:not_a_logic → rc=1 {"error":"unknown item rftoolsutility:not_a_logic"}
+```
+
+Counterfactuals: the redstone-block control proves the lamp and its parser work in this game; LO1
+drives the declared cell=1 → 15 and is the selftest's inverted assertion; LO2 sets the cell to -1
+and asserts the output **and** the `changed` stamp hold (the keep mode, not a 0/15 latch); LO3 sets
+the same cell to 0 with the same mask so the lamp must darken — the artefact's 15/0 differential;
+LO4's zero-input differential selects cell 0; LO5 sets cell 0 to 1 with no inputs, proving the output
+is the selected cell and not a strength function of the input count. `changed` advances with each
+strength change (242 → 323 → 395) and holds through keep, so the output is tied to the game's own
+ticks. `SELFTEST_AT=logic` inverts LO1's exact output and fails as designed; `CONTROL=1` runs the
+same script on the unmodded Nightly, where the logic item does not exist.
+
+### Deviations and content adaptations
+
+- **The eight cells are command-driven, not a GUI.** `GuiThreeLogic`'s truth-table editor is
+  `/rftoolsutility logic-set <pos> <l0>…<l7> <facing>`, as every logic sibling's GUI is replaced by
+  its `-set` command. A user notices: no GUI.
+- **The input side is a saved advisory.** The jar's 24 `logic_facing` slab rotations cannot be
+  content states, so `logic-set` writes one of four horizontal sides, as its siblings do.
+- **No new upstream defect adopted.** The keep/off/on table and the 15/0 mapping are the artefact's
+  own. No comparator/TOP/Jade, no sounds, no GUI — the standing machines-tier gaps. The carried
+  recipe needs `rftoolsbase:machine_base`, so the e2e gives the block, as every machine slice has.
+- **`digit` stays blocked** (`no-redstone-output:DigitTileEntity`): a client renderer only.
+
+### Coverage after slice 16
+
+| family | status |
+|---|---|
+| `rftoolsutility:logic` (block, item, recipe, advancement, loot, texture, `signal` state) | tested — LO: placed and read back; content regenerated by `assemble_content.py` |
+| the eight-cell table (off/on/keep) and the 15/0 mapping | tested — LO0–LO3 (default, cell 1, keep, cell 0); unit rules for index, cell selection, on/off/keep |
+| the three directional inputs (I bit 1, A bit 0, B bit 2) | tested in code (`logic_neighbours`) and in game (LO1–LO4 drive A and B; mask 5 and mask 0 asserted) |
+| the item carrying the logic gate's state | carried (`block_drops` + `minecraft:block_entity_data`, the same path as the other machines); no dedicated phase |
+| a `rftoolsbase:machine_base` recipe craft | blocked(`rftoolsbase:machine_base`) — the parent port's item; the e2e gives the block |
+| the GUI (truth-table editor) | not ported (no menu; `logic-set` is its equivalent) |
+| `rftoolsutility:digit` and its 0..F display | blocked(`no-redstone-output:DigitTileEntity`) — a client renderer only |
+| `rftoolsutility:invchecker` (neighbour-item check, amount/slot/damage/tag) | not ported — expressible (`level.capability(&ITEMS, pos, side)`), queued as slice 17 |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 217,281 B | `5d59ce3f605cf106fa2ea8359e4497727bb37f3392b3b759877c117dd90d604d` | 276 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice16-build-1.log`, `slice16-build-2.log`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.15 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`);
+`fits --build 0a875da` → `0a875da  made for`; `fits --build 0b14f8a` → `0b14f8a  fits`;
+`verify-sdk-package.py rftoolsutility` → **1/1** (148 passed, 0 clippy warnings, package matches the
+tree, R9, skills gate; `slice16-package-gate-final.log`). The manifest, README, crate doc and
+content were edited **before** the final build; the later `notes.md`/`VALIDATION.md`/`CONTENT.md`
+edits are not packed, and the gate still reports `package matches the tree`. The launcher's
+`native-build` compiled the mod (`Compiling rftoolsutility (1 of 1)`,
+`native-0a875da-dd35d19365bd`) after the stale 0.2.14 tag was removed. All Rust ladder steps printed
+`build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no `BUILD_LOCAL=1` was set,
+and no lease was backgrounded.
+
 ## Next slice
 
-The next logic-family gap on the same line is `logic` / `invchecker` (`rftoolsutility:logic`,
-`rftoolsutility:invchecker`), the remaining three-input boolean and inventory-check siblings. Read
-`ThreeLogicTileEntity.checkRedstone` / `InvCheckerTileEntity.checkOutput` and their data records
-from the artefact at commit `f799314` first, and check whether their inputs can be driven with the
-proven `LevelRef::signal` + `BlockPart::block_signal` surface (the invchecker additionally needs a
-container read on the neighbour). The concrete assertion for `logic`: with two redstone inputs on
-the side neighbours, assert the artefact's declared 15/0 output on the adjacent vanilla lamp from
-the reply's game-time stamps, with a redstone-block control, a zero-input differential and
-`SELFTEST_AT=logic` ending `EXIT:1`. If the invchecker needs a GUI-only filter slot or a container
-surface the pin cannot express, stop with `blocked(<symbol>)` rather than inventing one; the
-`redstone_transmitter/receiver` family is the following gap.
+The next logic-family gap is `invchecker` (`rftoolsutility:invchecker`, `InvCheckerTileEntity`,
+`IncCheckerData`), the inventory-check sibling. The first gate proved it is expressible: read the
+neighbour's live item slots with `level.capability(host, &ITEMS, pos, side)` (SDK `hooks/notes.rs:598`,
+proven by `parts/capabilities.rs:295`), and replace the matcher ghost slot and the amount/slot/damage/
+tag `@GuiValue`s with a `/rftoolsutility invchecker-set` command, as every logic sibling's GUI is
+replaced. Read `checkOutput`/`isItemMatching` and `IncCheckerData.createDefault()` (amount=1, slot=0,
+DMG_IGNORE, tag=null) from the artefact at `f799314` first. The concrete in-game assertion: place a
+vanilla chest on the input side with a known stack in the configured slot, assert the artefact's
+declared 15 when `count >= amount` and 0 when below it (a stack of 1 against amount=2 is the
+zero-input differential), with a redstone-block lamp control and `SELFTEST_AT=invchecker` `EXIT:1`.
+If the neighbour-capability read turns out to need a mod provider the pin cannot supply for a vanilla
+chest, stop with `blocked(<symbol>)` and the grep evidence; the `redstone_transmitter/receiver`
+family is the following gap.

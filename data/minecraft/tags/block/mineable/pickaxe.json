@@ -14,6 +14,7 @@
     "rftoolsutility:sequencer",
     "rftoolsutility:timer",
     "rftoolsutility:counter",
-    "rftoolsutility:analog"
+    "rftoolsutility:analog",
+    "rftoolsutility:logic"
   ]
 }
