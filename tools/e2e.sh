@@ -317,15 +317,32 @@ hold_carried() { # hold_carried ITEM
 
 # Place ITEM from the player's hand at X Y Z (the player stands two blocks west).
 place_block() { # place_block ITEM X Y Z
-    local item=$1 x=$2 y=$3 z=$4
+    local item=$1 x=$2 y=$3 z=$4 name="" attempt
     ctl command "execute in minecraft:the_end run tp @s $((x - 2)).5 $y $z.5" >/dev/null
-    ctl wait 6 >/dev/null
+    ctl wait 8 >/dev/null
+    # Slot 10's long leg reaches the teleporter phase after the spawner/beamer breaks and the
+    # two-dimension fills. By then the support under a late target can be gone and an enderman can
+    # stand on it: `ctl place` then either refuses with "no visible face … against" or silently
+    # answers "Could not set the block" in chat. Restore the floor, clear entities, and verify the
+    # block that actually ended up there — the old helper trusted the command's exit status and
+    # let both flakes reach an assertion as "block is air".
+    ctl command "execute in minecraft:the_end run setblock $x $((y - 1)) $z minecraft:stone" >/dev/null
+    ctl wait 4 >/dev/null
     hold "$item"
-    try_place "$item" "$x" "$y" "$z"
-    ctl wait 6 >/dev/null
-    local name
-    name=$(block_name "$x" "$y" "$z")
-    [ "$name" = "$item" ] || fail "$item did not place at $x,$y,$z (got '$name')"
+    for attempt in 1 2 3; do
+        clear_at "$x" "$y" "$z" 2
+        ctl look-at-block "$x" $((y - 1)) "$z" up >/dev/null 2>&1 || true
+        ctl wait 2 >/dev/null
+        ctl place "$x" "$y" "$z" --item "$item" >/dev/null 2>&1 || true
+        ctl wait 8 >/dev/null
+        name=$(block_name "$x" "$y" "$z")
+        [ "$name" = "$item" ] && return 0
+        echo "  place attempt $attempt: $x,$y,$z reads '$name', retrying" >&2
+        ctl command "execute in minecraft:the_end run setblock $x $((y - 1)) $z minecraft:stone" >/dev/null
+        ctl wait 4 >/dev/null
+        hold "$item"
+    done
+    fail "$item did not place at $x,$y,$z (last '$name')"
 }
 
 place_tank() { # place_tank X Y Z

@@ -441,3 +441,42 @@ regenerated for 0.2.8; the docs (`README.md`, packed) were edited before the fin
 gate confirmed `package matches the tree`; R9 holds (SDK path dependency only, no `[workspace]`, no
 packed `Cargo.lock`); no local type or variant is named `Block`/`Item`, so neither `fits` run
 false-failed.
+
+## Slice 10 — the destination analyzer (0.2.9, forwarded to AdLf-PC)
+
+All Rust ladder steps went through `build-slot.sh run --job W1-rftoolsutility --port
+ports/rftoolsutility --step test|lint|fmt|build|check -- …`, each printing `build-slot: forwarding
+… to the remote runner`; `BUILD_LOCAL=1` was never set. The launcher's native build cannot run on
+the far box (`libxkbcommon-x11.so.0` missing), so it ran locally in a `--step native` lease; the
+game/ctl legs stayed local on this box's glibc. No lease was backgrounded.
+
+| # | check | command | result |
+|---|---|---|---|
+| 1 | red, runtime | five analyzer rules stubbed `todo!()` behind their tests, `cargo test` | `FAILED. 85 passed; 5 failed`, each at `not yet implemented` (`slice10-red.log`) |
+| 2 | red, glue | `analyzer_line` stubbed `todo!()` behind its test | `FAILED. 0 passed; 1 failed; 90 filtered out` (`slice10-glue-red.log`) |
+| 3 | green | `cargo test --offline` | **91 passed; 0 failed** (`sdk-test.log`, regenerated for 0.2.9 after the last forwarded run) |
+| 4 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`slice10-fmt.log`, `sdk-clippy.log`) |
+| 5 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **155,241 B**, sha `54791b79…3cf5`, 203 entries, no `Cargo.lock` (`slice10-build-a.sha`, `-b.sha`) |
+| 6 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.9 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`sdk-check.log`) |
+| 7 | fits the pin | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, **FITS_EXIT:0** (`sdk-fits.log`) |
+| 8 | fits another build | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, **FITS_EXIT:0** (`sdk-fits-other.log`) |
+| 9 | gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | **1/1** (package matches the tree, R9, skills gate; `slice10-package-gate.log`) |
+| 10 | native build | `ports/tools/launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-c1cea11ff937` (`slice10-native-build.log`) |
+| 11 | in game, PASS | `build-slot.sh run --step native -- bash ports/rftoolsutility/tools/e2e-analyzer.sh` | **PASS**, `EXIT:0` — AJ–AJ3 (`e2e-slice10-analyzer.log`): signal 0 → 15 → 0 as the receiver is charged and then blocked |
+| 12 | in game, c/f | `SELFTEST=1 SELFTEST_AT=analyzer` | **FAIL: SELFTEST analyzer: the charged receiver reads signal=15, expected it to stay low**, `EXIT:1` (`e2e-slice10-analyzer-selftest.log`) |
+| 13 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: no rftoolsutility:matter_transmitter in the inventory**, `EXIT:1` (`e2e-slice10-analyzer-control.log`) |
+| 14 | no regression | the same game, `tools/e2e-teleporter.sh` | **PASS**, `EXIT:0` — AI–AI2: dial, arrival at `203.5,102.0,12.5`, readout `energy=186600/200000 … state=cooldown status=none` (`e2e-slice10-teleporter.log`) |
+| 15 | log gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=46 ok=46 missing-exit=0 bad-exit=0`, `EXIT:0` |
+
+**Traps handled:** the two stale `native-0a875da-…` tags carrying 0.2.8 were removed before the
+build so the launcher actually recompiled (`Compiling rftoolsutility (1 of 1)`); `E2E_TMP` and all
+four path exports came from `launcher-game.sh env`, never `/tmp`; `cargo horizon-mod build` writes
+into `target/horizon-mod/`, so the delivered port-root copy was installed and `cmp`-checked after
+the two builds; the forwarded pull-back overwrote a locally-teed `sdk-test.log` with the old
+85-pass run, so the final 91-pass log was staged outside the pulled-back tree and copied in; the
+manifest and packed README were edited before the final build and the gate confirmed `package
+matches the tree`; R9 holds (SDK path dep only, no `[workspace]`, no packed lock); no local type or
+variant is named `Block`/`Item`, so neither `fits` run false-failed. The full A–AH leg's late
+teleporter phase hit two harness flakes (a missing placement face after the earlier breaks, then
+a chat-reply race); `e2e-slice9.log` shows the same late-phase failure on 0.2.8, and the focused
+teleporter leg is green on these bytes.

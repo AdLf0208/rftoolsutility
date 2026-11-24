@@ -9,7 +9,8 @@
     "rftoolsutility:matter_beamer",
     "rftoolsutility:matter_transmitter",
     "rftoolsutility:matter_receiver",
-    "rftoolsutility:matter_booster"
+    "rftoolsutility:matter_booster",
+    "rftoolsutility:destination_analyzer"
   ],
   "title": "itemGroup.rftoolsutility"
 }

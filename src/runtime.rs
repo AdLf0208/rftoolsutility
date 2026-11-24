@@ -890,6 +890,69 @@ pub fn charge_tick(energy: i32) -> Option<i32> {
     (energy >= RF_PER_TICK).then_some(energy - RF_PER_TICK)
 }
 
+// Slice 10: the destination analyzer. Upstream's analyzer block is passive — it has no block
+// entity and no redstone output. Its whole effect is to let a dialed transmitter run
+// `MatterTransmitterTileEntity.checkReceiverStatus` every 20 ticks: the transmitter's status
+// (`TeleportationTools.STATUS_OK/WARN/UNKNOWN`) drives the beam's green/red/yellow colour. The
+// harness reads that status and maps it to a signal strength (15 / 0 / 7); nothing here claims a
+// vanilla redstone emitter the artefact does not have.
+
+/// The transmitter's receiver-check status (`TeleportationTools.STATUS_OK|WARN|UNKNOWN`), as the
+/// jar's lang line spells it: "red is bad, green ok, yellow is unknown".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalyzerStatus {
+    /// Green: the dialed receiver has two clear blocks above and ≥ 5,000 FE.
+    Ok,
+    /// Red: a missing destination/receiver, a blocked receiver or a low receiver buffer.
+    Warn,
+    /// Yellow: the destination dimension is not loaded, so the check cannot be made.
+    Unknown,
+}
+
+impl AnalyzerStatus {
+    /// The harness-readable strength of the status: green 15, yellow 7, red 0. These are the
+    /// beam's three colours, mapped onto the harness's own readout — the artefact has no redstone
+    /// emitter on the analyzer block (recorded in the port's notes).
+    #[must_use]
+    pub fn signal(self) -> i32 {
+        match self {
+            Self::Ok => 15,
+            Self::Unknown => 7,
+            Self::Warn => 0,
+        }
+    }
+
+    /// The status as the harness readout spells it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warn => "warn",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// `MatterTransmitterTileEntity.checkReceiverStatus`: an unknown destination dimension is
+/// UNKNOWN; every other failure (no destination, no receiver block entity, blocked or underpowered)
+/// is WARN; only a ready receiver is OK.
+#[must_use]
+pub fn analyzer_status(level_known: bool, receiver: Option<bool>) -> AnalyzerStatus {
+    if !level_known {
+        return AnalyzerStatus::Unknown;
+    }
+    match receiver {
+        Some(true) => AnalyzerStatus::Ok,
+        Some(false) | None => AnalyzerStatus::Warn,
+    }
+}
+
+/// The receiver status is re-checked every 20 ticks (`checkReceiverStatusCounter`, seeded at 20).
+#[must_use]
+pub fn analyzer_due(game_time: i64) -> bool {
+    game_time.rem_euclid(20) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1910,5 +1973,51 @@ mod tests {
         assert_eq!(charge_tick(500), Some(0));
         assert_eq!(charge_tick(499), None, "one FE short does not pay");
         assert_eq!(RF_PER_TICK, 500);
+    }
+
+    // Slice 10: the destination analyzer's status, signal and 20-tick re-check.
+
+    #[test]
+    fn a_ready_receiver_reads_the_full_signal() {
+        let status = analyzer_status(true, Some(true));
+        assert_eq!(status, AnalyzerStatus::Ok);
+        assert_eq!(status.signal(), 15);
+        assert_eq!(status.as_str(), "ok");
+    }
+
+    #[test]
+    fn an_underpowered_or_blocked_receiver_reads_no_signal() {
+        let underpowered = analyzer_status(true, Some(false));
+        assert_eq!(underpowered, AnalyzerStatus::Warn);
+        assert_eq!(underpowered.signal(), 0);
+        assert_eq!(underpowered.as_str(), "warn");
+        // A blocked receiver is the same `receiver_ready(false, …)` failure.
+        assert_eq!(
+            analyzer_status(true, Some(receiver_ready(false, 50_000))),
+            AnalyzerStatus::Warn
+        );
+    }
+
+    #[test]
+    fn an_unloaded_destination_dimension_reads_the_unknown_signal() {
+        let status = analyzer_status(false, Some(true));
+        assert_eq!(status, AnalyzerStatus::Unknown);
+        assert_eq!(status.signal(), 7);
+        assert_eq!(status.as_str(), "unknown");
+    }
+
+    #[test]
+    fn a_missing_receiver_is_a_warn_not_an_unknown() {
+        assert_eq!(analyzer_status(true, None), AnalyzerStatus::Warn);
+    }
+
+    #[test]
+    fn the_analyzer_rechecks_every_twenty_ticks() {
+        for time in [0, 20, 40, 100] {
+            assert!(analyzer_due(time), "tick {time} is a check tick");
+        }
+        for time in [1, 7, 19, 21, 39] {
+            assert!(!analyzer_due(time), "tick {time} is not a check tick");
+        }
     }
 }

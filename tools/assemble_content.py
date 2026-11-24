@@ -120,6 +120,17 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/loot_table/blocks/matter_transmitter.json",
     "data/rftoolsutility/loot_table/blocks/matter_receiver.json",
     "data/rftoolsutility/loot_table/blocks/matter_booster.json",
+    # Slice 10: the destination analyzer — a passive block. Its blockstate's six `facing`
+    # rotations are cosmetic (the effect is adjacency), so the iron-block template drops them
+    # as the booster's does. The recipe's `c:ender_pearls` tag and 1.21.1 item objects are
+    # upgraded to 26.3's ingredient form below.
+    "assets/rftoolsutility/blockstates/destination_analyzer.json",
+    "assets/rftoolsutility/models/block/destination_analyzer.json",
+    "assets/rftoolsutility/models/item/destination_analyzer.json",
+    "assets/rftoolsutility/textures/block/machinedestinationanalyzer.png",
+    "data/rftoolsutility/advancement/recipes/misc/destination_analyzer.json",
+    "data/rftoolsutility/recipe/destination_analyzer.json",
+    "data/rftoolsutility/loot_table/blocks/destination_analyzer.json",
 ]
 # Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
 # upstream's "living?" form, and these tags are the yield a living item carries
@@ -159,6 +170,8 @@ TELEPORTER_MODELS = [
     "assets/rftoolsutility/models/block/matter_transmitter.json",
     "assets/rftoolsutility/models/block/matter_receiver.json",
     "assets/rftoolsutility/models/block/matter_booster.json",
+    # Slice 10: the analyzer's cube names `rftoolsbase:` machine base textures.
+    "assets/rftoolsutility/models/block/destination_analyzer.json",
 ]
 # The teleporter family's three blocks (McJtyLib `STANDARD_IRON`; the booster is
 # `.strength(2, 6)`). The transmitter and receiver carry a block entity; the booster is a plain
@@ -210,6 +223,7 @@ TAB = {
         f"{MOD}:matter_transmitter",
         f"{MOD}:matter_receiver",
         f"{MOD}:matter_booster",
+        f"{MOD}:destination_analyzer",
     ],
 }
 
@@ -312,6 +326,7 @@ LANG_KEYS = [
     "block.rftoolsutility.matter_transmitter",
     "block.rftoolsutility.matter_receiver",
     "block.rftoolsutility.matter_booster",
+    "block.rftoolsutility.destination_analyzer",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -520,8 +535,8 @@ def main() -> None:
         assets / "items" / "matter_beamer.json",
         {"model": {"type": "minecraft:model", "model": f"{MOD}:item/matter_beamer"}},
     )
-    # Slice 9: the teleporter family's item definitions (their blockstates/models are the jar's).
-    for name in ("matter_transmitter", "matter_receiver", "matter_booster"):
+    # Slice 9/10: the teleporter family's item definitions (their blockstates/models are the jar's).
+    for name in ("matter_transmitter", "matter_receiver", "matter_booster", "destination_analyzer"):
         dump(
             assets / "items" / f"{name}.json",
             {"model": {"type": "minecraft:model", "model": f"{MOD}:item/{name}"}},
@@ -533,7 +548,7 @@ def main() -> None:
         dump(data_dir / "horizon" / "block" / f"{tier}.json", CRAFTER_BLOCK)
     dump(data_dir / "horizon" / "block" / "spawner.json", SPAWNER_BLOCK)
     dump(data_dir / "horizon" / "block" / "matter_beamer.json", BEAMER_BLOCK)
-    for name in ("matter_transmitter", "matter_receiver", "matter_booster"):
+    for name in ("matter_transmitter", "matter_receiver", "matter_booster", "destination_analyzer"):
         dump(data_dir / "horizon" / "block" / f"{name}.json", TELEPORTER_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
@@ -549,6 +564,7 @@ def main() -> None:
                 f"{MOD}:matter_transmitter",
                 f"{MOD}:matter_receiver",
                 f"{MOD}:matter_booster",
+                f"{MOD}:destination_analyzer",
             ]
         },
     )
@@ -563,6 +579,7 @@ def main() -> None:
                 f"{MOD}:matter_transmitter",
                 f"{MOD}:matter_receiver",
                 f"{MOD}:matter_booster",
+                f"{MOD}:destination_analyzer",
             ]
         },
     )

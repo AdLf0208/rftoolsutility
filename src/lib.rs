@@ -34,9 +34,10 @@ use runtime::{
     Click, CraftMode, CrafterTier, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, LOW_YIELD,
     MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe, RECEIVER_CAPACITY,
     RECEIVER_RECEIVE, RF_PER_TICK, SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, TRANSMITTER_CAPACITY,
-    TRANSMITTER_RECEIVE, Tank, add_matter, beam_due, beam_reach, beam_send, bucket_click, carried,
-    clamped, fill_level, in_beam, placements, plan, receiver_ready, recipe_for, result_range,
-    spawn_at, spawn_cycle, spend, start_cost, start_time, steps,
+    TRANSMITTER_RECEIVE, Tank, add_matter, analyzer_due, analyzer_status, beam_due, beam_reach,
+    beam_send, bucket_click, carried, clamped, fill_level, in_beam, placements, plan,
+    receiver_ready, recipe_for, result_range, spawn_at, spawn_cycle, spend, start_cost, start_time,
+    steps,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -174,6 +175,20 @@ const KEY_RFPT: &str = "rfPerTick";
 /// game host) as the other machines' items are.
 static TRANSMITTER_ITEM: OnceLock<ItemKey> = OnceLock::new();
 static RECEIVER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// The destination analyzer (slice 10)
+// ---------------------------------------------------------------------------
+
+/// `TeleporterModule.DESTINATION_ANALYZER`: a **passive** block (`DestinationAnalyzerBlock` extends
+/// `Block`, with only a `FACING` property — no block entity and no redstone output). Its whole
+/// effect is the adjacency check in `DialingDeviceTileEntity.isDestinationAnalyzerAvailable`,
+/// which lets a dialed transmitter check its receiver's status (`checkReceiverStatus`).
+const ANALYZER: &str = "rftoolsutility:destination_analyzer";
+/// The status a dialed transmitter keeps (`MatterTransmitterTileEntity.status`, the green/red/
+/// yellow beam state the jar's lang line describes). The harness reads this through
+/// `/rftoolsutility analyzer` as a signal strength; the block itself emits no redstone.
+const KEY_STATUS: &str = "status";
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -1464,6 +1479,58 @@ fn receiver_status(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> bool {
     receiver_ready(clear, energy)
 }
 
+/// Whether a destination analyzer stands next to `pos`
+/// (`DialingDeviceTileEntity.isDestinationAnalyzerAvailable`: a six-direction neighbour scan).
+fn analyzer_adjacent(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> bool {
+    const AROUND: [[i32; 3]; 6] = [
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+    ];
+    AROUND.iter().any(|off| {
+        let at = [pos[0] + off[0], pos[1] + off[1], pos[2] + off[2]];
+        level
+            .block(host, at)
+            .is_some_and(|b| b.id(host) == ANALYZER)
+    })
+}
+
+/// The dialed receiver's status (`MatterTransmitterTileEntity.checkReceiverStatus`): the
+/// destination's level is resolved by dimension id, its block entity is read there (the cross-level
+/// lookup slices 6 and 9 established), and the readiness rule is the receiver's own two clear
+/// blocks above plus [`RECEIVER_MIN_RF`](runtime::RECEIVER_MIN_RF). An unloaded destination level
+/// is the yellow `unknown` state; a missing receiver or a failed readiness check is `warn`.
+fn check_receiver_status(
+    host: &dyn ServerHost,
+    dim: &str,
+    dest: [i32; 3],
+) -> runtime::AnalyzerStatus {
+    let Some(dest_level) = level_of(host, dim) else {
+        return analyzer_status(false, None);
+    };
+    let Some(data) = host
+        .block_entity(dest_level, dest)
+        .and_then(|entity| entity.data(host))
+    else {
+        return analyzer_status(true, None);
+    };
+    let energy = read_int(&data, KEY_ENERGY);
+    let clear = [1, 2].iter().all(|up| {
+        dest_level
+            .block(host, [dest[0], dest[1] + up, dest[2]])
+            .is_some_and(|b| {
+                matches!(
+                    b.id(host).as_str(),
+                    "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
+                )
+            })
+    });
+    analyzer_status(true, Some(receiver_ready(clear, energy)))
+}
+
 /// The receiver's readout: its position, dimension, readiness and buffer.
 fn receiver_readout(pos: [i32; 3], data: &Compound, ready: bool, nonce: Option<&str>) -> String {
     let energy = read_int(data, KEY_ENERGY).clamp(0, RECEIVER_CAPACITY);
@@ -1487,10 +1554,70 @@ fn transmitter_readout(pos: [i32; 3], data: &Compound, nonce: Option<&str>) -> S
     } else {
         "idle".to_owned()
     };
+    let status = read_text(data, KEY_STATUS).unwrap_or_else(|| "none".to_owned());
     let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
     format!(
-        "/rftoolsutility: transmitter at {pos:?}: energy={energy}/{TRANSMITTER_CAPACITY} dial={dial} state={state}{suffix}"
+        "/rftoolsutility: transmitter at {pos:?}: energy={energy}/{TRANSMITTER_CAPACITY} dial={dial} state={state} status={status}{suffix}"
     )
+}
+
+/// The analyzer's harness line, from the transmitter's stored status and dial.
+fn analyzer_line(pos: [i32; 3], status: &str, dial: &str, nonce: Option<&str>) -> String {
+    let strength = match status {
+        "ok" => 15,
+        "unknown" => 7,
+        // `warn`, and `none` before the first 20-tick check has run: conservative red.
+        _ => 0,
+    };
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: analyzer at {pos:?}: signal={strength} status={status} dial={dial}{suffix}"
+    )
+}
+
+/// `/rftoolsutility analyzer <pos> [nonce]`: the harness's readout of the passive analyzer block.
+/// It finds the adjacent dialed transmitter and prints the receiver-check status the transmitter
+/// keeps (`green=ok` → 15, `yellow=unknown` → 7, `red=warn` → 0). The artefact has no redstone
+/// emitter here, so this is the harness's own signal, not a vanilla `ctl block` power level.
+fn analyzer_readout(
+    host: &dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    nonce: Option<&str>,
+) -> String {
+    if level
+        .block(host, pos)
+        .is_none_or(|b| b.id(host) != ANALYZER)
+    {
+        return format!("/rftoolsutility: no destination analyzer at {pos:?}.");
+    }
+    let around = [
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+    ];
+    let tx = around.iter().find_map(|off| {
+        let at = [pos[0] + off[0], pos[1] + off[1], pos[2] + off[2]];
+        transmitter_at(host, level, at)
+    });
+    let Some(entity) = tx else {
+        return format!("/rftoolsutility: no transmitter adjacent to the analyzer at {pos:?}.");
+    };
+    let Some(data) = entity.data(host) else {
+        return format!("/rftoolsutility: no transmitter adjacent to the analyzer at {pos:?}.");
+    };
+    let status = read_text(&data, KEY_STATUS).unwrap_or_else(|| "none".to_owned());
+    let dial = match (
+        read_text(&data, KEY_DIAL_DIM),
+        read_pos(&data, KEY_DIAL_POS),
+    ) {
+        (Some(dim), Some(dest)) => format!("{dim}@{dest:?}"),
+        _ => "none".to_owned(),
+    };
+    analyzer_line(pos, &status, &dial, nonce)
 }
 
 /// `/rftoolsutility dial <pos> <dim> <x> <y> <z>`: what the dialing device writes into the
@@ -1541,9 +1668,23 @@ fn transmitter_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<
     let nbt = &mut event.entity.nbt;
     let (Some(dim), Some(dest)) = (read_text(nbt, KEY_DIAL_DIM), read_pos(nbt, KEY_DIAL_POS))
     else {
+        remove(nbt, KEY_STATUS);
         *event.reply = BlockEntityTickReply::Unchanged;
         return;
     };
+    // Slice 10: an adjacent destination analyzer lets a dialed transmitter check its receiver's
+    // status every 20 ticks (upstream's `checkReceiverStatusCounter`). Without one upstream forces
+    // STATUS_OK — no red beam — so a removed analyzer clears the checked state.
+    let analyzer = analyzer_adjacent(&*host, level, pos);
+    if analyzer && level.game_time(&*host).is_some_and(analyzer_due) {
+        write_text(
+            nbt,
+            KEY_STATUS,
+            check_receiver_status(&*host, &dim, dest).as_str(),
+        );
+    } else if !analyzer && read_text(nbt, KEY_STATUS).is_some() {
+        write_text(nbt, KEY_STATUS, "ok");
+    }
     let cooldown = read_int(nbt, KEY_COOLDOWN);
     if cooldown > 0 {
         write_int(nbt, KEY_COOLDOWN, cooldown - 1);
@@ -2268,6 +2409,10 @@ impl Hooks for Mod {
         event.commands.push(Command::new(
             "rftoolsutility receiver <pos:block_pos> [nonce:word]",
         ));
+        // Slice 10: the passive destination analyzer's readout (upstream's checks are GUI/beam).
+        event.commands.push(Command::new(
+            "rftoolsutility analyzer <pos:block_pos> [nonce:word]",
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -2300,6 +2445,7 @@ impl Hooks for Mod {
                     | "dial"
                     | "transmitter"
                     | "receiver"
+                    | "analyzer"
                     | "recipes"
             ]
         );
@@ -2630,6 +2776,14 @@ impl Hooks for Mod {
                 let ready = receiver_status(&*host, level, pos);
                 feedback(host, &receiver_readout(pos, &data, ready, nonce));
             }
+            ["rftoolsutility", "analyzer"] => {
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let line = analyzer_readout(&*host, level, pos, nonce);
+                feedback(host, &line);
+            }
             _ => return Flow::Continue,
         }
         Flow::Cancel
@@ -2896,6 +3050,8 @@ fn set_energy(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], amount:
         (entity, BEAMER_CAPACITY, "matter beamer")
     } else if let Some(entity) = transmitter_at(&*host, level, pos) {
         (entity, TRANSMITTER_CAPACITY, "matter transmitter")
+    } else if let Some(entity) = machine_at(&*host, level, pos, RECEIVER) {
+        (entity, RECEIVER_CAPACITY, "matter receiver")
     } else {
         return "No machine there.".to_owned();
     };
@@ -3670,6 +3826,36 @@ mod tests {
             beamer_readout([1, 2, 3], &Compound::new(), None, false, None),
             "Beamer at [1, 2, 3]: energy=0/200000 dest=none slot=- sent=0 lit=false",
             "a fresh beamer is unlinked, empty and dark"
+        );
+    }
+
+    // -- the destination analyzer's harness readout (slice 10) -------------------
+
+    #[test]
+    fn the_analyzer_readout_is_the_line_the_harness_parses() {
+        assert_eq!(
+            analyzer_line(
+                [200, 101, 8],
+                "warn",
+                "minecraft:the_end@[203, 101, 12]",
+                Some("31")
+            ),
+            "/rftoolsutility: analyzer at [200, 101, 8]: signal=0 status=warn dial=minecraft:the_end@[203, 101, 12] nonce=31",
+            "an underpowered receiver reads a low signal"
+        );
+        assert_eq!(
+            analyzer_line(
+                [200, 101, 8],
+                "ok",
+                "minecraft:the_end@[203, 101, 12]",
+                None
+            ),
+            "/rftoolsutility: analyzer at [200, 101, 8]: signal=15 status=ok dial=minecraft:the_end@[203, 101, 12]",
+            "a ready receiver reads the full signal"
+        );
+        assert!(
+            analyzer_line([200, 101, 8], "unknown", "none", None)
+                .contains("signal=7 status=unknown")
         );
     }
 }

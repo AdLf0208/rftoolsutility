@@ -45,6 +45,11 @@ of the RFTools Utility jar, re-spelled only where 26.3 differs.
 | `data/rftoolsutility/recipe/matter_beamer.json` | redstone/glowstone/redstone around a machine frame |
 | `data/rftoolsutility/advancement/recipes/misc/matter_beamer.json` | the recipe unlock |
 | `data/rftoolsutility/loot_table/blocks/matter_beamer.json` | the block's drop |
+| `assets/rftoolsutility/blockstates/destination_analyzer.json` | the jar's six `facing` rotations (cosmetic; the iron-block template drops them, as the booster's) |
+| `assets/rftoolsutility/models/block/destination_analyzer.json`, `models/item/destination_analyzer.json` | the jar's cube and item models; its `rftoolsbase:` machine-base textures are re-pointed into this namespace |
+| `assets/rftoolsutility/textures/block/machinedestinationanalyzer.png` | the analyzer's front face |
+| `data/rftoolsutility/recipe/destination_analyzer.json` | comparator / `c:ender_pearls` / repeater around a machine frame, with quartz and redstone (the 1.21.1 ingredient objects are upgraded to 26.3 form) |
+| `data/rftoolsutility/advancement/recipes/misc/destination_analyzer.json`, `loot_table/blocks/destination_analyzer.json` | the recipe unlock and the block's drop |
 | `data/rftoolsutility/recipe/crafter1.json` | redstone torch / crafting table + machine frame + crafting table / redstone torch |
 | `data/rftoolsutility/advancement/recipes/misc/crafter1.json` | the recipe unlock |
 | `data/rftoolsutility/loot_table/blocks/crafter1.json` | the block's drop |

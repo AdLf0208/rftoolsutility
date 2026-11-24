@@ -1,14 +1,14 @@
-# RFTools Utility for Horizon — slices 1–9: the tank, the crafter tiers, the spawner, the matter beamer and the teleporter family
+# RFTools Utility for Horizon — slices 1–10: the tank, the crafter tiers, the spawner, the matter beamer and the teleporter family
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–9, the tank, the crafter tiers, the spawner's matter gate, the matter
-beamer and the matter transmitter / receiver / booster.** One flat SDK package
+**Status: slices 1–10, the tank, the crafter tiers, the spawner's matter gate, the matter
+beamer, the matter transmitter / receiver / booster and the destination analyzer.** One flat SDK package
 (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the models and textures,
-and the behaviour — see [`notes.md`](notes.md) § "Slice 9 — the teleporter family",
+and the behaviour — see [`notes.md`](notes.md) § "Slice 10 — the destination analyzer", § "Slice 9 — the teleporter family",
 § "Slice 8 — the matter beamer", § "Slice 7 — the spawner's matter gate", § "Slice 6 — the tick's own dimension",
 § "Slice 5 — the crafter tiers", § "Slice 4 — the spawner", § "Slice 3 — the crafter" and
 § "Slice 2 — the tank's contents travel with its item".
@@ -71,6 +71,15 @@ and the behaviour — see [`notes.md`](notes.md) § "Slice 9 — the teleporter 
   5,000 FE. An adjacent matter booster plus 20,000 FE mitigates a weak receiver. All three
   blocks and their carried content ship; the dialing device, destination GUI, syringe and beam
   renderer do not.
+- `rftoolsutility:destination_analyzer` — a **passive** block (no block entity and no vanilla
+  redstone output: that is what the jar's `DestinationAnalyzerBlock` and its manual say).
+  Next to a dialed transmitter it enables the transmitter's receiver check, every 20 ticks: the
+  destination level is resolved by dimension id and its receiver block entity read there, then
+  readiness is that receiver's two clear blocks above plus **5,000 FE**. `/rftoolsutility
+  analyzer <pos>` reports it as a harness signal — **15** (green, ready), **7** (yellow,
+  destination dimension not loaded) or **0** (red, blocked or underpowered) — the numeric form
+  of the beam colour the jar's lang line describes. Removing the analyzer forces the ready
+  state again, as upstream does.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
@@ -78,15 +87,18 @@ and the behaviour — see [`notes.md`](notes.md) § "Slice 9 — the teleporter 
   for the crafter (and `energy`/`buffer` for the beamer too); `/rftoolsutility spawner <pos>
   [nonce]`, `mob <pos> <id>`, `matter <pos> <m0> <m1> <m2>` and `recipes [nonce]` for the
   spawner, its stores and its table; `/rftoolsutility beamer <pos> [nonce]` and
-  `link <pos> <dest>` for the beamer and its destination.
+  `link <pos> <dest>` for the beamer and its destination; `/rftoolsutility dial <pos> <dim> <x>
+  <y> <z>`, `transmitter <pos> [nonce]`, `receiver <pos> [nonce]` and `analyzer <pos> [nonce]`
+  for the teleporter family (the analyzer prints `signal=<0|7|15> status=<warn|unknown|ok>`).
 
 ## What does not (yet)
 
-Teleporters, screens and their 30 modules, the logic blocks, the environmental
-controller and its modules, the tank's GUI and filter slot, the
+The dialing device, destination GUI, screens and their 30 modules, the logic
+blocks, the environmental controller and its modules, the tank's GUI and filter slot, the
 fluid quad inside its window, the crafter's GUI, the spawner's GUI, the syringe that sets the
-mob, six-way facing, the item tooltips, the wrench item (a command links the beamer instead) and
-the infusing power discount. The full list, with the reason for each, is in
+mob, six-way facing, the item tooltips, the wrench item (a command links the beamer instead),
+the infusing power discount and the analyzer's vanilla redstone output (the artefact has none —
+the harness reads the signal instead). The full list, with the reason for each, is in
 [`notes.md`](notes.md).
 
 ## Building and checking

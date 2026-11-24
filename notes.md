@@ -2021,3 +2021,189 @@ Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven
   `203.5,102.0,12.5`, expected it to stay at z=8.5**, `EXIT:1` — the inverted assertion proves the
   arrival can fail. `check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=41 ok=41
   missing-exit=0 bad-exit=0`.
+
+## Slice 10 — the destination analyzer (2026-11-24)
+
+**Chosen from the port's own gap list** — `## Coverage after slice 9`, verbatim:
+
+> the dialing device, destination GUI, syringe, infusing bonus, beam renderer, six-way facing | not ported | a menu,
+> more blocks, `rftoolsbase`'s infusable path and a renderer — outside this tier's slice
+
+and the earlier gap list's `destination_analyzer` (still unported in `FINDINGS.md` §1's 27 blocks).
+It is the next **machines**-tier family in the teleporter row: a passive block that gates a
+receiver-status check on the existing transmitter — no GUI, no renderer, no new block entity.
+
+**Pin** `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+mod API `0.2`, game 26.3. **Version 0.2.9.** Class **content**, tier **machines** (ledger).
+
+### The brief said a tile entity with redstone output; the artefact says a passive block
+
+The brief named `DestinationAnalyzerTileEntity` and asked for a redstone output whose strength
+reports the dialled receiver's readiness. Reading the jar `rftoolsutility-1.21-7.0.13.jar`
+(SHA-256 `615642b1…d3ff`) and the branch `1.21_neo` clone (commit `f799314…`, analysis only)
+first shows that class **does not exist** — there is no `*Analyzer*TileEntity.class` in the jar,
+and `DestinationAnalyzerBlock.java` extends plain `Block` with only a `FACING` property. The
+jar's own manual (`assets/rftoolsbase/patchouli_books/manual/en_us/entries/machines/
+destination_analyzer.json`) calls it "a **passive** block" that enables a dialing device or a
+transmitter to check the receiving end; the lang line says "red is bad, green ok, yellow is
+unknown" of the transmitter's **beam**, not a redstone signal. **The artefact wins** (the same
+ruling slice 9 made when its brief called the transmitter/receiver a "matter mover"), so:
+
+- **the readiness rule, read from `MatterReceiverTileEntity.checkStatus()`** (not inferred from
+  the block's name): the block at `above()` must be air, then the block at `above(2)` must be air
+  (either failure is `DIAL_RECEIVER_BLOCKED_MASK = 0x1`), then the stored power must be at least
+  `rfPerTeleportReceiver` `5,000 FE` (else `DIAL_RECEIVER_POWER_LOW_MASK = 0x10`), otherwise
+  `DIAL_OK = 0`. `MatterTransmitterTileEntity.checkReceiverStatus()` maps that to
+  `STATUS_OK/WARN/UNKNOWN` after resolving the destination level (`LevelTools.getLevel`) and its
+  block entity (`w.getBlockEntity(c)`) — the cross-level lookup slices 6 and 9 established.
+- **the output strength, read from the same path**: there is **no** vanilla redstone emitter. The
+  harness's own `/rftoolsutility analyzer <pos>` reports the transmitter's stored status as
+  **15 (green / `ok`), 7 (yellow / `unknown`), 0 (red / `warn`)** — the numeric form of the beam
+  colour the lang line describes. The brief's permitted fallback ("read the harness's own analyzer
+  readout; assert the parsed value") is what the leg asserts; `ctl block` on the analyzer reads
+  only its block id, never a `power`.
+
+### What it does
+
+- **The block.** `rftoolsutility:destination_analyzer` on `minecraft:iron_block` (the teleporter
+  family's full-cube template); the jar's six `facing` rotations are cosmetic and dropped as the
+  booster's are. Its blockstate, cube model, item model, face texture, recipe, advancement and
+  loot table are carried from the jar; the recipe's 1.21.1 ingredient objects and `c:ender_pearls`
+  tag are upgraded to 26.3 form by `tools/assemble_content.py`.
+- **The gate.** A transmitter with an analyzer in any of its six neighbours now re-checks its
+  dialled receiver every 20 ticks (`game_time % 20 == 0`, the same clock upstream's
+  `checkReceiverStatusCounter` seeds at 20). The destination level is resolved by dimension id and
+  the receiver block entity read there; readiness is that receiver's two clear blocks plus 5,000 FE.
+  Without an analyzer upstream forces STATUS_OK (no red beam), so removing one clears the state.
+- **The readouts.** `/rftoolsutility analyzer <pos> [nonce]` prints
+  `signal=<0|7|15> status=<warn|unknown|ok> dial=<dim@[x,y,z]|none>`; the transmitter's own line
+  gains `status=<...>`. `/rftoolsutility energy` now also charges a receiver, so the harness can
+  cross the 5,000 FE threshold.
+
+### Red → green (unit, verbatim)
+
+The five pure rules were `todo!()` stubs behind their tests (`slice10-red.log`):
+
+```
+test result: FAILED. 85 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out
+  runtime::tests::a_ready_receiver_reads_the_full_signal      panicked at src/runtime.rs:931:5: not yet implemented
+  runtime::tests::an_underpowered_or_blocked_receiver_reads_no_signal ... panicked at src/runtime.rs:931:5
+  runtime::tests::an_unloaded_destination_dimension_reads_the_unknown_signal ... panicked at src/runtime.rs:931:5
+  runtime::tests::a_missing_receiver_is_a_warn_not_an_unknown ... panicked at src/runtime.rs:931:5
+  runtime::tests::the_analyzer_rechecks_every_twenty_ticks     panicked at src/runtime.rs:937:5
+```
+
+The harness line's pure formatter was stubbed behind its own test (`slice10-glue-red.log`):
+
+```
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 90 filtered out
+  tests::the_analyzer_readout_is_the_line_the_harness_parses panicked at src/lib.rs:1557:5: not yet implemented
+```
+
+Green: **91 passed; 0 failed** (`sdk-test.log`) — 50 runtime + 41 glue. `cargo fmt --check` clean,
+`cargo clippy --all-targets --offline -- -D warnings` 0 warnings (`sdk-clippy.log`). Clippy caught
+one `assert_eq!(…, true)` in the new test, corrected to `assert!(…)` before the green run.
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-analyzer.sh` — a focused leg that reuses `e2e-teleporter.sh`'s helpers. One lease per
+leg, every log ends with its exit. Game built by the launcher from the delivered bytes
+(`Compiling rftoolsutility (1 of 1)`, `native-0a875da-c1cea11ff937`).
+
+| log | verdict |
+|---|---|
+| `e2e-slice10-analyzer.log` | **PASS**, `EXIT:0` — AJ–AJ3 |
+| `e2e-slice10-analyzer-selftest.log` | **FAIL: SELFTEST analyzer: the charged receiver reads signal=15, expected it to stay low**, `EXIT:1` |
+| `e2e-slice10-analyzer-control.log` | **FAIL: no rftoolsutility:matter_transmitter in the inventory** (unmodded Nightly), `EXIT:1` |
+| `e2e-slice10-teleporter.log` | **PASS**, `EXIT:0` — AI–AI2 (the 0.2.8 teleport family on 0.2.9) |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=46 ok=46 missing-exit=0 bad-exit=0`.
+
+The three phases, each asserting a parsed value (verbatim from the green transcript):
+
+```
+AJ1: /rftoolsutility: analyzer at [203, 101, 7]: signal=0 status=warn dial=minecraft:the_end@[203, 101, 12] nonce=1
+AJ2: /rftoolsutility: analyzer at [203, 101, 7]: signal=15 status=ok dial=minecraft:the_end@[203, 101, 12] nonce=2
+AJ3: /rftoolsutility: analyzer at [203, 101, 7]: signal=0 status=warn dial=minecraft:the_end@[203, 101, 12] nonce=3
+```
+
+AJ places the transmitter at `[203,101,8]`, the receiver at `[203,101,12]` and the analyzer at
+`[203,101,7]`; AJ1 dials the transmitter and reads a low signal while the receiver has 0 FE;
+AJ2 charges the receiver to 5,000 FE and reads the full signal; AJ3 puts `minecraft:stone` at
+`[203,102,12]` — one block above the receiver — and reads low again. Counterfactual:
+`SELFTEST_AT=analyzer` inverts AJ2 and the leg fails as designed, so the charge case can fail.
+`CONTROL=1` runs the same script on the unmodded Nightly, where the package's items do not exist.
+The cross-level lookup is in code (`level_of` → `host.block_entity(dest_level, dest)`), exercised
+in-game here in the destination's own dimension; its cross-dimension behaviour was proved by the
+teleporter leg's arrival and by slice 6's two-dimension case.
+
+### Upstream defects fixed / deviations
+
+- **No new upstream defect** was adopted. The readiness order (two clear blocks, then power) is
+  upstream's own `checkStatus()`; the port keeps it.
+- **No redstone output** (deviation forced by the artefact): a user gets a harness readout instead
+  of a wire signal. The artifact has no emitter and no tile entity, so nothing was invented —
+  `notes.md` and the README both say so.
+- **Four-way/six-way facing**: the analyzer's six cosmetic `facing` rotations are dropped on the
+  iron-block template, as the booster's were (adjacency is the only effect).
+- The carried recipe needs `rftoolsbase:machine_frame`, so the e2e gives the block, as every
+  machine slice has.
+
+### Coverage after slice 10
+
+| family | status |
+|---|---|
+| `rftoolsutility:destination_analyzer` (block, item, recipe, advancement, loot, texture) | tested — AJ: placed and read back; the carried content is regenerated by `assemble_content.py` |
+| the passive-adjacency gate (every 20 ticks) | tested — AJ1/AJ2/AJ3: the dialed transmitter's status changes with the receiver |
+| the readiness rule (two clear blocks above + 5,000 FE) | tested — AJ1 (0 FE → warn/0), AJ2 (5,000 FE → ok/15), AJ3 (a block above → warn/0), plus the pure `receiver_ready` unit tests |
+| the cross-level receiver lookup | tested in code path (destination level resolved by id); in-game arrival proved by the teleporter leg and slice 6 |
+| the signal mapping (green 15 / yellow 7 / red 0) | tested — `a_ready_receiver_reads_the_full_signal`, `an_unloaded_destination_dimension_reads_the_unknown_signal`, `the_analyzer_readout_is_the_line_the_harness_parses` |
+| a vanilla redstone emitter on the block | not ported (the artefact has none; the harness readout stands in) |
+| the dialing device, destination GUI, syringe, beam renderer, six-way facing, infusing bonus | not ported (a menu, more blocks, a renderer, `rftoolsbase`'s infusable path) |
+
+### Measured traps this slice cost
+
+1. **The forwarded runner already `cd`s into the port**, so a command prefixed with
+   `cd ports/rftoolsutility` fails there with "No such file or directory"; the ladder commands run
+   at the port root on the remote box.
+2. **The remote pull-back clobbers locally-teed evidence logs** (`sdk-test.log` came back as the
+   slice-9 85-pass log). The final 91-pass log was staged under `/tmp/opencode` and copied into the
+   evidence tree after the last forwarded run.
+3. **`cargo horizon-mod build` writes `target/horizon-mod/rftoolsutility.hmod`**, not the port-root
+   artifact; the delivered copy is placed at the port root after the two builds and `cmp`.
+4. **The launcher cannot run on the remote box** (missing `libxkbcommon-x11.so.0`), so the native
+   build ran locally in a `--step native` lease; all Rust ladder steps still forwarded to AdLf-PC.
+5. **The full A–AH leg flaked twice in its late teleporter phase** (a missing placement face after
+   the spawner/beamer breaks, then a chat-reply race under concurrent load). `tools/e2e.sh`'s
+   `place_block` now verifies the block after each attempt and clears entities; no assertion was
+   weakened. `e2e-slice9.log` shows the same late-phase failure on 0.2.8, so it predates this
+   slice. The focused `e2e-slice10-teleporter.log` is green on the delivered bytes — dial,
+   cross-dimension arrival and the energy/cooldown readout all pass.
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices, rust-port
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 155,241 B | `54791b79cda99b677de4d308cf2f96483a02bb4210e3abe4559af8328b863cf5` | 203 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice10-build-a.sha`, `slice10-build-b.sha`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.9 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`);
+`fits --build 0a875da` → `0a875da  made for`; `fits --build 0b14f8a` → `0b14f8a  fits`;
+`verify-sdk-package.py rftoolsutility` → **1/1** (package matches the tree, R9, skills gate).
+The README (packed) was edited before the final build.
+
+## Next slice
+
+The next teleporter-family gap is the **dialing device** — `rftoolsutility:dialing_device`
+(`DialingDeviceTileEntity`, the GUI that lists destinations and writes the transmitter's
+`MatterTransmitterData.destination`). It fits **machines** only if it can be a no-GUI block with a
+command-driven dial, but the gap line says "a menu, more blocks" — before dispatching, check
+whether the dialing device's behaviour is expressible without a screen; if not, the honest next
+slice is a different `data`/`logic` family from the ledger (e.g. the `sensor`/`sequencer` logic
+blocks), with a fail-capable redstone assertion rather than an invented GUI. The concrete
+assertion for the dialing device would be: a dialing device adjacent to a transmitter lists the
+receiver id from the destination table and `/rftoolsutility dial` uses that id, with an unknown id
+refused — but this needs a menu-equivalent harness path first.
