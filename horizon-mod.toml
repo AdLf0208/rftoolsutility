@@ -1,6 +1,6 @@
 id = "rftoolsutility"
 name = "RFTools Utility"
-version = "0.2.7"
+version = "0.2.8"
 description = """A port of RFTools Utility for Horizon: the tank, a 32,000 mB fluid tank that holds
 one fluid at a time, takes and gives a bucket on a right click, exposes the fluid
 capability on every face and shows its fill level through the jar's own nine textures;
@@ -10,7 +10,10 @@ automation on every face; the spawner, which spawns the mob its carried spawner
 recipe names on the block's facing side for that recipe's own RF cost and its three
 matter amounts, out of a 200,000 FE buffer and three matter stores; and the matter beamer,
 which carries that recipe's own materials into the store each one feeds, 2,000 FE a block
-through a wrench-linked spawner."""
+through a wrench-linked spawner; and the matter transmitter, receiver and booster, which
+teleport a player standing in the transmitter's beam to the dialed receiver's coordinate, across
+dimensions, charging the trip's RF over its ticks and interrupting on a power failure or a player
+leaving the beam."""
 authors = ["McJty", "Horizon native mod contributors"]
 # A native mod: Rust in src/, compiled by the launcher against the game build [native] pins,
 # beside the carried data/ and assets/. The id is the resource namespace and the only identity:

@@ -96,6 +96,30 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/matter_beamer.json",
     "data/rftoolsutility/recipe/matter_beamer.json",
     "data/rftoolsutility/loot_table/blocks/matter_beamer.json",
+    # Slice 9: the teleporter family — matter transmitter, receiver and booster. Their
+    # blockstates/models are the jar's own; the transmitter/receiver block models name
+    # `rftoolsbase:` base textures, re-pointed below like the crafter's.
+    "assets/rftoolsutility/blockstates/matter_transmitter.json",
+    "assets/rftoolsutility/blockstates/matter_receiver.json",
+    "assets/rftoolsutility/blockstates/matter_booster.json",
+    "assets/rftoolsutility/models/block/matter_transmitter.json",
+    "assets/rftoolsutility/models/block/matter_receiver.json",
+    "assets/rftoolsutility/models/block/matter_booster.json",
+    "assets/rftoolsutility/models/item/matter_transmitter.json",
+    "assets/rftoolsutility/models/item/matter_receiver.json",
+    "assets/rftoolsutility/models/item/matter_booster.json",
+    "assets/rftoolsutility/textures/block/machinetransmitter.png",
+    "assets/rftoolsutility/textures/block/machinereceiver.png",
+    "assets/rftoolsutility/textures/block/machinematterbooster.png",
+    "data/rftoolsutility/advancement/recipes/misc/matter_transmitter.json",
+    "data/rftoolsutility/advancement/recipes/misc/matter_receiver.json",
+    "data/rftoolsutility/advancement/recipes/misc/matter_booster.json",
+    "data/rftoolsutility/recipe/matter_transmitter.json",
+    "data/rftoolsutility/recipe/matter_receiver.json",
+    "data/rftoolsutility/recipe/matter_booster.json",
+    "data/rftoolsutility/loot_table/blocks/matter_transmitter.json",
+    "data/rftoolsutility/loot_table/blocks/matter_receiver.json",
+    "data/rftoolsutility/loot_table/blocks/matter_booster.json",
 ]
 # Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
 # upstream's "living?" form, and these tags are the yield a living item carries
@@ -130,6 +154,27 @@ CRAFTER_MODELS = [
 ]
 # The spawner's own cube model, re-pointed the same way.
 SPAWNER_MODEL = "assets/rftoolsutility/models/block/spawner.json"
+# Slice 9: the transmitter's and receiver's cube models name `rftoolsbase:` base textures.
+TELEPORTER_MODELS = [
+    "assets/rftoolsutility/models/block/matter_transmitter.json",
+    "assets/rftoolsutility/models/block/matter_receiver.json",
+    "assets/rftoolsutility/models/block/matter_booster.json",
+]
+# The teleporter family's three blocks (McJtyLib `STANDARD_IRON`; the booster is
+# `.strength(2, 6)`). The transmitter and receiver carry a block entity; the booster is a plain
+# facing marker (its six-way `facing` is cosmetic — the effect is adjacency — so the full-cube
+# iron-block template drops the rotation).
+TELEPORTER_BLOCK = {
+    "template": "minecraft:iron_block",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "item": True,
+}
 
 # `TankTE.createBlock` on McJtyLib's `BlockBuilder.STANDARD_IRON`: strength 2.0,
 # correct tool for drops, metal sound. `minecraft:iron_block` is a full cube
@@ -162,6 +207,9 @@ TAB = {
         f"{MOD}:crafter3",
         f"{MOD}:spawner",
         f"{MOD}:matter_beamer",
+        f"{MOD}:matter_transmitter",
+        f"{MOD}:matter_receiver",
+        f"{MOD}:matter_booster",
     ],
 }
 
@@ -261,6 +309,9 @@ LANG_KEYS = [
     "block.rftoolsutility.crafter3",
     "block.rftoolsutility.spawner",
     "block.rftoolsutility.matter_beamer",
+    "block.rftoolsutility.matter_transmitter",
+    "block.rftoolsutility.matter_receiver",
+    "block.rftoolsutility.matter_booster",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -271,6 +322,10 @@ LANG_KEYS = [
     "message.rftoolsutility.spawner.gold",
     "message.rftoolsutility.matter_beamer.header",
     "message.rftoolsutility.matter_beamer.gold",
+    "message.rftoolsutility.matter_transmitter.header",
+    "message.rftoolsutility.matter_transmitter.gold",
+    "message.rftoolsutility.matter_receiver.header",
+    "message.rftoolsutility.matter_receiver.gold",
 ]
 
 
@@ -378,6 +433,7 @@ def main() -> None:
         inventory = json.loads(jar.read(INVENTORY_MODEL))
         crafter_models = [(name, json.loads(jar.read(name))) for name in CRAFTER_MODELS]
         spawner_model = json.loads(jar.read(SPAWNER_MODEL))
+        teleporter_models = [(name, json.loads(jar.read(name))) for name in TELEPORTER_MODELS]
         # Slice 4: the 70 mob recipes, byte for byte (see `MOB_RECIPE_PREFIX`).
         mob_recipes = [
             name for name in jar.namelist() if name.startswith(MOB_RECIPE_PREFIX) and name.endswith(".json")
@@ -407,6 +463,12 @@ def main() -> None:
         for key, value in spawner_model["textures"].items()
     }
     dump(assets / "models" / "block" / "spawner.json", spawner_model)
+    for name, model in teleporter_models:
+        model["textures"] = {
+            key: value.replace("rftoolsbase:", f"{MOD}:")
+            for key, value in model["textures"].items()
+        }
+        dump(CONTENT / name, model)
 
     with zipfile.ZipFile(BASE_JAR) as base:
         base_data = BASE_JAR.read_bytes()
@@ -458,6 +520,12 @@ def main() -> None:
         assets / "items" / "matter_beamer.json",
         {"model": {"type": "minecraft:model", "model": f"{MOD}:item/matter_beamer"}},
     )
+    # Slice 9: the teleporter family's item definitions (their blockstates/models are the jar's).
+    for name in ("matter_transmitter", "matter_receiver", "matter_booster"):
+        dump(
+            assets / "items" / f"{name}.json",
+            {"model": {"type": "minecraft:model", "model": f"{MOD}:item/{name}"}},
+        )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
@@ -465,6 +533,8 @@ def main() -> None:
         dump(data_dir / "horizon" / "block" / f"{tier}.json", CRAFTER_BLOCK)
     dump(data_dir / "horizon" / "block" / "spawner.json", SPAWNER_BLOCK)
     dump(data_dir / "horizon" / "block" / "matter_beamer.json", BEAMER_BLOCK)
+    for name in ("matter_transmitter", "matter_receiver", "matter_booster"):
+        dump(data_dir / "horizon" / "block" / f"{name}.json", TELEPORTER_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
@@ -476,6 +546,9 @@ def main() -> None:
                 *[f"{MOD}:{tier}" for tier in CRAFTER_TIERS],
                 f"{MOD}:spawner",
                 f"{MOD}:matter_beamer",
+                f"{MOD}:matter_transmitter",
+                f"{MOD}:matter_receiver",
+                f"{MOD}:matter_booster",
             ]
         },
     )
@@ -487,6 +560,9 @@ def main() -> None:
                 *[f"{MOD}:{tier}" for tier in CRAFTER_TIERS],
                 f"{MOD}:spawner",
                 f"{MOD}:matter_beamer",
+                f"{MOD}:matter_transmitter",
+                f"{MOD}:matter_receiver",
+                f"{MOD}:matter_booster",
             ]
         },
     )

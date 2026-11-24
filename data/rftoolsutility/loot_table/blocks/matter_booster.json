@@ -1,0 +1,17 @@
+{
+  "pools": [
+    {
+      "bonus_rolls": 0.0,
+      "entries": [
+        {
+          "name": "rftoolsutility:matter_booster",
+          "type": "minecraft:item"
+        }
+      ],
+      "name": "matter_booster",
+      "rolls": 1.0
+    }
+  ],
+  "random_sequence": "rftoolsutility:blocks/matter_booster",
+  "type": "minecraft:block"
+}

@@ -407,3 +407,37 @@ fail on a variant named `Item` — and its fix — is recorded there too.
 first `place_block rftoolsutility:matter_beamer` ("the item did not register") because the block does
 not exist there; the unit red (rows 1 and 3), the control leg (row 14) and the in-phase differentials
 (AH5–AH8) are this slice's fail-capable evidence, and no claim depends on a 0.2.6 run.
+
+## Slice 9 — the teleporter family (0.2.8, forwarded to AdLf-PC)
+
+Every compile/ladder step below went through `build-slot.sh run --job G12-rftoolsutility --port
+ports/rftoolsutility --step <…>`, which printed `build-slot: forwarding <step> for
+ports/rftoolsutility to the remote runner`; the remote host is `AdLf-PC`
+(`deepseek@192.168.1.115`). `BUILD_LOCAL=1` was never set. The game leg stayed local (the remote
+game/ctl pair is linked on this box's glibc); the in-game slots were entered through
+`build-slot.sh run --step e2e` and the lease was held inside the turn.
+
+| # | check | command | result |
+|---|---|---|---|
+| 1 | red, runtime | the five teleporter rules stubbed `todo!()` behind their tests, `cargo test` | `FAILED. 0 passed; 1 failed; 84 filtered out`, `a_cross_dimension_dial_costs_one_hundred_thousand_and_fifty_ticks … panicked at src/runtime.rs:837:5: not yet implemented` |
+| 2 | green | `cargo test` | **85 passed; 0 failed** (`sdk-test.log`) |
+| 3 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`sdk-clippy.log`) |
+| 4 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **147,852 B**, SHA-256 `60b0204474fda391b15947f1c44a8812ada6710dd9281fa7ed9836e98fbf317d`, no `Cargo.lock` (`build-a.sha`, `build-b.sha`) |
+| 5 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.8 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`sdk-check.log`) |
+| 6 | fits the pin | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, **FITS_EXIT:0** (`sdk-fits.log`) |
+| 7 | fits another build | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, **FITS_EXIT:0** (`sdk-fits-other.log`) |
+| 8 | gate | `python3 ports/tools/verify-sdk-package.py rftoolsutility` | **1/1** (package matches the tree, R9, skills gate) |
+| 9 | native build | `ports/tools/launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-8356e2011e25` |
+| 10 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e-teleporter.sh` | **PASS**, `EXIT:0`, AI–AI2 (`e2e-slice9-teleporter.log`): undialed transmitter moves nobody; dialed one moves the player from `203.5,102.0,8.5` to `203.5,102.0,12.5`; readout `energy=186600/200000 … state=cooldown` |
+| 11 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: Unknown item 'rftoolsutility:matter_transmitter'**, `EXIT:1` (`e2e-slice9-teleporter-control.log`) |
+| 12 | in game, c/f | `SELFTEST=1 SELFTEST_AT=teleport` | **FAIL: the player left the beam for `203.5,102.0,12.5`, expected it to stay at z=8.5**, `EXIT:1` (`e2e-slice9-teleporter-selftest.log`) |
+| 13 | log gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=41 ok=41 missing-exit=0 bad-exit=0`, `EXIT:0` |
+
+**Traps handled:** the manifest was bumped first and the recompile confirmed
+(`Compiling rftoolsutility (1 of 1)`); no `native-*` tag carried this mod in the launcher's version
+store (verified before the build), so there was no stale build to reuse; `E2E_TMP` came from
+`launcher-game.sh env` (`/home/adlf/.cache/horizon-e2e/scratch`), not `/tmp`; `sdk-test.log` was
+regenerated for 0.2.8; the docs (`README.md`, packed) were edited before the final build and the
+gate confirmed `package matches the tree`; R9 holds (SDK path dependency only, no `[workspace]`, no
+packed `Cargo.lock`); no local type or variant is named `Block`/`Item`, so neither `fits` run
+false-failed.

@@ -5,6 +5,9 @@
     "rftoolsutility:crafter2",
     "rftoolsutility:crafter3",
     "rftoolsutility:spawner",
-    "rftoolsutility:matter_beamer"
+    "rftoolsutility:matter_beamer",
+    "rftoolsutility:matter_transmitter",
+    "rftoolsutility:matter_receiver",
+    "rftoolsutility:matter_booster"
   ]
 }

@@ -1,14 +1,15 @@
-# RFTools Utility for Horizon — slices 1–8: the tank, the crafter tiers, the spawner and the matter beamer
+# RFTools Utility for Horizon — slices 1–9: the tank, the crafter tiers, the spawner, the matter beamer and the teleporter family
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–8, the tank, the crafter tiers, the spawner's matter gate and the matter
-beamer.** One flat SDK package (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the
-items, the models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 8 — the
-matter beamer", § "Slice 7 — the spawner's matter gate", § "Slice 6 — the tick's own dimension",
+**Status: slices 1–9, the tank, the crafter tiers, the spawner's matter gate, the matter
+beamer and the matter transmitter / receiver / booster.** One flat SDK package
+(`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the models and textures,
+and the behaviour — see [`notes.md`](notes.md) § "Slice 9 — the teleporter family",
+§ "Slice 8 — the matter beamer", § "Slice 7 — the spawner's matter gate", § "Slice 6 — the tick's own dimension",
 § "Slice 5 — the crafter tiers", § "Slice 4 — the spawner", § "Slice 3 — the crafter" and
 § "Slice 2 — the tank's contents travel with its item".
 
@@ -60,6 +61,16 @@ matter beamer", § "Slice 7 — the spawner's matter gate", § "Slice 6 — the 
   `/rftoolsutility link` (upstream's wrench, within `maxBeamDistance` 8 and only to a spawner;
   linking it to itself unlinks it), the block's `lit` state shows a send, and a broken beamer's
   item carries its destination, material and energy.
+- `rftoolsutility:matter_transmitter`, `matter_receiver`, `matter_booster` — the
+  **teleporter family**. Despite the name, these teleport **players**, not items or fluid: the
+  transmitter's beam finds a player standing above it, charges the dialed trip's RF over its
+  ticks (a local trip is `5,000 + 10·distance` FE over `5 + distance/100` ticks, capped at a
+  cross-dimension `100,000` FE / `50` ticks), and moves the player to the dialed coordinate —
+  across dimensions through the SDK's entity level transfer. A player leaving the beam or a
+  power failure interrupts the trip with a cooldown; a receiver needs two clear blocks above and
+  5,000 FE. An adjacent matter booster plus 20,000 FE mitigates a weak receiver. All three
+  blocks and their carried content ship; the dialing device, destination GUI, syringe and beam
+  renderer do not.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>

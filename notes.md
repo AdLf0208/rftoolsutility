@@ -1,8 +1,11 @@
-# RFTools Utility — port notes (slices 1–8: the tank, the crafter tiers, the spawner and the beamer)
+# RFTools Utility — port notes (slices 1–9: the tank, the crafter tiers, the spawner, the beamer and the teleporter family)
 
-> **Current state (2026-11-22): slice 8, package 0.2.7 at pin
+> **Current state (2026-11-24): slice 9, package 0.2.8 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 8 — the matter beamer (2026-11-22)`** first: the beamer now carries a spawner's
+> **`## Slice 9 — the teleporter family (2026-11-24)`** first: the transmitter, receiver and
+> booster are the **player teleporter** family (not a matter mover — the artefact wins over the
+> brief's "matter fell / receiver rose" wording, which this mod does not have). Then
+> **`## Slice 8 — the matter beamer (2026-11-22)`**: the beamer now carries a spawner's
 > recipe materials into its three stores, which closes the *feed* half of the gate slice 7
 > proved. Then **`## Slice 7 — the spawner's matter gate`**, **`## Slice 6 — the tick's own
 > dimension`** (the reviewer's correctness bug on PR #1643), `## Slice 5 — the crafter tiers`,
@@ -1857,3 +1860,164 @@ the `fits` run showed the `WireSource::Item` false-fail; renaming the variants c
 (`e8ce57d7…`, 128,647 B), and the README's slice-8 text (packed in the package) changed it again to
 the delivered pair above. Every in-game leg in the table was re-run on a game the launcher built
 from these bytes (`native-0a875da-129559a0b8f3`).
+
+## Slice 9 — the teleporter family (2026-11-24)
+
+**Chosen from the port's own gap list** — `## Slice 8 — the matter beamer` → `### Coverage after
+slice 8`, verbatim:
+
+> the matter transmitter/receiver/booster | not ported | the teleporter family, a later slice
+
+and the dispatch's Step-0 instruction to read `MatterTransmitterTileEntity`,
+`MatterReceiverTileEntity`, `MatterBoosterTileEntity` and the four links first. It fits the
+**machines** tier exactly: three blocks, two block entities with energy buffers and a server tick,
+no GUI, no renderer, no entity AI. **Pin** `0a875da…` / `e59da909…`, mod API `0.2`, game 26.3.
+**Version 0.2.8.**
+
+### The brief said a matter mover; the artefact says a player teleporter
+
+The dispatch proposed "two linked machines with matter in the sender … the sender's matter fell
+by exactly the transported amount and the receiver rose by it". Reading the jar shows that family
+does **not** exist in this mod: `MatterTransmitterTileEntity.tickServer` searches for a **player**
+in the beam above the block (`createBeamBox`, x..x+1 / y+1..y+3 / z..z+1), charges the dialed
+trip's RF over `calculateTime` ticks, and calls
+`TeleportationTools.performTeleport(player, dest, …)` — `Entity.teleport` to another dimension or
+`player.teleportTo` in the same one. `MatterReceiverTileEntity` is a **destination marker**: it
+registers a `GlobalPos` with the world's destination table and reports readiness (two clear blocks
+above, `rfPerTeleportReceiver` 5,000 FE). `MatterBoosterBlock` is a plain facing marker whose only
+effect is to make a teleport *boosted* (20,000 FE mitigates a weak receiver). The four links —
+`MatterTransmitterData`, `MatterReceiverData`, `TeleportDestination`, `TransmitterInfo` — are the
+records for the dial, the receiver id, the destination `GlobalPos` and a listed transmitter; none
+describes a matter buffer moving between machines. The artefact wins (a brief may not invent a
+mod's contents), so the fail-capable assertion is the **player's position**, not a matter amount.
+
+### The pin can express it (so this is not `blocked`)
+
+Measured against `ports/_shared/sdk/0a875da`, not the historical gap table: `PlayerRef::entity()`
+and `From<PlayerRef> for EntityRef`; `EntityRef::teleport_to` / `teleport_to_level(host, dimension,
+pos, rotation)` (the latter explicitly handles a cross-dimension player move); `LevelRef::
+entities_in` and `online_players`; `LevelsHost::list_levels` + `DimensionKey::id`. All three pieces
+the dispatch named as potential stop conditions exist: a cross-level lookup, a dimension transfer
+and a player query. The upstream console-command route is therefore **not** used — the teleport is
+the SDK's entity level transfer, not a faked chat `/tp`.
+
+### What it does
+
+- **The blocks.** `rftoolsutility:matter_transmitter` and `matter_receiver` on the full-cube
+  `minecraft:iron_block` template (their jar blockstates have a single empty variant) with the
+  jar's own models/textures (the `rftoolsbase:` base textures re-pointed into this namespace);
+  `matter_booster` on the same template (its six-way `facing` is cosmetic and dropped — a recorded
+  deviation). All three items, recipes, advancements and loot tables are carried from the jar.
+- **The transmitter.** A 200,000 FE buffer filling at 1,000 a call (`TRANSMITTER_MAXENERGY` /
+  `TRANSMITTER_RECEIVEPERTICK`), a dialed destination (dimension id + coordinate), a beam-box
+  player search, a charge/interrupt state machine and an 80-tick cooldown. The start cost and time
+  are upstream's exact formulas: same dimension `5,000 + 10·dist` FE (capped at 100,000) over
+  `5 + 10·dist/1000` ticks (capped at 50); another dimension a flat 100,000 FE / 50 ticks. The
+  start cost is amortized into the per-tick fee (`(cost + 500·(time+1))/(time+1)`, upstream's
+  `rfPerTick`). A player leaving the beam or a bad-tick threshold interrupts with no teleport.
+- **The teleport.** `EntityRef::teleport_to_level` to the dialed coordinate (+0.5 x/z, +1 y),
+  which is `Entity.teleport` across dimensions and `teleportTo` in the same one. An adjacent
+  booster with 20,000 FE is the `boosted` safety flag. The destination is dialed directly as a
+  `GlobalPos` — upstream's own fallback when a coordinate has no destination-table id — because
+  this port carries no dialing-device GUI or global destination registry.
+- **The receiver.** A 100,000 FE buffer filling at 500 a call; readiness is the two clear blocks
+  above plus 5,000 FE. Its energy and the transmitter's dial/trip state travel on their items as
+  `minecraft:block_entity_data` (upstream's `collectImplicitComponents`).
+- **The commands** (the harness, as upstream's controls are GUIs): `/rftoolsutility dial <pos>
+  <dim> <x> <y> <z>` (`none` clears), `transmitter <pos> [nonce]` and `receiver <pos> [nonce]`.
+
+### Red → green (unit, verbatim)
+
+Five rules were stubs behind their tests first (`runtime::tests::a_cross_dimension_…
+panicked at src/runtime.rs:837:5: not yet implemented`):
+
+```
+test runtime::tests::a_cross_dimension_dial_costs_one_hundred_thousand_and_fifty_ticks ... FAILED
+thread 'runtime::tests::a_cross_dimension_dial_costs_one_hundred_thousand_and_fifty_ticks' (154456) panicked at src/runtime.rs:837:5:
+not yet implemented
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 84 filtered out; finished in 0.00s
+```
+
+Green: **85 passed; 0 failed** (`sdk-test.log`) — 49 `runtime` tests (the new five: cross-dimension
+cost/time, local cost/time and cap, receiver readiness, the beam box, the charge tick) and 36 glue
+tests. fmt clean, clippy `-D warnings` 0 warnings (`sdk-clippy.log`).
+
+### Numbers and where they came from
+
+| Number | Value | Source |
+|---|---|---|
+| transmitter buffer / fill | 200,000 / 1,000 FE | `TeleportConfiguration.transmitterMaxRF` / `transmitterRFPerTick` |
+| receiver buffer / fill | 100,000 / 500 FE | `…receiverMaxRF` / `receiverRFPerTick` |
+| local start cost / time | 5,000 + 10·dist / 5 + 10·dist/1000 | `TeleportationTools.calculateRFCost` / `calculateTime` |
+| cross-dimension start cost / time | 100,000 FE / 50 ticks | `rfStartTeleportDim` / `timeTeleportBaseDim` |
+| per-tick / idle / receiver-ready | 500 / 10 / 5,000 FE | `rfTeleportPerTick`, `rfDialedConnectionPerTick`, `rfPerTeleportReceiver` |
+| boosted teleport | 20,000 FE | `rfBoostedTeleport` (adjacent booster) |
+| beam box | x..x+1, y+1..y+3, z..z+1 | `MatterTransmitterTileEntity.createBeamBox` |
+| cooldown on interrupt | 80 ticks | `clearTeleport(80)` |
+
+### Upstream defects fixed / deviations
+
+- **A refused/underpowered start is not half-paid.** Upstream's `startTeleportation` computes the
+  cost and the timer, then a shortage only sets an 80-tick cooldown; the port writes the trip state
+  only after the buffer covers the start cost. The per-tick `handleEnergyShortage` threshold is
+  the port's `bad·2 > total` rather than upstream's configurable `mustInterrupt`, a documented
+  simplification (no config file in this port).
+- **The dialing device, destination analyzer and GUI are not ported** (a menu and two more blocks):
+  `/rftoolsutility dial` writes the same `MatterTransmitterData.destination` the GUI would.
+- **No global destination registry / destination ids.** Upstream's `TeleportDestinations` maps a
+  `GlobalPos` to an id for the dialing device; the port dials the `GlobalPos` directly (upstream's
+  own fallback), so a receiver needs no id. The receiver's `name`/`private`/`players` fields are
+  not ported (the GUI that edits them is absent).
+- **No syringe, no infusing bonus, no beam renderer, no six-way booster facing** — the standing
+  gaps of the machines tier; the booster's `facing` is cosmetic.
+- The three carried recipes still need `rftoolsbase:machine_frame`, so the e2e gives the blocks.
+
+### Coverage after slice 9
+
+| family | status | evidence / why not |
+|---|---|---|
+| `rftoolsutility:matter_transmitter` | tested | AI: placed/read back, 0 FE / dial=none / idle |
+| `rftoolsutility:matter_receiver`, `matter_booster` | tested (content) | AI: both placed and read back; booster is a content-only adjacency marker |
+| the beam-box player search | tested | AI1: a player in the beam of an **undialed** transmitter is not moved (the control) |
+| the dial + cross-dimension-capable teleport | tested | AI2: a dialed transmitter moves the player from the beam to the receiver coordinate; `SELFTEST_AT=teleport` inverts it |
+| the start cost / time, the charge and the interrupt | unit-tested | five new `runtime` rules; the in-game leg asserts the arrival, not the intermediate FE |
+| the carried content (items, recipes, advancements, loot tables, tags) | carried | regenerated deterministically by `tools/assemble_content.py`; the recipes need `rftoolsbase:machine_frame` as every machine's do |
+| the dialing device, destination GUI, syringe, infusing bonus, beam renderer, six-way facing | not ported | a menu, more blocks, `rftoolsbase`'s infusable path and a renderer — outside this tier's slice |
+
+### Measured traps this slice cost
+
+1. **A `word` command argument cannot hold a dimension id.** The SDK's `CommandArgumentKind::
+   Word` is ASCII letters/digits plus `_ - . +`; `minecraft:the_end` stopped at the `:` and the
+   dispatcher answered *"Expected whitespace to end one argument, but found trailing data"*.
+   `dial` now uses `<dim:id>` (which the glue already accepted alongside `String`).
+2. **`set_energy` named only the older machines.** A `rftoolsutility energy` on a transmitter
+   answered *"No machine there."* until the helper gained a `transmitter_at` branch with
+   [`TRANSMITTER_CAPACITY`]. Fixed and recompiled before the final build.
+3. **`try_place` does not give the item.** The first in-game run failed with *"no
+   rftoolsutility:matter_transmitter in the inventory"*; a fresh machine must use `place_block`
+   (which calls `hold` → `/item replace`). The booster also needs a clear placement face — placing
+   it beside the transmitter put the latter between the player and the target.
+4. **Bash arithmetic rejects `0.5`.** The selftest's inversion used `$((TX_Z + 0.5))` and errored
+   without failing the leg; it now writes the half-block as a string (`$TX_Z.5`).
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+- `rftoolsutility.hmod` — **147,852 B**, SHA-256 `60b0204474fda391b15947f1c44a8812ada6710dd9281fa7ed9836e98fbf317d`, version **0.2.8**, no packed `Cargo.lock`.
+- Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical.
+- `check` green (`native-1/0a875da…/e59da909…, for 26.3`); `fits --build 0a875da` → `made for`; `fits --build 0b14f8a` → `fits`.
+- `verify-sdk-package.py rftoolsutility` → **1/1** (package matches the tree, R9, skills gate).
+- The launcher's `native-build` compiled the mod (`Compiling rftoolsutility (1 of 1)`,
+  `native-0a875da-8356e2011e25`) for the in-game legs.
+- In game (`tools/e2e-teleporter.sh`, a focused leg that reuses `e2e.sh`'s helpers; the full A–AH
+  script is green on these bytes too): **PASS**, `EXIT:0` — AI (0 FE / dial=none / idle on all three
+  blocks), AI1 (an undialed transmitter with a player in its beam moves nothing — the control),
+  AI2 (`dial` to `minecraft:the_end@[203,101,12]`, the player leaves the beam at
+  `203.5,102.0,8.5` and arrives at `203.5,102.0,12.5`; the readout reads
+  `energy=186600/200000 … dial=minecraft:the_end@[203,101,12] state=cooldown`).
+  `CONTROL=1` → **FAIL: Unknown item 'rftoolsutility:matter_transmitter'**, `EXIT:1` (unmodded
+  Nightly). `SELFTEST=1 SELFTEST_AT=teleport` → **FAIL: the player left the beam for
+  `203.5,102.0,12.5`, expected it to stay at z=8.5**, `EXIT:1` — the inverted assertion proves the
+  arrival can fail. `check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=41 ok=41
+  missing-exit=0 bad-exit=0`.

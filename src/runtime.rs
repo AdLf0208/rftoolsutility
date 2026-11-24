@@ -788,6 +788,108 @@ pub fn beam_due(game_time: i64) -> bool {
     game_time.rem_euclid(BEAM_TICKTIME) == 0
 }
 
+// ---------------------------------------------------------------------------
+// Slice 9: the matter transmitter / receiver / booster (the teleporter family)
+// ---------------------------------------------------------------------------
+
+/// `TeleportConfiguration.TRANSMITTER_MAXENERGY`: the transmitter's buffer.
+pub const TRANSMITTER_CAPACITY: i32 = 200_000;
+/// `TeleportConfiguration.TRANSMITTER_RECEIVEPERTICK`: the most a fill call may add.
+pub const TRANSMITTER_RECEIVE: i32 = 1_000;
+/// `TeleportConfiguration.RECEIVER_MAXENERGY`: the receiver's buffer.
+pub const RECEIVER_CAPACITY: i32 = 100_000;
+/// `TeleportConfiguration.RECEIVER_RECEIVEPERTICK`.
+pub const RECEIVER_RECEIVE: i32 = 500;
+/// `rfDialedConnectionPerTick`: what a dialed-but-idle transmitter burns each tick.
+pub const DIAL_IDLE_RF: i32 = 10;
+/// `rfStartTeleportLocal`: the base start cost of a teleport in one dimension.
+pub const START_LOCAL_RF: i32 = 5_000;
+/// `rfStartTeleportDim`: the flat start cost of a cross-dimension teleport, and the cap on a
+/// local one's distance term.
+pub const START_DIM_RF: i32 = 100_000;
+/// `rfStartTeleportDist`: the RF per block of a local teleport.
+pub const START_DIST_RF: i32 = 10;
+/// `rfTeleportPerTick`: what each in-transit tick costs.
+pub const RF_PER_TICK: i32 = 500;
+/// `rfPerTeleportReceiver`: the power a receiver needs to be ready (`MatterReceiverTileEntity.checkStatus`).
+pub const RECEIVER_MIN_RF: i32 = 5_000;
+/// `rfBoostedTeleport`: the extra cost of a boosted (adjacent-matter-booster) teleport.
+pub const BOOST_RF: i32 = 20_000;
+/// `timeTeleportBaseLocal`: base ticks of an in-dimension teleport.
+pub const TIME_LOCAL: i32 = 5;
+/// `timeTeleportBaseDim`: ticks of a cross-dimension teleport.
+pub const TIME_DIM: i32 = 50;
+/// `timeTeleportDist`: the divisor of the local distance term (`dist * TIME_DIST / 1000`).
+pub const TIME_DIST: i32 = 10;
+
+/// A dialed destination: the dimension id and the receiver block coordinate
+/// (`TeleportDestination` — a `GlobalPos` and its name/access data).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Destination {
+    pub dimension: String,
+    pub pos: [i32; 3],
+}
+
+/// The start cost (`TeleportationTools.calculateRFCost`): a flat [`START_DIM_RF`] across
+/// dimensions; in one dimension `START_LOCAL_RF + START_DIST_RF * dist`, capped at `START_DIM_RF`.
+#[must_use]
+pub fn start_cost(from: [i32; 3], to: [i32; 3], same_dim: bool) -> i32 {
+    if !same_dim {
+        return START_DIM_RF;
+    }
+    let dist = distance(from, to);
+    (START_LOCAL_RF + START_DIST_RF * dist as i32).min(START_DIM_RF)
+}
+
+/// `Vec3.distanceTo` of two block coordinates, truncated as upstream casts it to `int`.
+fn distance(from: [i32; 3], to: [i32; 3]) -> f64 {
+    let square: f64 = (0..3)
+        .map(|axis| {
+            let delta = f64::from(to[axis]) - f64::from(from[axis]);
+            delta * delta
+        })
+        .sum();
+    square.sqrt()
+}
+
+/// The teleport duration in ticks (`TeleportationTools.calculateTime`): [`TIME_DIM`] across
+/// dimensions; in one dimension `TIME_LOCAL + TIME_DIST * dist / 1000`, capped at `TIME_DIM`.
+#[must_use]
+pub fn start_time(from: [i32; 3], to: [i32; 3], same_dim: bool) -> i32 {
+    if !same_dim {
+        return TIME_DIM;
+    }
+    let dist = distance(from, to) as i32;
+    (TIME_LOCAL + TIME_DIST * dist / 1_000).min(TIME_DIM)
+}
+
+/// A receiver is ready when the two blocks above it are clear and its buffer holds at least
+/// [`RECEIVER_MIN_RF`] (`MatterReceiverTileEntity.checkStatus`).
+#[must_use]
+pub fn receiver_ready(clear_above: bool, energy: i32) -> bool {
+    clear_above && energy >= RECEIVER_MIN_RF
+}
+
+/// Whether a player's feet are inside the transmitter's beam
+/// (`MatterTransmitterTileEntity.createBeamBox`: x..x+1, y+1..y+3, z..z+1).
+#[must_use]
+pub fn in_beam(block: [i32; 3], feet: [f64; 3]) -> bool {
+    let [x, y, z] = block.map(f64::from);
+    feet[0] >= x
+        && feet[0] < x + 1.0
+        && feet[1] >= y + 1.0
+        && feet[1] < y + 3.0
+        && feet[2] >= z
+        && feet[2] < z + 1.0
+}
+
+/// Charge one in-transit tick: `Some(left)` when the buffer covers [`RF_PER_TICK`], `None`
+/// when it is short (upstream's `handleEnergyShortage`).
+#[must_use]
+pub fn charge_tick(energy: i32) -> Option<i32> {
+    (energy >= RF_PER_TICK).then_some(energy - RF_PER_TICK)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1748,5 +1850,65 @@ mod tests {
         assert!(!beam_due(BEAM_TICKTIME - 1));
         assert!(!beam_due(BEAM_TICKTIME + 1));
         assert_eq!(BEAM_TICKTIME, 20, "MatterBeamerTileEntity.TICKTIME");
+    }
+
+    // ---- slice 9: the teleporter family ----
+
+    #[test]
+    fn a_cross_dimension_dial_costs_one_hundred_thousand_and_fifty_ticks() {
+        let from = [200, 101, -12];
+        let to = [200, 64, 8];
+        assert_eq!(start_cost(from, to, false), 100_000, "rfStartTeleportDim");
+        assert_eq!(start_time(from, to, false), 50, "timeTeleportBaseDim");
+        // The distance must be ignored across dimensions.
+        assert_eq!(
+            start_cost(from, [0, 0, 0], false),
+            start_cost(from, to, false)
+        );
+    }
+
+    #[test]
+    fn a_local_dial_costs_distance_and_is_capped() {
+        let from = [0, 0, 0];
+        // dist 10 -> 5000 + 10*10 = 5100 RF, 5 + 10*10/1000 = 5 ticks.
+        assert_eq!(start_cost(from, [10, 0, 0], true), 5_100);
+        assert_eq!(start_time(from, [10, 0, 0], true), 5);
+        // A far local dial is capped at the cross-dimension values.
+        assert_eq!(start_cost(from, [20_000, 0, 0], true), START_DIM_RF);
+        assert_eq!(start_time(from, [20_000, 0, 0], true), TIME_DIM);
+        // A diagonal uses the euclidean distance ( Vec3.distanceTo ).
+        assert_eq!(start_cost([0, 0, 0], [3, 4, 0], true), 5_050);
+    }
+
+    #[test]
+    fn a_receiver_needs_clear_space_and_power() {
+        assert!(receiver_ready(true, 5_000));
+        assert!(receiver_ready(true, 50_000));
+        assert!(
+            !receiver_ready(false, 50_000),
+            "a blocked receiver is not ready"
+        );
+        assert!(!receiver_ready(true, 4_999), "one FE short is not ready");
+        assert_eq!(RECEIVER_MIN_RF, 5_000);
+    }
+
+    #[test]
+    fn the_beam_covers_the_two_blocks_above_the_transmitter() {
+        let block = [200, 101, -12];
+        // Feet inside the box (x in 200..201, y in 102..104, z in -12..-11).
+        assert!(in_beam(block, [200.5, 102.0, -11.5]));
+        assert!(in_beam(block, [200.5, 103.5, -11.5]));
+        // Above and beside the box are outside.
+        assert!(!in_beam(block, [200.5, 104.5, -11.5]));
+        assert!(!in_beam(block, [201.5, 102.5, -11.5]));
+        assert!(!in_beam(block, [200.5, 101.0, -11.5]));
+    }
+
+    #[test]
+    fn charging_pays_the_fee_and_refuses_when_short() {
+        assert_eq!(charge_tick(1_000), Some(500));
+        assert_eq!(charge_tick(500), Some(0));
+        assert_eq!(charge_tick(499), None, "one FE short does not pay");
+        assert_eq!(RF_PER_TICK, 500);
     }
 }

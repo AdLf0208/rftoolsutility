@@ -1527,4 +1527,74 @@ expect_beamer_energy 800
 expect_sent 6
 echo "  the placed beamer still sends to $B_DEST with $B_SLOT and $B_ENERGY FE"
 
+# ---- slice 9: the matter transmitter / receiver / booster -----------------------
+TRANSMITTER_BLOCK=rftoolsutility:matter_transmitter
+RECEIVER_BLOCK=rftoolsutility:matter_receiver
+TX_X=203; TX_Y=101; TX_Z=8
+RX_X=203; RX_Y=101; RX_Z=12
+
+transmitter() { # transmitter X Y Z  -> T_DIAL T_ENERGY T_STATE
+    NONCE=$((NONCE + 1))
+    control transmitter "$1" "$2" "$3" "$NONCE"
+    local line="$REPLY"
+    T_ENERGY=$(echo "$line" | sed -n 's/.*energy=\([0-9]*\)\/200000.*/\1/p')
+    T_DIAL=$(echo "$line" | sed -n 's/.*dial=\([^ ]*\).*/\1/p')
+    T_STATE=$(echo "$line" | sed -n 's/.*state=\([^ ]*\).*/\1/p')
+}
+set_dial() { control dial "$@"; }
+player_dim() { ctl state | jq -r '.dimension // empty'; }
+player_raw() { ctl state | jq -r '.player.position | @csv'; }
+expect_arrived() { # expect_arrived DIM X Y Z
+    [ "$P_DIM" = "$1" ] || fail "the player is in '$P_DIM', expected '$1'"
+    # Compare the arrival coordinate within one block (the teleport lands at block+0.5/+1).
+    local px py pz
+    px=$(echo "$P_POS" | cut -d, -f1 | tr -d '"')
+    py=$(echo "$P_POS" | cut -d, -f2 | tr -d '"')
+    pz=$(echo "$P_POS" | cut -d, -f3 | tr -d '"')
+    awk -v a="$px" -v b="$2" -v c="$py" -v d="$3" -v e="$pz" -v f="$4" \
+        'BEGIN{ if ((a-b)<-0.75||(a-b)>0.75||(c-d)<-0.75||(c-d)>0.75||(e-f)<-0.75||(e-f)>0.75) exit 1 }' \
+        || fail "the player landed at $P_POS, expected near [$2,$3,$4]"
+}
+
+echo "== AI: a transmitter and a receiver placed from their items read empty and idle =="
+ctl command "gamemode creative" >/dev/null
+ctl wait 6 >/dev/null
+ctl command "execute in minecraft:the_end run setblock $TX_X $TX_Y $TX_Z minecraft:air" >/dev/null
+ctl command "execute in minecraft:the_end run setblock $RX_X $RX_Y $RX_Z minecraft:air" >/dev/null
+place_block "$TRANSMITTER_BLOCK" "$TX_X" "$TX_Y" "$TX_Z"
+place_block "$RECEIVER_BLOCK" "$RX_X" "$RX_Y" "$RX_Z"
+ctl wait 8 >/dev/null
+[ "$(block_name "$TX_X" "$TX_Y" "$TX_Z")" = "$TRANSMITTER_BLOCK" ] || fail "the transmitter did not place"
+[ "$(block_name "$RX_X" "$RX_Y" "$RX_Z")" = "$RECEIVER_BLOCK" ] || fail "the receiver did not place"
+transmitter "$TX_X" "$TX_Y" "$TX_Z"
+[ "$T_ENERGY" = "0" ] || fail "a fresh transmitter holds $T_ENERGY FE, expected 0"
+[ "$T_DIAL" = "none" ] || fail "a fresh transmitter is dialed to $T_DIAL, expected none"
+[ "$T_STATE" = "idle" ] || fail "a fresh transmitter is $T_STATE, expected idle"
+echo "  $REPLY"
+
+echo "== AI1: standing in the beam of an undialed transmitter moves nothing (the control) =="
+set_energy "$TX_X" "$TX_Y" "$TX_Z" 200000
+ctl command "execute in minecraft:the_end run tp @s $TX_X.5 $((TX_Y + 1)) $TX_Z.5" >/dev/null
+ctl wait 60 >/dev/null
+P_DIM=$(player_dim); P_POS=$(player_raw)
+echo "  undialed: dimension=$P_DIM position=$P_POS"
+expect_arrived minecraft:the_end "$TX_X.5" "$((TX_Y + 1))" "$TX_Z.5"
+
+echo "== AI2: dialing the transmitter to the receiver teleports the player to it =="
+set_dial "$TX_X" "$TX_Y" "$TX_Z" minecraft:the_end "$RX_X" "$RX_Y" "$RX_Z"
+ctl command "execute in minecraft:the_end run tp @s $TX_X.5 $((TX_Y + 1)) $TX_Z.5" >/dev/null
+ctl wait 80 >/dev/null
+P_DIM=$(player_dim); P_POS=$(player_raw)
+echo "  dialed: dimension=$P_DIM position=$P_POS"
+if [ "${SELFTEST:-0}" = 1 ] && [ "${SELFTEST_AT:-}" = teleport ]; then
+    # Invert the assertion: the player must NOT have moved for this leg to pass.
+    if awk -v p="$(echo "$P_POS" | cut -d, -f3 | tr -d '"')" -v s="$((TX_Z + 0.5))" \
+        'BEGIN{ d=p-s; if(d<0)d=-d; exit (d<0.75) }'; then
+        fail "SELFTEST teleport: the player was still in the beam, expected a teleport to z=$RX_Z"
+    fi
+fi
+expect_arrived minecraft:the_end "$RX_X.5" "$((RX_Y + 1))" "$RX_Z.5"
+transmitter "$TX_X" "$TX_Y" "$TX_Z"
+echo "  after the teleport the transmitter reads $REPLY"
+
 echo "PASS: a fresh tank is empty (level 0); a water bucket fills exactly 1,000 mB, swaps the hand to an empty bucket and raises the block's level to 1; an empty bucket drains exactly 1,000 mB back and restores the water bucket and level 0; at 31,500 mB one more bucket does not fit; the capacity is exactly 32,000 mB; a lava bucket is refused by a water tank; an empty bucket on an empty tank does nothing; the same click fills a vanilla cauldron (so the click path works); 5,000 mB of water survive save + relaunch with the level re-mirrored to 2; a broken 5,000 mB tank drops one tank whose item carries minecraft:block_entity_data with that water, and placing that item restores a 5,000 mB tank at level 2; an empty tank's item carries no block-entity data and places back empty; an item doctored to 99,999 mB places a tank clamped to the 32,000 mB capacity; a crafter placed from its item is empty and knows no recipe; a recipe is taught from the engine's crafting table while a fifth slot and a smelting recipe are refused; no energy crafts nothing; 5,000 FE and three logs become twelve planks for exactly 300 FE; an input the recipe does not take is left alone; a full output buffer refuses the operation without consuming or spending; chained crafting in int mode turns four logs into four crafting tables for 400 FE; a broken crafter keeps its recipes, buffer and energy on its own item, which placing back restores; its loot is gated by the iron-tool tag, so a wooden pickaxe drops nothing and an iron one drops it; a spawner placed from its item knows no mob, holds no FE and no matter, and 70 mob recipes are in force; a mob no recipe names is refused while minecraft:zombie is set from its own 800 FE recipe with its own matter amounts; with no energy it spawns nothing; with no energy it spawns nothing, and 800 FE with the three matter stores empty spawns nothing and keeps its 800 FE (the matter gate); one matter type one unit short spawns nothing and spends nothing; exactly the recipe's 0.1/0.2/20 and its 800 FE spawn exactly one zombie within 5 blocks and leave 0 FE and empty stores; a surplus of 1.1/1.2/21 spawns one more and leaves exactly 1 in every store (each short by its own amount), and re-setting the same mob keeps them; minecraft:blaze costs its own 1,000 FE and its own 0.1/0.5/30 matter and spawns one blaze, and setting a new mob clears the previous mob's matter; a broken spawner's item carries its mob, its numbers and its matter, which placing it back restores; a crafter3 keeps eight taught recipes and, stocked for eight cycles and charged 800 FE, runs exactly eight cycles with all eight products (0 FE left); a crafter2 keeps four recipes and refuses a fifth; the same eight teaches and the same stock on a crafter1 stop at its two recipes and craft only their two products; a broken crafter3's item carries all eight recipes in minecraft:block_entity_data, which placing it back keeps; and with the same crafter and spawner at the same x,y,z in the End and the Overworld, only the fed End pair acts — twelve planks for 300 FE and one zombie at its own spawn point for its FE and its matter — while the unfed Overworld twin keeps its buffer, its energy, its matter and its spawn point empty; a matter beamer placed from its item is unlinked, empty and dark, a link must name a spawner within eight blocks and its own position unlinks it, 4,000 FE and eight rotten flesh are two sends of 2,000 FE each into the zombie recipe's first store (6 left, 2,0,0), dirt feeds the second (2,2,0), the living beef feeds the third at its 1.5 yield (2,2,3), a material the recipe does not take and a machine at 0 FE and an unpowered machine and an empty slot all send nothing, and a broken beamer's item carries its destination, its material and its energy back"

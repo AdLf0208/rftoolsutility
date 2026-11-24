@@ -29,12 +29,14 @@ use std::sync::{Mutex, OnceLock};
 pub mod runtime;
 
 use runtime::{
-    AVERAGE_YIELD, BEAMER_CAPACITY, BEAMER_RECEIVE, BUCKET, BUFFER_IN, BUFFER_IN_SLOTS, BUFFER_OUT,
-    BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY, CRAFTER_RECEIVE, CRAFTER_SLOTS, Click, CraftMode,
-    CrafterTier, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, LOW_YIELD, MATTER_STORAGE,
-    MAX_BEAM_DISTANCE, MatterSource, MobRecipe, SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, Tank,
-    add_matter, beam_due, beam_reach, beam_send, bucket_click, carried, clamped, fill_level,
-    placements, plan, recipe_for, result_range, spawn_at, spawn_cycle, spend, steps,
+    AVERAGE_YIELD, BEAMER_CAPACITY, BEAMER_RECEIVE, BOOST_RF, BUCKET, BUFFER_IN, BUFFER_IN_SLOTS,
+    BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY, CRAFTER_RECEIVE, CRAFTER_SLOTS,
+    Click, CraftMode, CrafterTier, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, LOW_YIELD,
+    MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe, RECEIVER_CAPACITY,
+    RECEIVER_RECEIVE, RF_PER_TICK, SPAWNER_CAPACITY, SPAWNER_RECEIVE, Speed, TRANSMITTER_CAPACITY,
+    TRANSMITTER_RECEIVE, Tank, add_matter, beam_due, beam_reach, beam_send, bucket_click, carried,
+    clamped, fill_level, in_beam, placements, plan, receiver_ready, recipe_for, result_range,
+    spawn_at, spawn_cycle, spend, start_cost, start_time, steps,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -137,6 +139,41 @@ const LOW_YIELD_TAG: &str = "rftoolsutility:living/lowyield";
 
 /// A beamer's item, resolved once in `register` for the same reason as the tank's.
 static BEAMER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// The teleporter family (slice 9): matter transmitter / receiver / booster
+// ---------------------------------------------------------------------------
+
+/// `TeleporterModule.MATTER_TRANSMITTER`: the player teleporter's block and item.
+const TRANSMITTER: &str = "rftoolsutility:matter_transmitter";
+const TRANSMITTER_TYPE: &str = "matter_transmitter";
+const TRANSMITTER_TYPE_ID: &str = "rftoolsutility:matter_transmitter";
+/// `TeleporterModule.MATTER_RECEIVER`: the destination marker's block and item.
+const RECEIVER: &str = "rftoolsutility:matter_receiver";
+const RECEIVER_TYPE: &str = "matter_receiver";
+const RECEIVER_TYPE_ID: &str = "rftoolsutility:matter_receiver";
+/// `TeleporterModule.MATTER_BOOSTER`: the adjacent safety marker (a plain block).
+const BOOSTER: &str = "rftoolsutility:matter_booster";
+/// The dialed destination's dimension id and block coordinate (`MatterTransmitterData.destinationId`
+/// is replaced by the direct `TeleportDestination`, upstream's own fallback when the coordinate
+/// has no registry id — this port has no dialing-device GUI or global destination registry).
+const KEY_DIAL_DIM: &str = "dial_dim";
+const KEY_DIAL_POS: &str = "dial_pos";
+/// The transmitter's in-progress teleport (`MatterTransmitterTileEntity`): the player's UUID, the
+/// ticks left, the cooldown, the good/bad/total tick counts and the per-tick RF the start cost was
+/// amortized into.
+const KEY_TP_PLAYER: &str = "tpPlayer";
+const KEY_TP_TIMER: &str = "tpTimer";
+const KEY_COOLDOWN: &str = "cooldownTimer";
+const KEY_TOTAL: &str = "totalTicks";
+const KEY_GOOD: &str = "goodTicks";
+const KEY_BAD: &str = "badTicks";
+const KEY_RFPT: &str = "rfPerTick";
+
+/// The transmitter's and receiver's items, resolved in `register` for `block_drops` (which has no
+/// game host) as the other machines' items are.
+static TRANSMITTER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+static RECEIVER_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -1365,6 +1402,305 @@ impl BlockEntityPart for BeamerPart {
 }
 
 // ---------------------------------------------------------------------------
+// The teleporter family (slice 9)
+// ---------------------------------------------------------------------------
+
+/// A matter transmitter at `pos`, when the block there is ours.
+fn transmitter_at(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> Option<BlockEntityRef> {
+    machine_at(host, level, pos, TRANSMITTER)
+}
+
+/// Clear an in-progress teleport and set the cooldown (`MatterTransmitterTileEntity.clearTeleport`).
+fn clear_teleport(nbt: &mut Compound, cooldown: i32) {
+    remove(nbt, KEY_TP_PLAYER);
+    write_int(nbt, KEY_TP_TIMER, 0);
+    write_int(nbt, KEY_COOLDOWN, cooldown.max(0));
+    write_int(nbt, KEY_GOOD, 0);
+    write_int(nbt, KEY_BAD, 0);
+    write_int(nbt, KEY_TOTAL, 0);
+}
+
+/// Whether a matter booster stands next to `pos` (`DialingDeviceTileEntity.isMatterBoosterAvailable`).
+fn booster_adjacent(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> bool {
+    const AROUND: [[i32; 3]; 6] = [
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+    ];
+    AROUND.iter().any(|off| {
+        let at = [pos[0] + off[0], pos[1] + off[1], pos[2] + off[2]];
+        level.block(host, at).is_some_and(|b| b.id(host) == BOOSTER)
+    })
+}
+
+/// The level whose dimension id is `dim` (the destination's level may not be the tick's own).
+fn level_of(host: &dyn ServerHost, dim: &str) -> Option<LevelRef> {
+    host.levels()
+        .list_levels()
+        .into_iter()
+        .find(|level| level.dimension().id(&*host).as_deref() == Some(dim))
+}
+
+/// A receiver is ready to receive at `pos`: two clear blocks above and enough stored power
+/// (`MatterReceiverTileEntity.checkStatus`, via the pure [`runtime::receiver_ready`]).
+fn receiver_status(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> bool {
+    let clear = [1, 2].iter().all(|up| {
+        level
+            .block(host, [pos[0], pos[1] + up, pos[2]])
+            .is_some_and(|b| {
+                matches!(
+                    b.id(host).as_str(),
+                    "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
+                )
+            })
+    });
+    let energy = host
+        .block_entity(level, pos)
+        .and_then(|entity| entity.data(host))
+        .map_or(0, |data| read_int(&data, KEY_ENERGY));
+    receiver_ready(clear, energy)
+}
+
+/// The receiver's readout: its position, dimension, readiness and buffer.
+fn receiver_readout(pos: [i32; 3], data: &Compound, ready: bool, nonce: Option<&str>) -> String {
+    let energy = read_int(data, KEY_ENERGY).clamp(0, RECEIVER_CAPACITY);
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: receiver at {pos:?}: energy={energy}/{RECEIVER_CAPACITY} ready={ready}{suffix}"
+    )
+}
+
+/// The transmitter's readout: its dial, buffer and teleport state.
+fn transmitter_readout(pos: [i32; 3], data: &Compound, nonce: Option<&str>) -> String {
+    let energy = read_int(data, KEY_ENERGY).clamp(0, TRANSMITTER_CAPACITY);
+    let dial = match (read_text(data, KEY_DIAL_DIM), read_pos(data, KEY_DIAL_POS)) {
+        (Some(dim), Some(pos)) => format!("{dim}@{pos:?}"),
+        _ => "none".to_owned(),
+    };
+    let state = if read_text(data, KEY_TP_PLAYER).is_some() {
+        format!("teleporting timer={}", read_int(data, KEY_TP_TIMER).max(0))
+    } else if read_int(data, KEY_COOLDOWN) > 0 {
+        "cooldown".to_owned()
+    } else {
+        "idle".to_owned()
+    };
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: transmitter at {pos:?}: energy={energy}/{TRANSMITTER_CAPACITY} dial={dial} state={state}{suffix}"
+    )
+}
+
+/// `/rftoolsutility dial <pos> <dim> <x> <y> <z>`: what the dialing device writes into the
+/// transmitter's `MatterTransmitterData.destination` (the GUI's job upstream; this port has no
+/// GUI). A dimension of `none` clears the dial.
+fn dial_transmitter(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    dim: &str,
+    dest: [i32; 3],
+) -> String {
+    let Some(entity) = transmitter_at(&*host, level, pos) else {
+        return "/rftoolsutility: no matter transmitter there.".to_owned();
+    };
+    let Some(mut data) = entity.data(&*host) else {
+        return "/rftoolsutility: no matter transmitter there.".to_owned();
+    };
+    if dim == "none" {
+        remove(&mut data, KEY_DIAL_DIM);
+        remove(&mut data, KEY_DIAL_POS);
+        clear_teleport(&mut data, 0);
+    } else {
+        // Upstream resolves a GlobalPos: the destination dimension must be a loaded level.
+        if level_of(&*host, dim).is_none() {
+            return format!("/rftoolsutility: unknown destination dimension {dim}.");
+        }
+        write_text(&mut data, KEY_DIAL_DIM, dim);
+        write_pos(&mut data, KEY_DIAL_POS, dest);
+        clear_teleport(&mut data, 0);
+    }
+    if entity.replace_data(host, data).is_err() {
+        return "/rftoolsutility: no matter transmitter there.".to_owned();
+    }
+    format!("/rftoolsutility: the transmitter at {pos:?} is dialed to {dim}@{dest:?}.")
+}
+
+/// One server tick of the matter transmitter (`MatterTransmitterTileEntity.tickServer`): while
+/// dialed, a player standing in the beam is found, charged per tick, and finally moved to the
+/// dialed dimension and coordinate. A lost player, a moved player or a power failure interrupts
+/// the teleport with a cooldown; everything is paid only when the tick succeeds.
+fn transmitter_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let Some(level) = ticking_level(&*host) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    let nbt = &mut event.entity.nbt;
+    let (Some(dim), Some(dest)) = (read_text(nbt, KEY_DIAL_DIM), read_pos(nbt, KEY_DIAL_POS))
+    else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    let cooldown = read_int(nbt, KEY_COOLDOWN);
+    if cooldown > 0 {
+        write_int(nbt, KEY_COOLDOWN, cooldown - 1);
+        return;
+    }
+
+    if let Some(uuid_text) = read_text(nbt, KEY_TP_PLAYER) {
+        let Ok(uuid) = uuid_text.parse::<u128>() else {
+            clear_teleport(nbt, 80);
+            return;
+        };
+        let Some(player) = host.player(uuid) else {
+            clear_teleport(nbt, 80);
+            return;
+        };
+        let in_beam_now = player
+            .entity()
+            .position(&*host)
+            .is_some_and(|feet| in_beam(pos, feet));
+        if !in_beam_now {
+            // `isPlayerOutsideBeam`: leaving the beam interrupts the teleport.
+            clear_teleport(nbt, 80);
+            return;
+        }
+        let energy = read_int(nbt, KEY_ENERGY).clamp(0, TRANSMITTER_CAPACITY);
+        let fee = read_int(nbt, KEY_RFPT).clamp(RF_PER_TICK, i32::MAX);
+        let Some(left) = (energy >= fee).then_some(energy - fee) else {
+            // `handleEnergyShortage`: a bad tick; too many interrupt.
+            let bad = read_int(nbt, KEY_BAD).saturating_add(1);
+            let total = read_int(nbt, KEY_TOTAL).max(1);
+            write_int(nbt, KEY_BAD, bad);
+            if bad * 2 > total {
+                clear_teleport(nbt, 200);
+            }
+            return;
+        };
+        write_int(nbt, KEY_ENERGY, left);
+        write_int(nbt, KEY_GOOD, read_int(nbt, KEY_GOOD).saturating_add(1));
+        let timer = read_int(nbt, KEY_TP_TIMER) - 1;
+        if timer > 0 {
+            write_int(nbt, KEY_TP_TIMER, timer);
+            return;
+        }
+        // `performTeleport`: move the player to the dialed coordinate. A cross-dimension move
+        // uses `Entity.teleport` (the SDK's `teleport_to_level`), the same-level one `teleportTo`.
+        let player_entity = player.entity();
+        let target = [
+            f64::from(dest[0]) + 0.5,
+            f64::from(dest[1]) + 1.0,
+            f64::from(dest[2]) + 0.5,
+        ];
+        let moved = player_entity.teleport_to_level(host, &dim, target, None);
+        // A booster plus 20,000 FE mitigates an unpowered receiver (upstream's `boosted` flag).
+        if booster_adjacent(&*host, level, pos) && read_int(nbt, KEY_ENERGY) >= BOOST_RF {
+            write_int(nbt, KEY_ENERGY, read_int(nbt, KEY_ENERGY) - BOOST_RF);
+        }
+        let _ = moved;
+        clear_teleport(nbt, 80);
+        return;
+    }
+
+    // No player in transit: look for one standing in the beam above this transmitter.
+    let Some(players) = level.online_players(&*host) else {
+        *event.reply = BlockEntityTickReply::Unchanged;
+        return;
+    };
+    for player in players {
+        let Some(feet) = player.entity().position(&*host) else {
+            continue;
+        };
+        if !in_beam(pos, feet) {
+            continue;
+        }
+        let same_dim = player
+            .dimension(&*host)
+            .is_some_and(|found| found.to_string() == dim);
+        let cost = start_cost(pos, dest, same_dim);
+        let time = start_time(pos, dest, same_dim).max(1);
+        let energy = read_int(nbt, KEY_ENERGY).clamp(0, TRANSMITTER_CAPACITY);
+        if energy < cost {
+            // `startTeleportation`: not enough power to begin.
+            write_int(nbt, KEY_COOLDOWN, 80);
+            return;
+        }
+        // Upstream amortizes the start cost into the per-tick fee (`rfPerTick`).
+        let fee = (cost + RF_PER_TICK * (time + 1)) / (time + 1);
+        write_text(nbt, KEY_TP_PLAYER, &player.uuid().to_string());
+        write_int(nbt, KEY_TP_TIMER, time);
+        write_int(nbt, KEY_TOTAL, time);
+        write_int(nbt, KEY_GOOD, 0);
+        write_int(nbt, KEY_BAD, 0);
+        write_int(nbt, KEY_RFPT, fee);
+        return;
+    }
+}
+
+/// The transmitter's energy domain (`GenericEnergyStorage(this, true, 200,000, 1,000)`): a fill
+/// only, on every face.
+fn transmitter_energy() -> ModEnergyBuffer {
+    ModEnergyBuffer {
+        capacity: TRANSMITTER_CAPACITY,
+        max_insert: TRANSMITTER_RECEIVE,
+        max_extract: 0,
+        insert_faces: [true; 6],
+        extract_faces: [false; 6],
+    }
+}
+
+/// The receiver's energy domain (`GenericEnergyStorage(this, true, 100,000, 500)`): a fill only.
+fn receiver_energy() -> ModEnergyBuffer {
+    ModEnergyBuffer {
+        capacity: RECEIVER_CAPACITY,
+        max_insert: RECEIVER_RECEIVE,
+        max_extract: 0,
+        insert_faces: [true; 6],
+        extract_faces: [false; 6],
+    }
+}
+
+/// The transmitter's block entity and its server tick.
+struct TransmitterPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for TransmitterPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for TransmitterPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        transmitter_tick(host, event);
+    }
+}
+
+/// The receiver's block entity: it registers itself as a destination on its first tick
+/// (`MatterReceiverTileEntity.tickServer`), which for this port is its readiness the harness reads.
+struct ReceiverPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for ReceiverPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for ReceiverPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, _host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        // The receiver's state is its saved compound (read by the readout and the transmitter's
+        // destination check); no per-tick payload is written, so it never dirties the chunk.
+        *event.reply = BlockEntityTickReply::Unchanged;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Reading the world
 // ---------------------------------------------------------------------------
 
@@ -1680,6 +2016,37 @@ impl Hooks for Mod {
         }
         r.block_container(&beamer, beamer_container());
         r.block_energy(&beamer, beamer_energy());
+
+        // Slice 9: the teleporter family. The transmitter and receiver each carry a block entity
+        // and their own energy domain; the booster is a plain adjacent marker (no code).
+        let transmitter = r.block_key(TRANSMITTER);
+        let transmitter_kind = r
+            .block_entity_type(TRANSMITTER_TYPE)
+            .blocks(&[TRANSMITTER])
+            .build();
+        if let Err(error) = r.block_entity_part(&transmitter_kind, TransmitterPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the matter transmitter part was refused: {error}"
+            ));
+            return;
+        }
+        r.block_energy(&transmitter, transmitter_energy());
+
+        let receiver = r.block_key(RECEIVER);
+        let receiver_kind = r
+            .block_entity_type(RECEIVER_TYPE)
+            .blocks(&[RECEIVER])
+            .build();
+        if let Err(error) = r.block_entity_part(&receiver_kind, ReceiverPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the matter receiver part was refused: {error}"
+            ));
+            return;
+        }
+        r.block_energy(&receiver, receiver_energy());
+        let _ = TRANSMITTER_ITEM.set(r.item_key(TRANSMITTER));
+        let _ = RECEIVER_ITEM.set(r.item_key(RECEIVER));
+        r.block_key(BOOSTER);
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -1805,6 +2172,18 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(TRANSMITTER) {
+            if let Some(item) = TRANSMITTER_ITEM.get() {
+                carry_machine(level, event, *item, TRANSMITTER_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
+        if block == Some(RECEIVER) {
+            if let Some(item) = RECEIVER_ITEM.get() {
+                carry_machine(level, event, *item, RECEIVER_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -1878,6 +2257,17 @@ impl Hooks for Mod {
             "rftoolsutility link <pos:block_pos> <dest:block_pos>",
             2,
         ));
+        // Slice 9: the teleporter family's harness controls (upstream's dialing device and GUIs).
+        event.commands.push(Command::op(
+            "rftoolsutility dial <pos:block_pos> <dim:id> <x:integer> <y:integer> <z:integer>",
+            2,
+        ));
+        event.commands.push(Command::new(
+            "rftoolsutility transmitter <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::new(
+            "rftoolsutility receiver <pos:block_pos> [nonce:word]",
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -1907,6 +2297,9 @@ impl Hooks for Mod {
                     | "matter"
                     | "beamer"
                     | "link"
+                    | "dial"
+                    | "transmitter"
+                    | "receiver"
                     | "recipes"
             ]
         );
@@ -2181,6 +2574,62 @@ impl Hooks for Mod {
                 let line = link_beamer(host, level, pos, *dest);
                 feedback(host, &line);
             }
+            ["rftoolsutility", "dial"] => {
+                let dim = match invocation.argument("dim") {
+                    Some(CommandArgumentValue::String(dim)) => dim.clone(),
+                    Some(CommandArgumentValue::Id(dim)) => dim.to_string(),
+                    _ => {
+                        feedback(host, "Usage: /rftoolsutility dial <pos> <dim> <x> <y> <z>");
+                        return Flow::Cancel;
+                    }
+                };
+                let (
+                    Some(CommandArgumentValue::Integer(x)),
+                    Some(CommandArgumentValue::Integer(y)),
+                    Some(CommandArgumentValue::Integer(z)),
+                ) = (
+                    invocation.argument("x"),
+                    invocation.argument("y"),
+                    invocation.argument("z"),
+                )
+                else {
+                    feedback(host, "Usage: /rftoolsutility dial <pos> <dim> <x> <y> <z>");
+                    return Flow::Cancel;
+                };
+                let line = dial_transmitter(host, level, pos, &dim, [*x, *y, *z]);
+                feedback(host, &line);
+            }
+            ["rftoolsutility", "transmitter"] => {
+                let Some(entity) = transmitter_at(&*host, level, pos) else {
+                    feedback(host, "No matter transmitter there.");
+                    return Flow::Cancel;
+                };
+                let Some(data) = entity.data(&*host) else {
+                    feedback(host, "No matter transmitter there.");
+                    return Flow::Cancel;
+                };
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                feedback(host, &transmitter_readout(pos, &data, nonce));
+            }
+            ["rftoolsutility", "receiver"] => {
+                let Some(entity) = machine_at(&*host, level, pos, RECEIVER) else {
+                    feedback(host, "No matter receiver there.");
+                    return Flow::Cancel;
+                };
+                let Some(data) = entity.data(&*host) else {
+                    feedback(host, "No matter receiver there.");
+                    return Flow::Cancel;
+                };
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let ready = receiver_status(&*host, level, pos);
+                feedback(host, &receiver_readout(pos, &data, ready, nonce));
+            }
             _ => return Flow::Continue,
         }
         Flow::Cancel
@@ -2445,6 +2894,8 @@ fn set_energy(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], amount:
         (entity, SPAWNER_CAPACITY, "spawner")
     } else if let Some(entity) = machine_at(&*host, level, pos, BEAMER) {
         (entity, BEAMER_CAPACITY, "matter beamer")
+    } else if let Some(entity) = transmitter_at(&*host, level, pos) {
+        (entity, TRANSMITTER_CAPACITY, "matter transmitter")
     } else {
         return "No machine there.".to_owned();
     };
