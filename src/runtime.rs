@@ -1370,6 +1370,104 @@ pub fn counter_tick(data: &mut CounterData, state: &mut CounterState, powered: b
     fired
 }
 
+// ---------------------------------------------------------------------------
+// The analog (slice 15) — `AnalogData`, `AnalogTileEntity.checkRedstone`
+// ---------------------------------------------------------------------------
+
+/// `AnalogData(mulEqual, mulLess, mulGreater, addEqual, addLess, addGreater)` — the six
+/// arithmetic settings the jar writes only from `GuiAnalog`. `createDefault()` is the identity
+/// `(1.0, 1.0, 1.0, 0, 0, 0)`: with no side inputs configured, the output follows the input.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalogData {
+    pub mul_equal: f32,
+    pub mul_less: f32,
+    pub mul_greater: f32,
+    pub add_equal: i32,
+    pub add_less: i32,
+    pub add_greater: i32,
+}
+
+impl Default for AnalogData {
+    fn default() -> Self {
+        // `AnalogData.createDefault()`.
+        Self {
+            mul_equal: 1.0,
+            mul_less: 1.0,
+            mul_greater: 1.0,
+            add_equal: 0,
+            add_less: 0,
+            add_greater: 0,
+        }
+    }
+}
+
+/// The comparison of the two side inputs that picks one of the three arithmetic settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalogBranch {
+    Equal,
+    Less,
+    Greater,
+}
+
+impl AnalogBranch {
+    /// The harness readout's spelling (`eq`, `less`, `greater`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Equal => "eq",
+            Self::Less => "less",
+            Self::Greater => "greater",
+        }
+    }
+}
+
+/// Which of the three settings `AnalogTileEntity.checkRedstone` uses for these side inputs:
+/// `A == B` → equal, `A < B` → less, otherwise greater.
+#[must_use]
+pub fn analog_branch(a: i32, b: i32) -> AnalogBranch {
+    if a == b {
+        AnalogBranch::Equal
+    } else if a < b {
+        AnalogBranch::Less
+    } else {
+        AnalogBranch::Greater
+    }
+}
+
+/// `AnalogTileEntity.checkRedstone`'s arithmetic: pick the branch by the two side inputs, compute
+/// `(int)(input * mul + add)` in f32 (Java's `(int)` truncates toward zero), then clamp `0..=15`.
+/// The manual confirms "anything above 15 or below 0 is capped to full strength signal or no
+/// signal, respectively".
+#[must_use]
+pub fn analog_output(input: i32, a: i32, b: i32, data: &AnalogData) -> i32 {
+    let (mul, add) = match analog_branch(a, b) {
+        AnalogBranch::Equal => (data.mul_equal, data.add_equal),
+        AnalogBranch::Less => (data.mul_less, data.add_less),
+        AnalogBranch::Greater => (data.mul_greater, data.add_greater),
+    };
+    // Java's `(int)` on a float truncates toward zero; a Rust `as i32` cast does the same.
+    let strength = (input as f32 * mul + add as f32) as i32;
+    strength.clamp(0, 15)
+}
+
+/// The three neighbours `AnalogTileEntity.checkRedstone` reads, in order: `I` (the input side),
+/// `A` (the left side, `LogicSlabBlock.rotateLeft(DOWN, input) = input.getClockWise()`) and `B` (the
+/// right side, `rotateRight`). With an input side of north, A is east and B is west. Returns `None`
+/// for anything but the four horizontal sides: the jar's 24 `logic_facing` slab rotations cannot be
+/// a content block's states, so this port keeps one saved advisory.
+#[must_use]
+pub fn analog_neighbours(pos: [i32; 3], facing: &str) -> Option<[[i32; 3]; 3]> {
+    let [x, y, z] = pos;
+    let (i, a, b) = match facing {
+        "north" => ([x, y, z - 1], [x + 1, y, z], [x - 1, y, z]),
+        "east" => ([x + 1, y, z], [x, y, z + 1], [x, y, z - 1]),
+        "south" => ([x, y, z + 1], [x - 1, y, z], [x + 1, y, z]),
+        "west" => ([x - 1, y, z], [x, y, z - 1], [x, y, z + 1]),
+        _ => return None,
+    };
+    Some([i, a, b])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3035,5 +3133,105 @@ mod tests {
         // a setCounter to the same value keeps a live count
         let live = changed.with_counter(5);
         assert_eq!(live.with_counter(5).current, 0);
+    }
+
+    // ---- Slice 15: the analog's arithmetic (all from `AnalogTileEntity.checkRedstone`) ----
+
+    #[test]
+    fn an_analog_default_passes_the_input_through() {
+        let data = AnalogData::default();
+        assert_eq!(data.mul_equal, 1.0);
+        assert_eq!(data.add_equal, 0);
+        assert_eq!(analog_output(7, 3, 3, &data), 7);
+        assert_eq!(
+            analog_output(15, 0, 15, &data),
+            15,
+            "each branch is the identity"
+        );
+    }
+
+    #[test]
+    fn an_analog_uses_the_equal_branch_when_the_sides_match() {
+        let data = AnalogData {
+            mul_equal: 2.0,
+            add_equal: 1,
+            mul_less: 9.0,
+            add_less: 9,
+            mul_greater: 8.0,
+            add_greater: 8,
+        };
+        assert_eq!(analog_branch(4, 4), AnalogBranch::Equal);
+        assert_eq!(analog_output(5, 4, 4, &data), 11);
+    }
+
+    #[test]
+    fn an_analog_uses_the_less_branch_when_a_is_below_b() {
+        let data = AnalogData {
+            mul_equal: 9.0,
+            add_equal: 9,
+            mul_less: 0.5,
+            add_less: 1,
+            mul_greater: 8.0,
+            add_greater: 8,
+        };
+        assert_eq!(analog_branch(1, 9), AnalogBranch::Less);
+        assert_eq!(analog_output(5, 1, 9, &data), 3, "(int)(5 * 0.5 + 1) = 3");
+    }
+
+    #[test]
+    fn an_analog_uses_the_greater_branch_when_a_is_above_b() {
+        let data = AnalogData {
+            mul_equal: 9.0,
+            add_equal: 9,
+            mul_less: 8.0,
+            add_less: 8,
+            mul_greater: 3.0,
+            add_greater: -2,
+        };
+        assert_eq!(analog_branch(9, 1), AnalogBranch::Greater);
+        assert_eq!(analog_output(4, 9, 1, &data), 10, "(int)(4 * 3 - 2) = 10");
+    }
+
+    #[test]
+    fn an_analog_truncates_the_product_before_it_is_clamped() {
+        let data = AnalogData {
+            mul_equal: 0.5,
+            ..AnalogData::default()
+        };
+        assert_eq!(
+            analog_output(5, 0, 0, &data),
+            2,
+            "Java's (int) truncates 2.5"
+        );
+        assert_eq!(analog_output(9, 0, 0, &data), 4);
+    }
+
+    #[test]
+    fn an_analog_clamps_to_full_strength_and_no_signal() {
+        let high = AnalogData {
+            mul_equal: 2.0,
+            add_equal: 10,
+            ..AnalogData::default()
+        };
+        assert_eq!(analog_output(15, 0, 0, &high), 15, "40 is capped to 15");
+        let low = AnalogData {
+            mul_equal: 1.0,
+            add_equal: -10,
+            ..AnalogData::default()
+        };
+        assert_eq!(analog_output(5, 0, 0, &low), 0, "-5 is capped to 0");
+    }
+
+    #[test]
+    fn an_analog_reads_the_input_and_its_clockwise_and_counterclockwise_sides() {
+        let [input, a, b] = analog_neighbours([200, 101, 0], "north").unwrap();
+        assert_eq!(input, [200, 101, -1]);
+        assert_eq!(a, [201, 101, 0], "A is the left (east) side");
+        assert_eq!(b, [199, 101, 0], "B is the right (west) side");
+        let [input, a, b] = analog_neighbours([200, 101, 0], "east").unwrap();
+        assert_eq!(input, [201, 101, 0]);
+        assert_eq!(a, [200, 101, 1]);
+        assert_eq!(b, [200, 101, -1]);
+        assert!(analog_neighbours([200, 101, 0], "up").is_none());
     }
 }

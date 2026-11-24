@@ -1,15 +1,16 @@
-# RFTools Utility for Horizon — slices 1–14: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer, the timer and the counter
+# RFTools Utility for Horizon — slices 1–15: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer, the timer, the counter and the analog
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–14, the tank, the crafter tiers, the spawner's matter gate, the matter
+**Status: slices 1–15, the tank, the crafter tiers, the spawner's matter gate, the matter
 beamer, the matter transmitter / receiver / booster, the destination analyzer, the sensor,
-the sequencer, the timer and the counter.**
+the sequencer, the timer, the counter and the analog.**
 One flat SDK package (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the
-models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 14 — the counter",
+models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 15 — the analog",
+§ "Slice 14 — the counter",
 § "Slice 13 — the timer",
 § "Slice 12 — the sequencer",
 § "Slice 11 — the sensor",
@@ -125,6 +126,15 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
   fire=… lamp=… facing=… time=…`, so a leg can assert that a vanilla lamp lights only on the
   limit-th lever pulse from the replies' own game-time stamps (`fire` is the game tick of the limit
   edge, `pulse` the last edge's tick). A broken counter's item carries its state.
+
+- `rftoolsutility:analog` — an **arithmetic redstone block** (`AnalogTileEntity`, `AnalogData`).
+   It reads its input side (I) and the two side inputs (A = left/clockwise, B = right/counterclockwise)
+   and emits `(int)(I * mul + add)` from the branch chosen by `A == B`, `A < B` or `A > B`, clamped
+   to **0..15** (the artefact's `createDefault()` is the identity `1,1,1 / 0,0,0`). The six GUI
+   fields are written by `/rftoolsutility analog-set <pos> <mul_eq> <mul_less> <mul_greater>
+   <add_eq> <add_less> <add_greater> <facing>`; the readout `/rftoolsutility analog <pos> [nonce]`
+   prints `input=… a=… b=… branch=… mul=… add=… output=… changed=… lamp=… facing=… time=…`, so the
+   leg can assert the exact declared strength and its game-time stamp from a vanilla lamp beside it.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
@@ -150,14 +160,22 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
    <limit> <facing>`; its readout prints `limit=… current=… output=… pulses=… pulse=… fire=…
    lamp=… facing=… time=…` (`pulse`/`fire`/`time` are game-time stamps).
 
+   The analog's commands are `/rftoolsutility analog <pos> [nonce]` and `analog-set <pos> <mul_eq>
+   <mul_less> <mul_greater> <add_eq> <add_less> <add_greater> <facing>`; its readout prints
+   `input=… a=… b=… branch=… output=… changed=… lamp=… facing=… time=…` (`changed`/`time` are
+   game-time stamps, `output` is the exact 0..15 strength the redstone hook reports).
+
 ## What does not (yet)
 
 The dialing device, destination GUI, screens and their 30 modules, the rest of the logic
-blocks (the sensor, sequencer, timer and counter are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
+blocks (the sensor, sequencer, timer, counter and analog are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
 fluid quad inside its window, the crafter's GUI, the spawner's GUI, the syringe that sets the
 mob, six-way facing, the item tooltips, the wrench item (a command links the beamer instead),
 the infusing power discount and the analyzer's vanilla redstone output (the artefact has none —
-the harness reads the signal instead). The full list, with the reason for each, is in
+the harness reads the signal instead). The `digit` block is **not ported**: its whole behaviour is
+a client sprite renderer (`DigitRenderer`, `machineoutput_0`…`_f`) with no redstone output at all,
+so there is no fail-capable lamp assertion and a chat readout would be a fake. The full list, with
+the reason for each, is in
 [`notes.md`](notes.md).
 
 ## Building and checking

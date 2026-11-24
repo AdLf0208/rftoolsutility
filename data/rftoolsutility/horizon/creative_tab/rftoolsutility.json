@@ -14,7 +14,8 @@
     "rftoolsutility:sensor",
     "rftoolsutility:sequencer",
     "rftoolsutility:timer",
-    "rftoolsutility:counter"
+    "rftoolsutility:counter",
+    "rftoolsutility:analog"
   ],
   "title": "itemGroup.rftoolsutility"
 }

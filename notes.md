@@ -1,6 +1,6 @@
-# RFTools Utility — port notes (slices 1–14: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer, the timer and the counter)
+# RFTools Utility — port notes (slices 1–15: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer, the timer, the counter and the analog)
 
-> **Current state (2026-11-24): slice 14, package 0.2.13 at pin
+> **Current state (2026-11-24): slice 15, package 0.2.14 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
 > **`## Slice 14 — the counter (2026-11-24)`** first: the artefact's count/reset rules, the latched
 > output and the game-time-stamped lamp leg. Then
@@ -2978,14 +2978,223 @@ still reports `package matches the tree`. The launcher's `native-build` compiled
 removed. All Rust ladder steps printed `build-slot: forwarding … to the remote runner` (hostname
 `AdLf-PC`), no `BUILD_LOCAL=1` was set, and no lease was backgrounded.
 
+## Slice 15 — the analog (2026-11-24)
+
+**Chosen from the port's own `## Next slice`** (the line immediately above this section), verbatim:
+
+> The next logic-family gap on the same line is `analog` / `digit` (`rftoolsutility:analog`,
+> `rftoolsutility:digit`, `AnalogTileEntity`, `DigitTileEntity`) — the remaining redstone-output
+> logic siblings that fit the **machines** tier without a renderer. Before dispatching, read their
+> `tickServer`/data records from the artefact at commit `f799314` first and check the same
+> `LevelRef::signal` + `BlockPart::block_signal` surface slices 11–14 proved. The concrete assertion
+> for `analog`: a known input-side redstone level written by a command must produce the artefact's
+> declared output strength on a vanilla lamp (with a redstone-block control, a zero-input
+> differential and `SELFTEST_AT=analog` `EXIT:1`). If either family needs a GUI-only setting or a
+> renderer the pin cannot express, stop with `blocked(<symbol>)` rather than inventing one.
+
+and the shared gap line `## Gaps (the rest of the mod)`:
+
+> **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`, `digit`, `logic`,
+> `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+
+It fits the ledger's **machines** tier exactly: one block entity, six arithmetic settings, three
+directional signal inputs and the real `block_signal` surface slices 11–14 proved in game — no
+renderer, no entity AI, no new client half. **Pin**
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, API
+`0.2`, game 26.3. **Version 0.2.14.** Class **content**, tier **machines** (ledger). MIT, ours on
+main → an **Update** of the entry (never a first `Add`).
+
+### The artefact's arithmetic (read first, not inferred from the name)
+
+Read from the jar and the upstream `1.21_neo` clone at the artefact's own commit
+`f799314007d68042df8504e83cd549360f2627c7` (analysis only, clone at `/tmp/opencode`):
+
+- `AnalogData(float mulEqual, mulLess, mulGreater, int addEqual, addLess, addGreater)`;
+  `createDefault() = (1.0, 1.0, 1.0, 0, 0, 0)` — the identity rule. All six fields are `@GuiValue`s
+  upstream only writes from `GuiAnalog`, so this port writes them with `/rftoolsutility analog-set`
+  (deviation below).
+- `AnalogTileEntity.checkRedstone`: with `I` = the input side and `A`/`B` the two side inputs,
+  `A == B → (int)(I * mulEqual + addEqual)`, `A < B → (int)(I * mulLess + addLess)`, otherwise
+  `(int)(I * mulGreater + addGreater)`; then clamp `0..=15`, `setRedstoneState`, and update the
+  neighbours only when the strength changes. The manual confirms the cap "above 15 or below 0".
+- `A` is `LogicSlabBlock.rotateLeft(downSide, inputSide)` and `B` its `rotateRight`; read from
+  McJtyLib at the same artefact pin, for a floor slab with input north these are **east (A)** and
+  **west (B)**. `getInputStrength` reads `world.getSignal(neighbour, side)`, which the pin expresses
+  with the same directional `LevelRef::signal` the four logic siblings use. **Not blocked.**
+- The input is the input-side neighbour's own emitted signal, read directionally — never
+  `getBestNeighborSignal`, which would include this block's own output as a phantom input
+  (sequencer, slice 12).
+
+### `digit` is `blocked(no-redstone-output:DigitTileEntity)` — not ported
+
+`DigitTileEntity.checkRedstone` only calls `support.checkRedstone(this, …)`, which (McJtyLib
+`LogicSlabBlock.checkRedstone`) sets `powerLevel` from the input side; `saveClientDataToNBT`/
+`loadClientDataFromNBT` keep one `powered` byte. The class has **no** `setRedstoneState` and **no**
+`getRedstoneOutput` override — it emits nothing. Its entire behaviour is the client-only
+`DigitRenderer`, which draws `DIGITS[clamp(powerLevel,0,15)]` (`machineoutput_0`…`_f`); the jar's
+manual says "This block simply displays a number from 0 to F (hexadecimal) corresponding to the
+strength of the input signal". The SDK does have a client `hook:block_entity_submit` (surface.json)
+that could draw that quad, but there is **no fail-capable redstone-lamp assertion** for a block
+with no redstone output, and the `ctl`-readout alternative is exactly the chat-only fake the brief
+forbids. So digit is blocked on the mandated assertion, not shipped. No digit content/code/evidence
+was invented; a renderer-only slice would need an offscreen-screenshot oracle, not this lamp leg.
+
+### What it does
+
+- **The block.** `rftoolsutility:analog` on `minecraft:iron_block` with a **16-value** `signal`
+  state (`0`…`15`, default `0`) caching the exact strength for the redstone hook — unlike its four
+  logic siblings' 15/0 cache. The jar's four slab models, top texture, item model, recipe,
+  advancement, loot table and lang lines are carried; its 24 `logic_facing` rotations are replaced
+  by the 16 `signal` variants.
+- **The tick.** Reads the three neighbours directionally, runs the artefact's branch arithmetic,
+  persists the six settings, the facing and the three inputs, mirrors the clamped 0..15 into the
+  block state and wakes the neighbours only when it changes. `block_signal` reports that exact
+  number on both the direct and indirect paths and `is_signal_source` marks the analog a source.
+- **The harness.** `/rftoolsutility analog <pos> [nonce]` prints `input=… a=… b=… branch=…
+  mul=… add=… output=… changed=… lamp=… facing=… time=…`: `changed` is the game time of the last
+  output change, `lamp` a live read of the adjacent vanilla lamp, `output` the game's cached
+  strength. `analog-set <pos> <mul_eq> <mul_less> <mul_greater> <add_eq> <add_less> <add_greater>
+  <facing>` is the GUI's equivalent. A broken analog's item carries its state
+  (`block_entity_data`, like every machine's).
+
+### Red → green (unit, verbatim)
+
+The six new arithmetic rules were `todo!()` stubs behind their tests first (`slice15-red.log`):
+
+```
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 130 filtered out; finished in 0.00s
+  runtime::tests::an_analog_clamps_to_full_strength_and_no_signal   not yet implemented
+  runtime::tests::an_analog_default_passes_the_input_through        not yet implemented
+  runtime::tests::an_analog_truncates_the_product_before_it_is_clamped   not yet implemented
+  runtime::tests::an_analog_uses_the_equal_branch_when_the_sides_match   not yet implemented
+  runtime::tests::an_analog_uses_the_greater_branch_when_a_is_above_b    not yet implemented
+  runtime::tests::an_analog_uses_the_less_branch_when_a_is_below_b       not yet implemented
+```
+
+Each failure was `panicked at src/runtime.rs:1443:5: not yet implemented`. Green: **139 passed;
+0 failed** (`sdk-test.log`, regenerated for 0.2.14 after the final build) — 78 runtime and 61 glue
+tests, including `an_analog_reads_the_input_and_its_clockwise_and_counterclockwise_sides`,
+`the_analog_readout_is_the_line_the_harness_parses` and
+`an_analogs_six_settings_round_trip_through_the_saved_compound`. `cargo fmt --check` clean,
+`cargo clippy --all-targets --offline -- -D warnings` 0 warnings (`slice15-lint-final.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-analog.sh` — a focused, fail-capable leg reusing the launcher-built game; one lease per
+leg, every log ends with its exit. The assertion is a **vanilla redstone lamp** beside the analog,
+with the three inputs driven by `minecraft:redstone_block` / air on the north (I), east (A) and west
+(B) neighbours. The exact strength is asserted from both the reply and the block's own `signal`
+state.
+
+| log | verdict |
+|---|---|
+| `e2e-slice15-analog.log` | **PASS**, `EXIT:0` — AO–AO7 |
+| `e2e-slice15-analog-selftest.log` | **FAIL: SELFTEST analog: the 0.5 * 15 output reads 7, expected it inverted**, `EXIT:1` |
+| `e2e-slice15-analog-control.log` | **FAIL: Unknown item 'rftoolsutility:analog'**, `EXIT:1` (unmodded Nightly) |
+| `e2e-slice15-{sensor,sequencer,timer,counter}.log` | each **PASS**, `EXIT:0` — the earlier logic families, no regression on the final bytes |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=80 ok=80 missing-exit=0 bad-exit=0`
+(`slice15-e2e-gate.log`).
+
+The phases, each asserting a parsed value (verbatim from the green transcript):
+
+```
+AO-control: lamp with a vanilla redstone block: minecraft:redstone_lamp[lit=true] / after removing it: [lit=false]
+AO0:  input=0 a=0 b=0 branch=eq mul=1,1,1 add=0,0,0 output=0 changed=-1 lamp=dark facing=north time=273 nonce=1
+AO1:  input=15 a=0 b=0 branch=eq mul=0.5,1,1 add=0,0,0 output=7 changed=280 lamp=lit facing=north time=315 nonce=2
+AO2:  input=15 a=0 b=0 branch=eq mul=1,1,1 add=0,0,0 output=15 changed=321 lamp=lit ... nonce=3
+AO3:  input=15 a=15 b=0 branch=greater mul=0,1,1 add=0,0,0 output=15 changed=377 lamp=lit ... nonce=4
+AO4:  input=15 a=0 b=15 branch=less mul=0,1,0 add=0,0,0 output=15 changed=422 lamp=lit ... nonce=5
+AO5:  input=0 a=0 b=0 branch=eq mul=1,1,1 add=0,0,0 output=0 changed=466 lamp=dark ... nonce=6
+AO6:  input=15 a=0 b=0 branch=eq mul=0,1,1 add=-5,0,0 output=0 changed=466 lamp=dark ... nonce=7
+AO7:  give rftoolsutility:not_an_analog → rc=1 {"error":"unknown item rftoolsutility:not_an_analog"}
+```
+
+Counterfactuals: the redstone-block control proves the lamp and its parser work in this game; AO1
+fixes the artefact's `0.5 × 15 → 7` truncation and AO2 changes only the multiplier (identity → 15);
+AO3/AO4 set the equal branch's multiplier to **0** so a branch-selection error darkens the lamp,
+which is the differential proving `greater`/`less` are chosen from A and B; AO5's zero input is the
+opposite differential; AO6 proves the negative clamp. `changed` advances with each strength change
+(280 → 321 → 377 → 422 → 466), so the output is tied to the game's own ticks, not wall time.
+`SELFTEST_AT=analog` inverts AO1's exact strength and fails as designed; `CONTROL=1` runs the same
+script on the unmodded Nightly, where the analog item does not exist.
+
+### Measured traps this slice cost
+
+1. **The positive-control redstone block must be adjacent to the lamp.** The first leg put it
+   three blocks away and the lamp stayed dark; it is now at the lamp's own other side (two blocks
+   from the analog, so it cannot drive any of the three inputs).
+2. **A 0.5 multiplier is the sharpest arithmetic assertion.** `(int)(15 × 0.5) = 7`, not 8; it
+   proves both Java's truncation and that the strength is the artefact's arithmetic, not a 15/0
+   latch like the other logic blocks. The selftest inverts exactly this value.
+3. **A branch differential needs the wrong branch set to zero.** With `mul_eq = 0` and A ≠ B, a
+   correct greater/less choice yields 15 while any selection error yields 0 — the lamp becomes the
+   branch oracle, not just a strength oracle.
+4. **No local type or variant is named `Block`/`Item`** (the new enum is `AnalogBranch`), so neither
+   `fits` run false-failed. The GitHub releases API was called once per `fits` invocation to avoid
+   the per-IP rate limit (slice 8's trap).
+
+### Deviations and content adaptations
+
+- **The six settings are command-driven, not a GUI.** `GuiAnalog`'s three multiplier/offset pairs
+  are written by `/rftoolsutility analog-set`, as the other logic blocks' GUIs are replaced by
+  their `-set` commands. A user notices: no GUI.
+- **The input side is a saved advisory.** The jar's 24 `logic_facing` slab rotations cannot be a
+  content block's states, so `analog-set` writes one of four horizontal sides, as its logic siblings
+  do. A user cannot orient the block by placement.
+- **The exact strength is a 16-value block state**, not a 15/0 cache: `BlockPart::block_signal`
+  reports all 16 values, so a comparator/wire sees the real strength, and the lamp lights whenever
+  it is nonzero. The jar's slab model shows on every strength.
+- **No new upstream defect adopted.** The branch table, the f32 truncation and the clamp are the
+  artefact's own. No comparator/TOP/Jade, no sounds, no infusing bonus, no GUI — the standing
+  machines-tier gaps. The carried recipe needs `rftoolsbase:machine_base`, so the e2e gives the
+  block, as every machine slice has.
+- **`digit` is blocked** (see its own section): the artefact has no redstone output at all.
+
+### Coverage after slice 15
+
+| family | status |
+|---|---|
+| `rftoolsutility:analog` (block, item, recipe, advancement, loot, texture, `signal` state) | tested — AO: placed and read back; content regenerated by `assemble_content.py` |
+| the branch comparison and the three multiply/add pairs | tested — AO0–AO4 (identity, 0.5 truncation, identity restore, greater with eq=0, less with eq=0); unit rules for every branch and the default |
+| the 0..15 clamp and the exact redstone strength | tested — AO1 (7), AO2/AO3/AO4 (15), AO5/AO6 (0); the block's `signal=…` state is asserted alongside the reply, `SELFTEST_AT=analog` inverts AO1 |
+| the three directional inputs (I, A=left, B=right) | tested in code (`analog_neighbours`, `analog_into_directions`) and in game (AO3/AO4 drive A and B separately); AO uses north |
+| the item carrying the analog's state | carried (`block_drops` + `minecraft:block_entity_data`, the same path as the other machines); no dedicated phase |
+| a `rftoolsbase:machine_base` recipe craft | blocked(`rftoolsbase:machine_base`) — the parent port's item; the e2e gives the block |
+| the GUI (the six arithmetic fields) | not ported (no menu; `analog-set` is its equivalent) |
+| `rftoolsutility:digit` and its 0..F display | blocked(`no-redstone-output:DigitTileEntity`) — a client renderer only; no lamp assertion exists |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 208,506 B | `209077df6d5fedf5aa1d7eedb15b9b01635e73ad8036f91cf8a47c33153b057b` | 264 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice15-build-1.log`, `slice15-build-2.log`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.14 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`);
+`fits --build 0a875da` → `0a875da  made for`; `fits --build 0b14f8a` → `0b14f8a  fits`;
+`verify-sdk-package.py rftoolsutility` → **1/1** (139 passed, 0 clippy warnings, package matches
+the tree, R9, skills gate; `slice15-package-gate-final.log`). The manifest, README, crate doc and
+content were edited **before** the final build; the later `notes.md`/`VALIDATION.md`/`CONTENT.md`
+edits are not packed, and the gate still reports `package matches the tree`. The launcher's
+`native-build` compiled the mod (`Compiling rftoolsutility (1 of 1)`,
+`native-0a875da-32656145d602`) after the stale 0.2.12/0.2.13 tag was removed. All Rust ladder steps
+printed `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no `BUILD_LOCAL=1`
+was set, and no lease was backgrounded.
+
 ## Next slice
 
-The next logic-family gap on the same line is `analog` / `digit` (`rftoolsutility:analog`,
-`rftoolsutility:digit`, `AnalogTileEntity`, `DigitTileEntity`) — the remaining redstone-output
-logic siblings that fit the **machines** tier without a renderer. Before dispatching, read their
-`tickServer`/data records from the artefact at commit `f799314` first and check the same
-`LevelRef::signal` + `BlockPart::block_signal` surface slices 11–14 proved. The concrete assertion
-for `analog`: a known input-side redstone level written by a command must produce the artefact's
-declared output strength on a vanilla lamp (with a redstone-block control, a zero-input
-differential and `SELFTEST_AT=analog` `EXIT:1`). If either family needs a GUI-only setting or a
-renderer the pin cannot express, stop with `blocked(<symbol>)` rather than inventing one.
+The next logic-family gap on the same line is `logic` / `invchecker` (`rftoolsutility:logic`,
+`rftoolsutility:invchecker`), the remaining three-input boolean and inventory-check siblings. Read
+`ThreeLogicTileEntity.checkRedstone` / `InvCheckerTileEntity.checkOutput` and their data records
+from the artefact at commit `f799314` first, and check whether their inputs can be driven with the
+proven `LevelRef::signal` + `BlockPart::block_signal` surface (the invchecker additionally needs a
+container read on the neighbour). The concrete assertion for `logic`: with two redstone inputs on
+the side neighbours, assert the artefact's declared 15/0 output on the adjacent vanilla lamp from
+the reply's game-time stamps, with a redstone-block control, a zero-input differential and
+`SELFTEST_AT=logic` ending `EXIT:1`. If the invchecker needs a GUI-only filter slot or a container
+surface the pin cannot express, stop with `blocked(<symbol>)` rather than inventing one; the
+`redstone_transmitter/receiver` family is the following gap.

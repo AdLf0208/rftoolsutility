@@ -1,4 +1,5 @@
 {
+  "block.rftoolsutility.analog": "Analog",
   "block.rftoolsutility.counter": "Counter",
   "block.rftoolsutility.crafter1": "Crafter Tier 1",
   "block.rftoolsutility.crafter2": "Crafter Tier 2",
@@ -14,6 +15,7 @@
   "block.rftoolsutility.tank": "Tank",
   "block.rftoolsutility.timer": "Timer",
   "itemGroup.rftoolsutility": "RFTools Utility",
+  "message.rftoolsutility.analog.header": "The Analog can do simple 'calculations' on an input redstone signal based on two side inputs",
   "message.rftoolsutility.counter.header": "The Counter can count redstone pulses upto a specified maximum (and when maximum is reached send out a redstone pulse on its own)",
   "message.rftoolsutility.crafter1.header": "This machine can handle up to 2 recipes at once and allows recipes to use the crafting results of previous steps",
   "message.rftoolsutility.crafter2.header": "This machine can handle up to 4 recipes at once and allows recipes to use the crafting results of previous steps",

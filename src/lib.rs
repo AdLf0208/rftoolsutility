@@ -11,8 +11,12 @@
 //! need. [`SensorPart`], [`SequencerPart`], [`TimerPart`] and [`CounterPart`] are the four logic
 //! blocks: a ten-tick block check, a rising-edge-driven 64-step pattern, a rising-edge-reloaded
 //! delay that emits a one-tick 15 pulse every `delay` ticks, and a rising-edge pulse counter that
-//! latches 15 when its count reaches the limit, all emitting a real 15/0 redstone signal. The
-//! `/rftoolsutility …` commands serve the harness, because upstream's controls are its GUIs.
+//! latches 15 when its count reaches the limit, all emitting a real 15/0 redstone signal.
+//! [`AnalogPart`] is the last redstone-output sibling: it compares two side inputs and emits the
+//! artefact's own multiply-and-offset arithmetic clamped to 0..15. (Its display-only sibling
+//! `digit` is not ported: upstream's whole behaviour is a client renderer, with no redstone
+//! output for a fail-capable lamp assertion.) The `/rftoolsutility …` commands serve the harness,
+//! because upstream's controls are its GUIs.
 //!
 //! The numbers — the capacity, the fill level, what a bucket click does, the craft loop, the
 //! spawn cost — are in [`runtime`], a plain module with no `mod_api` types, so `cargo test`
@@ -33,18 +37,19 @@ use std::sync::{Mutex, OnceLock};
 pub mod runtime;
 
 use runtime::{
-    AVERAGE_YIELD, BEAMER_CAPACITY, BEAMER_RECEIVE, BOOST_RF, BUCKET, BUFFER_IN, BUFFER_IN_SLOTS,
-    BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY, CRAFTER_RECEIVE, CRAFTER_SLOTS,
-    Click, CounterData, CounterState, CraftMode, CrafterTier, GHOST_INPUT, GHOST_RESULT,
-    HIGH_YIELD, LOW_YIELD, MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe,
-    RECEIVER_CAPACITY, RECEIVER_RECEIVE, RF_PER_TICK, SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY,
-    SPAWNER_RECEIVE, SensorKind, SequencerData, SequencerMode, SequencerState, Speed,
-    TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter,
-    analyzer_due, analyzer_status, beam_due, beam_reach, beam_send, bucket_click, carried, clamped,
-    counter_signal, counter_tick as run_counter_tick, fill_level, in_beam, placements, plan,
-    receiver_ready, recipe_for, result_range, rising_edge, sensor_due, sensor_front, sensor_sees,
-    sensor_signal, sequencer_tick as run_sequencer_tick, spawn_at, spawn_cycle, spend, start_cost,
-    start_time, steps, timer_signal, timer_tick as run_timer_tick,
+    AVERAGE_YIELD, AnalogData, BEAMER_CAPACITY, BEAMER_RECEIVE, BOOST_RF, BUCKET, BUFFER_IN,
+    BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY, CRAFTER_RECEIVE,
+    CRAFTER_SLOTS, Click, CounterData, CounterState, CraftMode, CrafterTier, GHOST_INPUT,
+    GHOST_RESULT, HIGH_YIELD, LOW_YIELD, MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource,
+    MobRecipe, RECEIVER_CAPACITY, RECEIVER_RECEIVE, RF_PER_TICK, SENSOR_OFF, SENSOR_ON,
+    SPAWNER_CAPACITY, SPAWNER_RECEIVE, SensorKind, SequencerData, SequencerMode, SequencerState,
+    Speed, TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter,
+    analog_branch, analog_neighbours, analog_output, analyzer_due, analyzer_status, beam_due,
+    beam_reach, beam_send, bucket_click, carried, clamped, counter_signal,
+    counter_tick as run_counter_tick, fill_level, in_beam, placements, plan, receiver_ready,
+    recipe_for, result_range, rising_edge, sensor_due, sensor_front, sensor_sees, sensor_signal,
+    sequencer_tick as run_sequencer_tick, spawn_at, spawn_cycle, spend, start_cost, start_time,
+    steps, timer_signal, timer_tick as run_timer_tick,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -308,6 +313,36 @@ const KEY_COUNTER_LAMP: &str = "counterLampLit";
 const KEY_COUNTER_PULSES: &str = "counterPulses";
 /// A counter's item, resolved once in `register` for `block_drops`.
 static COUNTER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// The analog (slice 15) — `AnalogTileEntity`, `AnalogData`
+// ---------------------------------------------------------------------------
+
+/// `LogicBlockModule.ANALOG`: the last redstone-output logic sibling. Its six arithmetic settings
+/// are `@GuiValue`s upstream only writes from `GuiAnalog`, so this port writes them with
+/// `/rftoolsutility analog-set` (the same stand-in the other logic blocks use for their GUIs).
+const ANALOG: &str = "rftoolsutility:analog";
+const ANALOG_TYPE: &str = "analog";
+const ANALOG_TYPE_ID: &str = "rftoolsutility:analog";
+/// The six `AnalogData` fields (`mul_eq`, `mul_less`, `mul_greater` are f32; the three `add_*` are
+/// ints), stored under their artefact codec names so the saved compound reads like the record.
+const KEY_ANALOG_MUL_EQ: &str = "mul_eq";
+const KEY_ANALOG_MUL_LESS: &str = "mul_less";
+const KEY_ANALOG_MUL_GREATER: &str = "mul_greater";
+const KEY_ANALOG_ADD_EQ: &str = "add_eq";
+const KEY_ANALOG_ADD_LESS: &str = "add_less";
+const KEY_ANALOG_ADD_GREATER: &str = "add_greater";
+/// The saved input side (the jar's 24 `logic_facing` slab rotations cannot be content states).
+const KEY_ANALOG_FACING: &str = "analogFacing";
+/// Harness-only observations saved in the compound: the game time of the last output change, and
+/// the three input strengths that produced it. They let the leg assert the artefact's arithmetic
+/// from the reply's own numbers, not from a wall-clock wait or an absence of errors.
+const KEY_ANALOG_CHANGED_AT: &str = "analogChangedAt";
+const KEY_ANALOG_INPUT: &str = "analogInput";
+const KEY_ANALOG_A: &str = "analogA";
+const KEY_ANALOG_B: &str = "analogB";
+/// An analog's item, resolved once in `register` for `block_drops`.
+static ANALOG_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -2337,6 +2372,182 @@ impl BlockEntityPart for CounterPart {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The analog's glue (slice 15) — `AnalogData`, `AnalogTileEntity.checkRedstone`
+// ---------------------------------------------------------------------------
+
+/// One f32 under `name` (`Tag::Float` carries the bits), or the artefact's default when absent.
+fn read_float_or(nbt: &Compound, name: &str, default: f32) -> f32 {
+    match tag(nbt, name) {
+        Some(Tag::Float(bits)) => f32::from_bits(*bits),
+        _ => default,
+    }
+}
+
+/// Save an f32 under `name`, replacing any value of another kind.
+fn write_float(nbt: &mut Compound, name: &str, value: f32) {
+    put(nbt, name, Tag::Float(value.to_bits()));
+}
+
+/// `AnalogData` out of the saved compound. A freshly placed block entity has an empty compound,
+/// so the artefact's identity `createDefault()` supplies the six GUI fields.
+fn analog_data(nbt: &Compound) -> AnalogData {
+    let defaults = AnalogData::default();
+    AnalogData {
+        mul_equal: read_float_or(nbt, KEY_ANALOG_MUL_EQ, defaults.mul_equal),
+        mul_less: read_float_or(nbt, KEY_ANALOG_MUL_LESS, defaults.mul_less),
+        mul_greater: read_float_or(nbt, KEY_ANALOG_MUL_GREATER, defaults.mul_greater),
+        add_equal: read_int_or(nbt, KEY_ANALOG_ADD_EQ, defaults.add_equal),
+        add_less: read_int_or(nbt, KEY_ANALOG_ADD_LESS, defaults.add_less),
+        add_greater: read_int_or(nbt, KEY_ANALOG_ADD_GREATER, defaults.add_greater),
+    }
+}
+
+/// Write the six `AnalogData` fields back under their artefact codec names.
+fn write_analog(nbt: &mut Compound, data: &AnalogData) {
+    write_float(nbt, KEY_ANALOG_MUL_EQ, data.mul_equal);
+    write_float(nbt, KEY_ANALOG_MUL_LESS, data.mul_less);
+    write_float(nbt, KEY_ANALOG_MUL_GREATER, data.mul_greater);
+    write_int(nbt, KEY_ANALOG_ADD_EQ, data.add_equal);
+    write_int(nbt, KEY_ANALOG_ADD_LESS, data.add_less);
+    write_int(nbt, KEY_ANALOG_ADD_GREATER, data.add_greater);
+}
+
+/// Parse the cached `signal` property out of a serialized block state. Unlike the other logic
+/// siblings this is a full 0..15 strength, which `BlockPart::block_signal` reports verbatim.
+fn analog_signal_from_state(name: &str) -> i32 {
+    sensor_state_property(name, KEY_SIGNAL)
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(0)
+}
+
+/// The strength cached in the game's block state (what the redstone hook reports).
+fn analog_cached_signal(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> i32 {
+    level
+        .block_state(host, pos)
+        .and_then(|state| host.block_state_string(state))
+        .map_or(0, |name| analog_signal_from_state(&name))
+}
+
+/// The direction from each of the three neighbours back into the analog, in the same `[I, A, B]`
+/// order as [`analog_neighbours`]. Index 0…3 is north/east/south/west; the opposite side is +2.
+fn analog_into_directions(facing: &str) -> [Direction; 3] {
+    let index = match facing {
+        "east" => 1,
+        "south" => 2,
+        "west" => 3,
+        _ => 0,
+    };
+    let into = |side: usize| match side % 4 {
+        0 => Direction::South,
+        1 => Direction::West,
+        2 => Direction::North,
+        _ => Direction::East,
+    };
+    [into(index), into(index + 1), into(index + 3)]
+}
+
+/// `/rftoolsutility analog <pos> [nonce]`: the harness reads the three input strengths, the chosen
+/// branch and the exact 0..15 strength cached in the block state. `changed` is the game time of the
+/// last output change and `lamp` is a live read of the adjacent vanilla lamp, so the leg can say
+/// "this input produced this strength at this tick" from the reply alone.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the readout carries the three inputs, the six settings and game-time evidence"
+)]
+fn analog_line(
+    pos: [i32; 3],
+    data: &AnalogData,
+    input: i32,
+    a: i32,
+    b: i32,
+    output: i32,
+    changed: i32,
+    facing: &str,
+    time: i32,
+    lamp: &str,
+    nonce: Option<&str>,
+) -> String {
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: analog at {pos:?}: input={input} a={a} b={b} branch={} mul={},{},{} add={},{},{} output={output} changed={changed} lamp={lamp} facing={facing} time={time}{suffix}",
+        analog_branch(a, b).as_str(),
+        data.mul_equal,
+        data.mul_less,
+        data.mul_greater,
+        data.add_equal,
+        data.add_less,
+        data.add_greater,
+    )
+}
+
+/// `AnalogTileEntity.checkRedstone`: read the three input-side neighbours' own emitted signals,
+/// apply the artefact's branch arithmetic, clamp it to 0..15, mirror the exact strength into the
+/// block state and wake the neighbours only when it changes. The neighbours are read
+/// **directionally** (`SignalGetter.getSignal`), never with `getBestNeighborSignal`, which would
+/// see this block's own output as a phantom input (sequencer, slice 12).
+fn analog_block_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let data = analog_data(&event.entity.nbt);
+    let Some(level) = ticking_level(&*host) else {
+        return;
+    };
+    let facing =
+        read_text(&event.entity.nbt, KEY_ANALOG_FACING).unwrap_or_else(|| "north".to_owned());
+    let Some(neighbours) = analog_neighbours(pos, &facing) else {
+        return;
+    };
+    let intos = analog_into_directions(&facing);
+    let mut strengths = [0i32; 3];
+    for (slot, neighbour) in neighbours.iter().enumerate() {
+        strengths[slot] = level.signal(&*host, *neighbour, intos[slot]).unwrap_or(0);
+    }
+    let [input, a, b] = strengths;
+    let output = analog_output(input, a, b, &data);
+    write_analog(&mut event.entity.nbt, &data);
+    write_text(&mut event.entity.nbt, KEY_ANALOG_FACING, &facing);
+    write_int(&mut event.entity.nbt, KEY_ANALOG_INPUT, input);
+    write_int(&mut event.entity.nbt, KEY_ANALOG_A, a);
+    write_int(&mut event.entity.nbt, KEY_ANALOG_B, b);
+    if output != analog_cached_signal(&*host, level, pos) {
+        let time = level.game_time(&*host).unwrap_or(0) as i32;
+        write_int(&mut event.entity.nbt, KEY_ANALOG_CHANGED_AT, time);
+        host.set_block_property(pos, KEY_SIGNAL, &output.to_string());
+        if let Some(state) = level.block_state(&*host, pos) {
+            let _ = level.update_neighbors(host, pos, state, NeighbourUpdate::Neighbours);
+        }
+    }
+}
+
+/// The analog's one Part: a block entity with a tick, and the two redstone methods that make its
+/// cached 0..15 strength a real vanilla signal (`LogicSupport.getRedstoneOutput`/`isSignalSource`).
+struct AnalogPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for AnalogPart {
+    fn is_signal_source(&self, _level: &dyn LevelHost, event: &mut IsSignalSourceEvent) {
+        event.source = true;
+    }
+
+    fn block_signal(&self, level: &dyn LevelHost, event: &mut BlockSignalEvent) {
+        let Some(name) = level.state_string(event.state) else {
+            return;
+        };
+        event.signal = analog_signal_from_state(&name);
+    }
+}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for AnalogPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        analog_block_tick(host, event);
+    }
+}
+
 /// `/rftoolsutility analyzer <pos> [nonce]`: the harness's readout of the passive analyzer block.
 /// It finds the adjacent dialed transmitter and prints the receiver-check status the transmitter
 /// keeps (`green=ok` → 15, `yellow=unknown` → 7, `red=warn` → 0). The artefact has no redstone
@@ -2993,6 +3204,16 @@ impl Hooks for Mod {
                 "rftoolsutility: the counter part was refused: {error}"
             ));
         }
+
+        // Slice 15: the analog's block entity and redstone Part, on the same iron-block template
+        // as its logic siblings, but with a 16-value `signal` state for its exact 0..15 output.
+        let _ = ANALOG_ITEM.set(r.item_key(ANALOG));
+        let analog_kind = r.block_entity_type(ANALOG_TYPE).blocks(&[ANALOG]).build();
+        if let Err(error) = r.block_entity_part(&analog_kind, AnalogPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the analog part was refused: {error}"
+            ));
+        }
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -3154,6 +3375,12 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(ANALOG) {
+            if let Some(item) = ANALOG_ITEM.get() {
+                carry_machine(level, event, *item, ANALOG_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -3278,6 +3505,15 @@ impl Hooks for Mod {
             "rftoolsutility counter-set <pos:block_pos> <limit:integer> <facing:word>",
             2,
         ));
+        // Slice 15: the analog's GUI-equivalent controls — a readout of its three inputs and exact
+        // output, and a way to write the six arithmetic fields `GuiAnalog` would set.
+        event.commands.push(Command::new(
+            "rftoolsutility analog <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility analog-set <pos:block_pos> <mul_eq:number> <mul_less:number> <mul_greater:number> <add_eq:integer> <add_less:integer> <add_greater:integer> <facing:word>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -3319,6 +3555,8 @@ impl Hooks for Mod {
                     | "timer-set"
                     | "counter"
                     | "counter-set"
+                    | "analog"
+                    | "analog-set"
                     | "recipes"
             ]
         );
@@ -4057,6 +4295,125 @@ impl Hooks for Mod {
                     host,
                     &format!(
                         "Counter at {pos:?}: limit {limit}, input to the {facing}, count reset to 0."
+                    ),
+                );
+            }
+            ["rftoolsutility", "analog"] => {
+                let Some(entity) = machine_at(&*host, level, pos, ANALOG) else {
+                    feedback(host, "No analog there.");
+                    return Flow::Cancel;
+                };
+                let Some(nbt) = entity.data(&*host) else {
+                    feedback(host, "No analog there.");
+                    return Flow::Cancel;
+                };
+                let data = analog_data(&nbt);
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let input = read_int_or(&nbt, KEY_ANALOG_INPUT, 0);
+                let a = read_int_or(&nbt, KEY_ANALOG_A, 0);
+                let b = read_int_or(&nbt, KEY_ANALOG_B, 0);
+                let output = analog_cached_signal(&*host, level, pos);
+                let changed = read_int_or(&nbt, KEY_ANALOG_CHANGED_AT, -1);
+                let facing =
+                    read_text(&nbt, KEY_ANALOG_FACING).unwrap_or_else(|| "north".to_owned());
+                let time = level.game_time(&*host).unwrap_or(0) as i32;
+                // A live read of the adjacent lamp, as the counter's readout does: the fire stamp
+                // alone could go stale, and a lamp's own `lit` state is the game-time observation.
+                let lamp = [
+                    [pos[0], pos[1], pos[2] - 1],
+                    [pos[0], pos[1], pos[2] + 1],
+                    [pos[0] - 1, pos[1], pos[2]],
+                    [pos[0] + 1, pos[1], pos[2]],
+                ]
+                .iter()
+                .any(|&around| {
+                    level
+                        .block_state(&*host, around)
+                        .and_then(|state| host.block_state_string(state))
+                        .is_some_and(|name| {
+                            name.contains("redstone_lamp")
+                                && sensor_state_property(&name, "lit") == Some("true")
+                        })
+                });
+                feedback(
+                    host,
+                    &analog_line(
+                        pos,
+                        &data,
+                        input,
+                        a,
+                        b,
+                        output,
+                        changed,
+                        &facing,
+                        time,
+                        if lamp { "lit" } else { "dark" },
+                        nonce,
+                    ),
+                );
+            }
+            ["rftoolsutility", "analog-set"] => {
+                let Some(entity) = machine_at(&*host, level, pos, ANALOG) else {
+                    feedback(host, "No analog there.");
+                    return Flow::Cancel;
+                };
+                let usage = "Usage: /rftoolsutility analog-set <pos> <mul_eq> <mul_less> <mul_greater> <add_eq> <add_less> <add_greater> <facing>";
+                let number = |name: &str| match invocation.argument(name) {
+                    Some(CommandArgumentValue::Number(value)) => Some(*value as f32),
+                    _ => None,
+                };
+                let (Some(mul_equal), Some(mul_less), Some(mul_greater)) =
+                    (number("mul_eq"), number("mul_less"), number("mul_greater"))
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                let integer = |name: &str| match invocation.argument(name) {
+                    Some(CommandArgumentValue::Integer(value)) => Some(*value),
+                    _ => None,
+                };
+                let (Some(add_equal), Some(add_less), Some(add_greater)) = (
+                    integer("add_eq"),
+                    integer("add_less"),
+                    integer("add_greater"),
+                ) else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                let Some(CommandArgumentValue::String(facing)) = invocation.argument("facing")
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                if analog_neighbours(pos, facing).is_none() {
+                    feedback(host, "unknown analog facing (north|south|east|west).");
+                    return Flow::Cancel;
+                }
+                let data = AnalogData {
+                    mul_equal,
+                    mul_less,
+                    mul_greater,
+                    add_equal,
+                    add_less,
+                    add_greater,
+                };
+                let Some(mut nbt) = entity.data(&*host) else {
+                    feedback(host, "No analog there.");
+                    return Flow::Cancel;
+                };
+                write_analog(&mut nbt, &data);
+                write_text(&mut nbt, KEY_ANALOG_FACING, facing);
+                if entity.replace_data(host, nbt).is_err() {
+                    feedback(host, "No analog there.");
+                    return Flow::Cancel;
+                }
+                feedback(
+                    host,
+                    &format!(
+                        "Analog at {pos:?}: mul={mul_equal},{mul_less},{mul_greater} add={add_equal},{add_less},{add_greater}, input to the {facing}."
                     ),
                 );
             }
@@ -5247,5 +5604,59 @@ mod tests {
         );
         assert!(counter_front("north"));
         assert!(!counter_front("up"));
+    }
+
+    // ---- Slice 15: the analog's glue ----
+
+    #[test]
+    fn the_analog_readout_is_the_line_the_harness_parses() {
+        let data = AnalogData {
+            mul_equal: 2.0,
+            mul_less: 0.5,
+            mul_greater: 3.0,
+            add_equal: 1,
+            add_less: 2,
+            add_greater: 3,
+        };
+        assert_eq!(
+            analog_line(
+                [201, 101, 0],
+                &data,
+                15,
+                4,
+                4,
+                11,
+                312,
+                "north",
+                320,
+                "lit",
+                Some("1")
+            ),
+            "/rftoolsutility: analog at [201, 101, 0]: input=15 a=4 b=4 branch=eq mul=2,0.5,3 add=1,2,3 output=11 changed=312 lamp=lit facing=north time=320 nonce=1"
+        );
+    }
+
+    #[test]
+    fn an_analogs_six_settings_round_trip_through_the_saved_compound() {
+        let mut nbt = Compound::new();
+        let data = AnalogData {
+            mul_equal: 0.5,
+            mul_less: 1.25,
+            mul_greater: 2.0,
+            add_equal: -10,
+            add_less: 0,
+            add_greater: 7,
+        };
+        write_analog(&mut nbt, &data);
+        assert_eq!(analog_data(&nbt), data);
+        assert_eq!(analog_data(&Compound::new()), AnalogData::default());
+        assert_eq!(
+            analog_signal_from_state("rftoolsutility:analog[signal=11]"),
+            11
+        );
+        assert_eq!(
+            analog_signal_from_state("rftoolsutility:analog[signal=0]"),
+            0
+        );
     }
 }

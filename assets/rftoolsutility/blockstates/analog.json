@@ -1,0 +1,52 @@
+{
+  "variants": {
+    "signal=0": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=1": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=10": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=11": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=12": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=13": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=14": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=15": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=2": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=3": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=4": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=5": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=6": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=7": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=8": {
+      "model": "rftoolsutility:block/analog_0"
+    },
+    "signal=9": {
+      "model": "rftoolsutility:block/analog_0"
+    }
+  }
+}

@@ -122,3 +122,26 @@ of the RFTools Utility jar, re-spelled only where 26.3 differs.
   (`TankBakedModel`'s inner quads, tinted by the fluid's still texture). The pin
   has no block-entity renderer in this slice, so the fill is shown by the nine
   side textures only — the level is real, the inner fluid quad is a gap.
+
+## Slice 15 — the analog's carried content
+
+The analog's four slab models (`models/block/analog_0…3.json`), item model, front texture
+(`textures/block/logic/machineanalogtop.png`), recipe, advancement and loot table are carried from
+the RFTools Utility jar byte for byte (the loot table's `copy_components` function is removed by the
+same `upgrade_loot` pass as the other logic blocks). Its model's `rftoolsbase:` machine-base
+textures are re-pointed into this namespace. **Not carried:** the `digit` block — its artefact has
+no redstone output (`DigitTileEntity` never calls `setRedstoneState` and has no `getRedstoneOutput`)
+and its whole behaviour is a client renderer (`DigitRenderer`, `machineoutput_0`…`_f`), so this
+slice's lamp assertion cannot prove it; the block is `blocked(no-redstone-output:DigitTileEntity)`.
+
+| File | What |
+|---|---|
+| `assets/rftoolsutility/blockstates/analog.json` | 16 `signal=0…15` variants (the jar's 24 `logic_facing` slab rotations are not expressible as content states), all pointing at `block/analog_0` |
+| `assets/rftoolsutility/items/analog.json` | the 26.3 item definition (`minecraft:model` → `rftoolsutility:item/analog`) |
+| `data/rftoolsutility/horizon/block/analog.json` | the block: `minecraft:iron_block` template, hardness 2.0 / blast 2.0, correct tool, metal sound, and the declared 16-value `signal` state (default 0) |
+| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json` | the analog added to the tab |
+| `data/minecraft/tags/block/{mineable/pickaxe,needs_iron_tool}.json` | the analog added to both (upstream's `ironPickaxeTags()`) |
+| `assets/rftoolsutility/lang/en_us.json` | the two jar lang lines (`block.rftoolsutility.analog`, `message.rftoolsutility.analog.header`) |
+
+The carried recipe needs `rftoolsbase:machine_base`, the parent port's item, so the e2e gives the
+block, as every machine slice has.

@@ -631,3 +631,40 @@ the final build; the later `notes.md`/`VALIDATION.md`/`CONTENT.md` edits are not
 still reports `package matches the tree`. R9 holds (SDK path dep only, no `[workspace]`, no packed
 lock); no local type or variant is named `Block`/`Item`, so neither `fits` run false-failed;
 `E2E_TMP` and all four path exports came from `launcher-game.sh env`, never `/tmp`.
+
+## Slice 15 — the analog (0.2.14, forwarded to AdLf-PC)
+
+All Rust ladder steps went through `build-slot.sh run --job W1-rftoolsutility --port
+ports/rftoolsutility --step test|lint|build|check`, each printing `build-slot: forwarding … to the
+remote runner` (hostname `AdLf-PC`); `BUILD_LOCAL=1` was never set. The launcher native build and
+the game legs ran locally in `--step native`/`--step e2e` leases. No lease was backgrounded.
+
+| # | check | command | result |
+|---|---|---|---|
+| 1 | red, runtime | six arithmetic rules stubbed `todo!()` behind their tests, focused `cargo test --offline analog` | `FAILED. 0 passed; 6 failed; 130 filtered out`, each at `src/runtime.rs:1443:5: not yet implemented` (`slice15-red.log`) |
+| 2 | green | `cargo test --offline` | **139 passed; 0 failed** (`slice15-green-try.log`, copied to `sdk-test.log` regenerated for 0.2.14 after the final build) |
+| 3 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`slice15-lint-final.log`, copied to `sdk-clippy.log`) |
+| 4 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **208,506 B**, sha `209077df…53b057b`, 264 entries, no `Cargo.lock` (`slice15-build-1.log`, `-2.log`) |
+| 5 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.14 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`slice15-check-fits.log`) |
+| 6 | fits the pin | `fits … --build 0a875da` | `0a875da  made for`, **FITS_EXIT:0** |
+| 7 | fits another build | `fits … --build 0b14f8a` | `0b14f8a  fits`, **FITS_OTHER_EXIT:0** (`slice15-fits-other.log`) |
+| 8 | gate | `verify-sdk-package.py rftoolsutility` | **1/1** (139 passed, 0 clippy warnings, package matches the tree, R9, skills gate; `slice15-package-gate-final.log`) |
+| 9 | native build | `launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-32656145d602` (`slice15-native-build.log`); the stale 0.2.13 tag was removed first |
+| 10 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e-analog.sh` | **PASS**, `EXIT:0` — AO–AO7 (`e2e-slice15-analog.log`) |
+| 11 | in game, c/f | `SELFTEST=1 SELFTEST_AT=analog` | **FAIL: SELFTEST analog: the 0.5 * 15 output reads 7, expected it inverted**, `EXIT:1` (`e2e-slice15-analog-selftest.log`) |
+| 12 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: Unknown item 'rftoolsutility:analog'**, `EXIT:1` (`e2e-slice15-analog-control.log`) |
+| 13 | no regression | the same game, `e2e-sensor.sh`, `e2e-sequencer.sh`, `e2e-timer.sh`, `e2e-counter.sh` | each **PASS**, `EXIT:0` (`e2e-slice15-{sensor,sequencer,timer,counter}.log`) |
+| 14 | log gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=80 ok=80 missing-exit=0 bad-exit=0`, `EXIT:0` (`slice15-e2e-gate.log`) |
+
+**Traps handled:** the first leg's positive-control redstone block sat three blocks from the lamp,
+so the control could not prove the lamp's parser; it was moved adjacent to the lamp (still two
+blocks from the analog, so it cannot drive I/A/B). `0.5 × 15 → 7` is the artefact's f32 truncation
+and the selftest's inverted assertion, so the exact strength (not a 15/0 latch) is what the leg
+proves; the greater/less phases set the equal multiplier to zero so a branch-selection error is a
+differential. The manifest, README and crate doc were edited **before** the final build; the later
+`notes.md`/`VALIDATION.md`/`CONTENT.md` edits are not packed, and the gate still reports `package
+matches the tree`. R9 holds (SDK path dep only, no `[workspace]`, no packed lock); no local type or
+variant is named `Block`/`Item` (the new enum is `AnalogBranch`), so neither `fits` run false-failed;
+`E2E_TMP` and all four path exports came from `launcher-game.sh env`, never `/tmp`. `digit` was
+not shipped: `DigitTileEntity` has no `setRedstoneState`/`getRedstoneOutput` and its whole behaviour
+is the client `DigitRenderer`, so the mandated lamp assertion cannot be made (`blocked(no-redstone-output:DigitTileEntity)`).
