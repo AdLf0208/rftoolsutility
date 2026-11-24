@@ -30,8 +30,10 @@
 //! data; `/rftoolsutility wire-set` replaces the GUI that set the jar's `logic_facing`.
 //! [`EnvironmentalPart`] is the environmental controller: a 500,000 FE block entity with seven
 //! module slots whose server tick reads the living entities in its radius/y-area and applies its
-//! regeneration module's `minecraft:regeneration` effect every 180 ticks, at the artefact's
-//! volume-scaled FE/tick. `/rftoolsutility environmental` reads the player's own effect back from
+//! modules' `minecraft:regeneration` effects every 180 ticks, at the artefact's volume-scaled
+//! FE/tick. The regeneration and regeneration+ modules name the same potion at amplifiers 0 and 2;
+//! the stronger one wins, and each contributes its own cost. `/rftoolsutility environmental` reads
+//! the player's own effect back from
 //! the game's own effect store; `environmental-set` and `buffer` replace the GUI. The client-only
 //! `EnvironmentalRenderer` is dropped as a standing deviation.
 //! (The display-only `digit` is not ported: upstream's whole behaviour is a client renderer, with
@@ -64,21 +66,22 @@ use runtime::{
     CrafterTier, DamageMode, ENVIRONMENTAL_CAPACITY, ENVIRONMENTAL_EFFECT_DURATION,
     ENVIRONMENTAL_MOB_MULTIPLIER, ENVIRONMENTAL_RECEIVE, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD,
     InvCheckerData, LOW_YIELD, LogicInputs, LogicTable, MATTER_STORAGE, MAX_BEAM_DISTANCE,
-    MatterSource, MobRecipe, RECEIVER_CAPACITY, RECEIVER_RECEIVE, REGENERATION_RF_PER_TICK,
-    RF_PER_TICK, RedstoneChannels, SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE,
-    SensorKind, SequencerData, SequencerMode, SequencerState, Speed, TRANSMITTER_CAPACITY,
-    TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter, analog_branch, analog_neighbours,
-    analog_output, analyzer_due, analyzer_status, beam_due, beam_reach, beam_send, bucket_click,
-    carried, check_output, clamped, counter_signal, counter_tick as run_counter_tick,
+    MatterSource, MobRecipe, RECEIVER_CAPACITY, RECEIVER_RECEIVE, RF_PER_TICK, RedstoneChannels,
+    SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE, SensorKind, SequencerData,
+    SequencerMode, SequencerState, Speed, TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank,
+    TimerData, TimerState, add_matter, analog_branch, analog_neighbours, analog_output,
+    analyzer_due, analyzer_status, beam_due, beam_reach, beam_send, bucket_click, carried,
+    check_output, clamped, counter_signal, counter_tick as run_counter_tick,
     environmental_affected, environmental_default_maxy, environmental_default_miny,
     environmental_default_mode, environmental_default_radius, environmental_due,
-    environmental_in_area, environmental_rf_needed, environmental_volume, fill_level,
-    format_channels, in_beam, invchecker_countdown, invchecker_due, invchecker_signal, logic_cell,
-    logic_neighbours, logic_output, parse_channels, placements, plan, receiver_output,
-    receiver_ready, recipe_for, result_range, rising_edge, sensor_due, sensor_front, sensor_sees,
-    sensor_signal, sequencer_tick as run_sequencer_tick, spawn_at, spawn_cycle, spend, start_cost,
-    start_time, steps, timer_signal, timer_tick as run_timer_tick, transmitter_update,
-    wire_forward, wire_loop_allows, wire_output, wire_source,
+    environmental_in_area, environmental_module_total, environmental_rf_needed,
+    environmental_strongest_amplifier, environmental_volume, fill_level, format_channels, in_beam,
+    invchecker_countdown, invchecker_due, invchecker_signal, logic_cell, logic_neighbours,
+    logic_output, parse_channels, placements, plan, receiver_output, receiver_ready, recipe_for,
+    result_range, rising_edge, sensor_due, sensor_front, sensor_sees, sensor_signal,
+    sequencer_tick as run_sequencer_tick, spawn_at, spawn_cycle, spend, start_cost, start_time,
+    steps, timer_signal, timer_tick as run_timer_tick, transmitter_update, wire_forward,
+    wire_loop_allows, wire_output, wire_source,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -491,6 +494,9 @@ static WIRE_ITEM: OnceLock<ItemKey> = OnceLock::new();
 const ENV_CONTROLLER: &str = "rftoolsutility:environmental_controller";
 const ENV_CONTROLLER_TYPE: &str = "environmental_controller";
 const ENV_REGEN_MODULE: &str = "rftoolsutility:regeneration_module";
+/// Slice 21: `EnvironmentalControllerItem.createRegenerationPlusModule()` — the same
+/// `minecraft:regeneration` potion as the first module, amplifier 2, its own 0.0045 FE/tick cost.
+const ENV_PLUS_MODULE: &str = "rftoolsutility:regenerationplus_module";
 /// The saved `EnvironmentalData` fields and the tick state the jar keeps beside the energy and
 /// items (`EnvironmentalControllerTileEntity.saveAdditional`): radius, bounds, mode, the player
 /// blacklist/whitelist, its `active` flag, the power timeout and the module's own cadence.
@@ -3899,6 +3905,27 @@ fn environmental_energy() -> ModEnergyBuffer {
     }
 }
 
+/// The artefact's `getEnvironmentModules()`: one entry per installed module item, in slot order.
+/// The two carried modules are recognised; an unknown item in a module slot is inert, as it is
+/// upstream (a stack that is not an `EnvModuleProvider` is skipped). The returned strings are the
+/// runtime's module-table keys.
+fn environmental_module_ids(host: &dyn Host, slots: &[Option<ItemStack>]) -> Vec<&'static str> {
+    slots
+        .iter()
+        .filter_map(|slot| slot.as_ref())
+        .filter_map(|stack| {
+            let id = stack.item().id(host);
+            if id == ENV_REGEN_MODULE {
+                Some("regeneration")
+            } else if id == ENV_PLUS_MODULE {
+                Some("regenerationplus")
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// The controller's Part: a block entity that ticks on the server and applies its module's
 /// effect over the configured area. `EnvironmentalRenderer` is a client half, not ported.
 struct EnvironmentalPart;
@@ -3931,19 +3958,11 @@ fn environmental_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEven
     // writes the same on/off bit. A missing key means enabled, as a fresh tile entity is.
     let enabled = !matches!(tag(&event.entity.nbt, KEY_ENV_ENABLED), Some(Tag::Byte(v)) if *v == 0);
     let available = if enabled { energy } else { 0 };
-    let modules = event
-        .entity
-        .items
-        .iter()
-        .filter(|slot| {
-            slot.as_ref()
-                .is_some_and(|stack| stack.item().id(&*host) == ENV_REGEN_MODULE)
-        })
-        .count();
+    let modules = environmental_module_ids(&*host, &event.entity.items);
 
     // `deactivate()` in the artefact also tells each module to stop and arms a 20-tick timeout so
     // an unpowered controller is not re-evaluated every tick.
-    if modules == 0 {
+    if modules.is_empty() {
         deactivate_environmental(&mut event.entity.nbt);
         return;
     }
@@ -3964,8 +3983,7 @@ fn environmental_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEven
     );
     let mode = read_text(&event.entity.nbt, KEY_ENV_MODE)
         .unwrap_or_else(|| environmental_default_mode().to_owned());
-    let total = (REGENERATION_RF_PER_TICK * environmental_volume(radius, miny, maxy) as f32) as i32
-        * modules as i32;
+    let total = environmental_module_total(&modules, environmental_volume(radius, miny, maxy));
     let multiplier = if matches!(mode.as_str(), "all" | "hostile" | "passive" | "mobs") {
         ENVIRONMENTAL_MOB_MULTIPLIER
     } else {
@@ -4014,6 +4032,9 @@ fn environmental_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEven
     let Some(key) = ENV_EFFECT_KEY.get().copied() else {
         return;
     };
+    // Both carried modules name the same potion; vanilla's addEffect keeps the stronger
+    // amplifier, so one deterministic ActiveEffect is applied per entity.
+    let amplifier = environmental_strongest_amplifier(&modules);
     for entity in entities {
         let Some(at) = entity.position(&*host) else {
             continue;
@@ -4036,7 +4057,14 @@ fn environmental_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEven
         };
         // `new MobEffectInstance(potion, MAXTICKS * 3, amplifier, true, false)` — ambient, no
         // particles, the icon shown (vanilla's sixth argument defaults to true).
-        let effect = ActiveEffect::new(key, ENVIRONMENTAL_EFFECT_DURATION, 0, true, false, true);
+        let effect = ActiveEffect::new(
+            key,
+            ENVIRONMENTAL_EFFECT_DURATION,
+            amplifier,
+            true,
+            false,
+            true,
+        );
         let _ = living.add_effect(host, &effect);
     }
 }
@@ -4068,17 +4096,12 @@ fn environmental_readout(
     let maxy = read_int_or(nbt, KEY_ENV_MAXY, environmental_default_maxy());
     let mode =
         read_text(nbt, KEY_ENV_MODE).unwrap_or_else(|| environmental_default_mode().to_owned());
-    let modules = (0..ENVIRONMENTAL_SLOTS_RUNTIME)
-        .filter(|slot| {
-            entity
-                .item_slot(host, *slot as u32)
-                .ok()
-                .flatten()
-                .is_some_and(|stack| stack.item().id(host) == ENV_REGEN_MODULE)
-        })
-        .count();
-    let total = (REGENERATION_RF_PER_TICK * environmental_volume(radius, miny, maxy) as f32) as i32
-        * modules as i32;
+    let slots: Vec<Option<ItemStack>> = (0..ENVIRONMENTAL_SLOTS_RUNTIME)
+        .map(|slot| entity.item_slot(host, slot as u32).ok().flatten())
+        .collect();
+    let module_ids = environmental_module_ids(host, &slots);
+    let modules = module_ids.len();
+    let total = environmental_module_total(&module_ids, environmental_volume(radius, miny, maxy));
     let multiplier = if matches!(mode.as_str(), "all" | "hostile" | "passive" | "mobs") {
         ENVIRONMENTAL_MOB_MULTIPLIER
     } else {
@@ -4447,10 +4470,11 @@ impl Hooks for Mod {
             ));
         }
 
-        // Slice 20: the environmental controller's block entity, seven-slot module container and
-        // energy domain, and its one requested effect key. The module's item is carried content;
-        // the first module is the regeneration module (`PotionEffectModule.create("regeneration",
-        // 0, …)`). No GUI and no renderer: `environmental-set`/`buffer` replace them.
+        // Slice 20 + 21: the environmental controller's block entity, seven-slot module container
+        // and energy domain, and its one requested effect key (both carried modules name
+        // `minecraft:regeneration`). The modules' items are carried content: regeneration
+        // (`PotionEffectModule.create("regeneration", 0, …)`) and regeneration+ (amplifier 2,
+        // 0.0045 FE/tick/volume). No GUI and no renderer: `environmental-set`/`buffer` replace them.
         let env = r.block_key(ENV_CONTROLLER);
         let env_kind = r
             .block_entity_type(ENV_CONTROLLER_TYPE)
@@ -4466,6 +4490,8 @@ impl Hooks for Mod {
         r.block_energy(&env, environmental_energy());
         let _ = ENV_EFFECT_KEY.set(r.effect_key("minecraft:regeneration"));
         r.item_key(ENV_REGEN_MODULE);
+        // Slice 21: the second module declares the same potion at amplifier 2 and its own cost.
+        r.item_key(ENV_PLUS_MODULE);
         // The carried regeneration-module recipe names this serializer; registering it as a data
         // kind (not a grid recipe) is what lets the game load the jar's file at all.
         r.register_crafting_recipe_serializer("rftoolsutility:syringe", SyringeRecipeKind);

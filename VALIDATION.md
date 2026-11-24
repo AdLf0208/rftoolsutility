@@ -855,3 +855,42 @@ needs `data/…/horizon/item/…json`, and a carried recipe needs its serializer
 inert data kind); both are recorded in `notes.md` § "Measured traps this slice cost".
 
 Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+## Slice 21 — the second environmental module (0.2.20, forwarded to AdLf-PC)
+
+All Rust ladder steps went through `build-slot.sh run --job W1-rftoolsutility --port
+ports/rftoolsutility --step test|lint|build|check`, each printing `build-slot: forwarding … to the
+remote runner` (hostname `AdLf-PC`); `BUILD_LOCAL=1` was never set. The launcher native build and
+the game/ctl legs ran locally in `--step native`/`--step e2e` leases. No lease was backgrounded and
+no turn ended with a shell outstanding. Logs: `../evidence/rftoolsutility/{gate-buff-oracle-0a875da,
+slice21-red,slice21-green,slice21-lint,slice21-build-a,slice21-build-b,slice21-check-fits,
+slice21-package-gate}.log` and `../evidence/rftoolsutility-e2e/e2e-slice21-*.log`.
+
+| # | check | command | result |
+|---|---|---|---|
+| 0 | buff gate | artefact `f799314` + SDK grep | **not blocked**: `createRegenerationPlusModule()` is a plain `PotionEffectModule` (amp 2, 0.0045), readable by `LivingRef::effect`; `BuffEModule`s are `blocked(no-player-buff-oracle)` (0 SDK hits) |
+| 1 | red | three new pure rules stubbed `todo!()`, `cargo test --offline` | **FAILED. 191 passed; 3 failed**, each at `not yet implemented` (`slice21-red.log`) |
+| 2 | green | `cargo test --offline` | **194 passed; 0 failed** (`sdk-test.log` regenerated for 0.2.20 after the final build) |
+| 3 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`sdk-clippy.log`) |
+| 4 | build ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **274,407 B**, sha `86befcba…d62e57`, 346 entries, no packed `Cargo.lock` (`slice21-build-{a,b}.log`) |
+| 5 | check + fits | `cargo horizon-mod check …`, `fits --build 0a875da`, `fits --build 0b14f8a` | `0.2.20 native-1/0a875da…/e59da909…, for 26.3`; `0a875da made for`, `0b14f8a fits` (`sdk-{check,fits}.log`) |
+| 6 | gate | `verify-sdk-package.py rftoolsutility` | **1/1** — `package matches the tree`, R9, 194 tests, 0 warnings, skills gate (`slice21-package-gate.log`) |
+| 7 | native build | `launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-17a00446e334` (`slice21-native-build.log`); the stale 0.2.19 tag was removed first |
+| 8 | green leg | `e2e-environmental2.sh` | **PASS**, `EXIT:0` — EP0–EP4 (`e2e-slice21-environmental2.log`): `rf=18`/amp 0 with one module, `rf=74`/amp 2 with both, real buffer drops 65×18 and 65×74, amp 0 again on removal, unknown id refused |
+| 9 | control | `CONTROL=1` (the unmodded Nightly) | **FAIL: ctl place rftoolsutility:environmental_controller … refused three times**, `EXIT:1` (`e2e-slice21-environmental2-control.log`) |
+| 10 | selftest | `SELFTEST=1 SELFTEST_AT=environmental2` | **FAIL: SELFTEST environmental2: the powered plus module read minecraft:regeneration amplifier=2, expected it to stay at amplifier 0**, `EXIT:1` (`e2e-slice21-environmental2-selftest.log`) |
+| 11 | no regression | the same game, `e2e-environmental.sh` | **PASS**, `EXIT:0` — EN–EN6 (`e2e-slice21-environmental-regression.log`) |
+| 12 | strict e2e gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=127 ok=127 missing-exit=0 bad-exit=0` (`slice21-e2e-gate.log`) |
+
+The in-game assertion reads the command player's own `LivingRef::effect` with
+`/rftoolsutility environmental <pos>`. At radius 20 / y 100..104 (volume 6,283) the artefact's
+per-module truncation gives `(int)(0.0015×6283)=9` and `(int)(0.0045×6283)=28`, summed to 37 and
+multiplied by MODE_ALL's 2.0 → 74 FE/tick (18 with one module), a rise of 56 that is the plus
+module's own cost. Both modules apply the artefact's same `minecraft:regeneration` potion, so the
+stronger amplifier (2) replaces the weaker (0) as vanilla's `addEffect` does; removing the plus
+module restores amplifier 0. The three traps this slice cost (a `ModBlockEntityView` vs
+`BlockEntityRef` glue type, the runner's `*.rs` pull-back exclusion, and a wrong 46 FE/tick
+back-of-envelope corrected to 74 against the artefact) are recorded in `notes.md` § "Measured
+traps this slice cost".
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices

@@ -22,7 +22,8 @@
     "rftoolsutility:redstone_receiver",
     "rftoolsutility:wire",
     "rftoolsutility:environmental_controller",
-    "rftoolsutility:regeneration_module"
+    "rftoolsutility:regeneration_module",
+    "rftoolsutility:regenerationplus_module"
   ],
   "title": "itemGroup.rftoolsutility"
 }

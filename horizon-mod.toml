@@ -1,6 +1,6 @@
 id = "rftoolsutility"
 name = "RFTools Utility"
-version = "0.2.19"
+version = "0.2.20"
 description = """A port of RFTools Utility for Horizon: the tank, a 32,000 mB fluid tank that holds
 one fluid at a time, takes and gives a bucket on a right click, exposes the fluid
 capability on every face and shows its fill level through the jar's own nine textures;
@@ -36,10 +36,11 @@ and the wire, a LogicSlabBlock that passes the input-side neighbour's exact stre
 side only, with a loop-guarded neighbour-change nudge so a run of wires carries a signal in a
 straight line, its input side written by `/rftoolsutility wire-set` in place of the GUI;
 and the environmental controller, a 500,000 FE machine with a 20,000/tick input, seven module
-slots and a server tick that reads the area's living entities and applies a module's effect
-(the regeneration module, `minecraft:regeneration`) for the artefact's volume-scaled FE/tick
-(at least 5), with `/rftoolsutility environmental` reading the player's own active effect back
-from the game.
+slots and a server tick that reads the area's living entities and applies its modules' effects
+for the artefact's volume-scaled FE/tick (at least 5). The regeneration and regeneration+ modules
+carry `minecraft:regeneration` at amplifiers 0 and 2 — the stronger amplifier wins and each module
+contributes its own 0.0015/0.0045 FE per tick per volume unit — with `/rftoolsutility environmental`
+reading the player's own active effect back from the game.
 The display-only digit is not ported: upstream has no redstone output, only a client
 sprite renderer."""
 authors = ["McJty", "Horizon native mod contributors"]

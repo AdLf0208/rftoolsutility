@@ -1,0 +1,19 @@
+{
+  "category": "misc",
+  "key": {
+    "E": "rftoolsbase:infused_diamond",
+    "P": "rftoolsutility:moduleplus_template",
+    "X": "rftoolsutility:regeneration_module",
+    "f": "minecraft:golden_apple"
+  },
+  "pattern": [
+    "fXf",
+    "EPE",
+    "fEf"
+  ],
+  "result": {
+    "count": 1,
+    "id": "rftoolsutility:regenerationplus_module"
+  },
+  "type": "minecraft:crafting_shaped"
+}

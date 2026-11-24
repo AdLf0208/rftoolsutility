@@ -1933,6 +1933,50 @@ pub fn environmental_due(ticks: i32) -> (i32, bool) {
     }
 }
 
+/// `EnvironmentalConfiguration.REGENERATIONPLUS_RFPERTICK` (`regenerationPlusRFPerTick`):
+/// FE per tick per unit of volume for the regeneration+ module.
+pub const REGENERATIONPLUS_RF_PER_TICK: f32 = 0.0045;
+/// `EnvironmentalControllerItem.createRegenerationPlusModule()`'s
+/// `PotionEffectModule.create("regeneration", 2, …)` — amplifier 2 (regeneration III).
+pub const REGENERATIONPLUS_AMPLIFIER: i32 = 2;
+
+/// The artefact's carried module table: `(amplifier, FE/tick/volume)` per module id, read from
+/// `EnvironmentalControllerItem.create*Module()` and `EnvironmentalConfiguration`. Both carried
+/// modules name the same `minecraft:regeneration` potion; only the amplifier and cost differ.
+#[must_use]
+pub fn environmental_module(id: &str) -> Option<(i32, f32)> {
+    match id {
+        "regeneration" => Some((0, REGENERATION_RF_PER_TICK)),
+        "regenerationplus" => Some((REGENERATIONPLUS_AMPLIFIER, REGENERATIONPLUS_RF_PER_TICK)),
+        _ => None,
+    }
+}
+
+/// `EnvironmentalControllerTileEntity.getEnvironmentModules`' sum: each module contributes its
+/// own `(int)(rfPerTick × volume)`, and those integers are added (the truncation is per module,
+/// not of the sum).
+#[must_use]
+pub fn environmental_module_total(modules: &[&str], volume: i32) -> i32 {
+    modules
+        .iter()
+        .filter_map(|id| environmental_module(id))
+        .map(|(_, rf)| (rf * volume as f32) as i32)
+        .sum()
+}
+
+/// The resolution of two modules that apply the *same* potion id: vanilla's
+/// `LivingEntity.addEffect` keeps the stronger amplifier, so the glue applies one deterministic
+/// `ActiveEffect` at that amplifier.
+#[must_use]
+pub fn environmental_strongest_amplifier(modules: &[&str]) -> i32 {
+    modules
+        .iter()
+        .filter_map(|id| environmental_module(id))
+        .map(|(amplifier, _)| amplifier)
+        .max()
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4204,5 +4248,52 @@ mod tests {
     #[test]
     fn the_effect_duration_is_three_module_cadences() {
         assert_eq!(ENVIRONMENTAL_EFFECT_DURATION, 540);
+    }
+
+    #[test]
+    fn the_regenerationplus_module_carries_amplifier_two_and_its_own_cost() {
+        assert_eq!(environmental_module("regeneration"), Some((0, 0.0015)));
+        assert_eq!(
+            environmental_module("regenerationplus"),
+            Some((REGENERATIONPLUS_AMPLIFIER, REGENERATIONPLUS_RF_PER_TICK))
+        );
+        assert_eq!(REGENERATIONPLUS_AMPLIFIER, 2);
+        assert_eq!(REGENERATIONPLUS_RF_PER_TICK, 0.0045);
+        assert_eq!(environmental_module("rftoolsutility:not_a_module"), None);
+    }
+
+    #[test]
+    fn each_module_contributes_its_own_truncated_cost_to_the_total() {
+        // Volume 6283 = (int)(20² × π × 5): regeneration 9, regeneration+ 28, summed = 37.
+        let volume = environmental_volume(20, 100, 104);
+        assert_eq!(volume, 6_283);
+        assert_eq!(environmental_module_total(&["regeneration"], volume), 9);
+        assert_eq!(
+            environmental_module_total(&["regenerationplus"], volume),
+            28
+        );
+        assert_eq!(
+            environmental_module_total(&["regeneration", "regenerationplus"], volume),
+            37
+        );
+        // At radius 8 both truncate to 0 and 2 — the plus module's cost is still its own.
+        let small = environmental_volume(8, 100, 102);
+        assert_eq!(environmental_module_total(&["regeneration"], small), 0);
+        assert_eq!(environmental_module_total(&["regenerationplus"], small), 2);
+    }
+
+    #[test]
+    fn a_stronger_module_replaces_the_weaker_one_on_the_same_potion() {
+        assert_eq!(environmental_strongest_amplifier(&["regeneration"]), 0);
+        assert_eq!(environmental_strongest_amplifier(&["regenerationplus"]), 2);
+        assert_eq!(
+            environmental_strongest_amplifier(&["regeneration", "regenerationplus"]),
+            2
+        );
+        assert_eq!(
+            environmental_strongest_amplifier(&["regenerationplus", "regeneration"]),
+            2
+        );
+        assert_eq!(environmental_strongest_amplifier(&[]), 0);
     }
 }

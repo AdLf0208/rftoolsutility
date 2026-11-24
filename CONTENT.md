@@ -263,3 +263,26 @@ pack jar (`rftoolsutility-1.21-7.0.13.jar`, SHA-256 `615642b1…d3ff`):
 The controller's carried recipe needs `rftoolsbase:machine_frame`, so the e2e gives the block, as
 every machine slice has. The 22 other module items are not carried; their textures exist in the jar
 but no effect oracle in this slice is claimed for them.
+
+## Slice 21 — the second environmental module (`regenerationplus_module`)
+
+One more jar item, regenerated deterministically by `tools/assemble_content.py` from the same
+pack jar (`rftoolsutility-1.21-7.0.13.jar`, SHA-256 `615642b1…d3ff`). The artefact's
+`createRegenerationPlusModule()` is `PotionEffectModule.create("regeneration", 2, …)` at 0.0045
+FE/tick/volume; the jar's own lang line calls it "regeneration III".
+
+| File | Origin / adaptation |
+|---|---|
+| `assets/rftoolsutility/models/item/regenerationplus_module.json` | jar, byte for byte |
+| `assets/rftoolsutility/textures/item/envmodules/regenerationplusmoduleitem.png` | jar, byte for byte |
+| `assets/rftoolsutility/items/regenerationplus_module.json` | generated 26.3 item definition (`minecraft:model`) |
+| `data/rftoolsutility/horizon/item/regenerationplus_module.json` | generated `{"template": "minecraft:stick"}` — a standalone module item needs its own declaration (slice 20's load-time trap) |
+| `data/rftoolsutility/recipe/regenerationplus_module.json` | jar, byte for byte: an ordinary `minecraft:crafting_shaped` recipe (unlike the first module's `rftoolsutility:syringe` file), needing `rftoolsbase:moduleplus_template` and `rftoolsbase:infused_diamond`, so the e2e gives the item |
+| `data/rftoolsutility/advancement/recipes/misc/regenerationplus_module.json` | jar, byte for byte |
+| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json` | the new module added to the tab |
+| `assets/rftoolsutility/lang/en_us.json` | the jar's item name and `message.….header` lines, verbatim |
+
+No texture, model or lang file is invented. The module's effect (amplifier 2 on the *same*
+`minecraft:regeneration` potion as the first module) and its 0.0045 FE/tick/volume cost are code,
+in `src/runtime.rs`, read from the artefact at `f799314`; the 21 other module items are still not
+carried, and the `BuffEModule` half is `blocked(no-player-buff-oracle)` at this pin.

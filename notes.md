@@ -4311,19 +4311,185 @@ the final build; `sdk-test.log`/`sdk-clippy.log` were regenerated after it. The 
 printed `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`); no `BUILD_LOCAL=1`
 was set, no lease was backgrounded, and no turn ended with a shell outstanding.
 
+## Slice 21 — the second environmental module (2026-11-24)
+
+**Chosen from the port's own gap list** — the `## Next slice` immediately above slice 20, verbatim:
+
+> The next environmental-family slice is the **second module** (or the whole module set): carry
+> another jar module item from `assets/rftoolsutility/models/item/envmodules/*.json` (e.g.
+> `regenerationplus_module`, amplifier 2, 0.0045 FE/tick/volume, or one of the 17 buff modules) and
+> add its effect id/amplifier to the same seven-slot module rule.
+
+Class **content**, tier **machines** (ledger). One carried item and one effect/cost constant on the
+seven-slot rule and tick slice 20 already proved — no new block entity, container, energy domain,
+tick or renderer. MIT, ours on `main` → **Update 0.2.20** (0.2.19 staged on PR #1849; never a first
+`Add`). Pin `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`.
+
+### Gate first (before any edit): not blocked
+
+Full verbatim evidence: `../_shared/evidence/rftoolsutility/gate-buff-oracle-0a875da.log`.
+- `EnvironmentalControllerItem.createRegenerationPlusModule()` at `f799314` is a plain
+  `PotionEffectModule.create("regeneration", 2, BUFF_REGENERATIONPLUS, REGENERATIONPLUS_RFPERTICK.get())`;
+  `regenerationPlusRFPerTick` defaults to **0.0045**. Same potion id as slice 20's module,
+  amplifier **2** (the jar's lang line says "regeneration III"), 540-tick duration, 180-tick cadence.
+- `BuffEModule`s (featherfalling, flight, …) write a `PlayerBuff` store: **0** `player.?buff`/
+  `addBuff`/`BuffProperties` hits in the pin's SDK (`api-source`), so they would be
+  `blocked(no-player-buff-oracle)`. No buff oracle is invented. The chosen module's potion effect
+  is readable by the existing parsed readout through `LivingRef::effect` (measured stamped in
+  slice 20 and re-grepped here), so it is **not** blocked.
+
+### The artefact's exact numbers (read, not inferred from the name)
+
+| Number | Value | Source |
+|---:|---|---|
+| amplifier | 2 | `EnvironmentalControllerItem.createRegenerationPlusModule()` |
+| potion | `minecraft:regeneration` (the same id as the first module) | the same call, `PotionEffectModule.create("regeneration", 2, …)` |
+| cost | 0.0045 FE/tick/volume | `EnvironmentalConfiguration.REGENERATIONPLUS_RFPERTICK`, `regenerationPlusRFPerTick` default |
+| first module's cost | 0.0015 | `REGENERATION_RFPERTICK` |
+| per-module truncation | `(int)(rfPerTick × volume)` **each**, then summed | `EnvironmentalControllerTileEntity.getEnvironmentModules():376` |
+| mode multiplier | 2.0 in `MODE_ALL`/hostile/passive/mobs | `getPowerMultiplier()`, applied in `getTotalRfPerTick():251` |
+| cadence / duration | 180 / 540 ticks | `PotionEffectModule.MAXTICKS`, `MAXTICKS*3` |
+
+### What it does
+
+- **Runtime** (`src/runtime.rs`): a module table `environmental_module(id) -> (amplifier, cost)`,
+  `environmental_module_total(modules, volume)` that truncates **each** module's contribution
+  before summing (upstream's exact shape), and `environmental_strongest_amplifier(modules)`:
+  because both carried modules apply the same potion id, the game keeps the stronger amplifier, so
+  the glue applies one deterministic `ActiveEffect` at the resolved amplifier.
+- **Glue** (`src/lib.rs`): `environmental_module_ids` reads the seven slots, maps the new item to
+  `regenerationplus`, counts both modules in `modules=` and `rf=` (tick *and* readout), applies the
+  resolved amplifier, and registers the new item key. The readout still reads the **player's own**
+  `LivingRef::effect`, so the assertion is on the game, not a mirror.
+- **Content**: `tools/assemble_content.py` carries the jar's `regenerationplus_module` model,
+  texture, item definition, `horizon/item` declaration (a standalone item needs one — slice 20's
+  trap), recipe, advancement and two lang lines; its recipe is an ordinary shaped recipe (unlike
+  the first module's inert syringe recipe) and needs the parent port's items, so the e2e gives the
+  module like every other item.
+
+### Red → green (unit, verbatim)
+
+Three new pure rules were written behind `todo!()` bodies first (`slice21-red.log`):
+
+```
+---- runtime::tests::a_stronger_module_replaces_the_weaker_one_on_the_same_potion stdout ----
+thread '...' panicked at src/runtime.rs:1964:5: not yet implemented: slice 21 red: stronger amplifier wins
+---- runtime::tests::each_module_contributes_its_own_truncated_cost_to_the_total stdout ----
+thread '...' panicked at src/runtime.rs:1956:5: not yet implemented: slice 21 red: per-module truncated cost sum
+---- runtime::tests::the_regenerationplus_module_carries_amplifier_two_and_its_own_cost stdout ----
+thread '...' panicked at src/runtime.rs:1948:5: not yet implemented: slice 21 red: module amplifier and cost table
+test result: FAILED. 191 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Green: **194 passed; 0 failed** (`sdk-test.log`, regenerated for 0.2.20 after the final build).
+`cargo fmt --check` clean and `cargo clippy --all-targets -- -D warnings` 0 warnings
+(`sdk-clippy.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-environmental2.sh` — a focused, fail-capable leg on the launcher-built game; one lease
+per leg, every log ends with its exit.
+
+| log | verdict |
+|---|---|
+| `e2e-slice21-environmental2.log` | **PASS**, `EXIT:0` — EP0–EP4 |
+| `e2e-slice21-environmental2-selftest.log` | **FAIL: SELFTEST environmental2: the powered plus module read minecraft:regeneration amplifier=2, expected it to stay at amplifier 0**, `EXIT:1` |
+| `e2e-slice21-environmental2-control.log` | **FAIL: ctl place rftoolsutility:environmental_controller … refused three times** (unmodded Nightly), `EXIT:1` |
+| `e2e-slice21-environmental-regression.log` | **PASS**, `EXIT:0` — slice 20's whole family still green on the final bytes |
+
+Parsed transcript (radius 20, y 100..104 → volume 6,283):
+
+```
+EP0:  energy=0/500000 active=false mode=all radius=20 … rf=0 modules=0 effect=none amplifier=- nonce=1
+EP1:  energy=99190/500000 active=true … rf=18 modules=1 effect=minecraft:regeneration amplifier=0 nonce=2
+      the buffer fell 1170 FE = 65 x 18 FE/tick
+EP2:  energy=92992/500000 active=true … rf=74 modules=2 effect=minecraft:regeneration amplifier=2 nonce=4
+      the buffer fell 4810 FE = 65 x 74 FE/tick (56 more per tick than one module)
+EP3:  energy=86366/500000 active=true … rf=18 modules=1 effect=minecraft:regeneration amplifier=0 nonce=6
+EP4:  give rftoolsutility:not_a_module → rc=1, unknown item
+```
+
+Each claim is a parsed field of a nonce-pinned reply. **EP2 is fail-capable**: the artefact's
+amplifier 2 and its own `(int)(0.0045×6283)×2 = 56` FE/tick rise are asserted, `SELFEST_AT` inverts
+the amplifier, EP1/EP3 are the one-input differentials (the module present/absent), EP4 refuses an
+unknown id, and CONTROL=1 uses the unmodded Nightly.
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=127 ok=127 missing-exit=0 bad-exit=0`.
+
+### Measured traps this slice cost
+
+1. **The tick's block entity is a `ModBlockEntityView`, not a `BlockEntityRef`.** The first glue
+   compile failed E0308/E0277 until the module helper took `&[Option<ItemStack>]`; the readout
+   (a `BlockEntityRef`) now collects its seven `item_slot` reads into the same slice.
+2. **The forwarded runner excludes `*.rs`/`*.toml` from pull-back**, so `cargo fmt` on the far box
+   could not round-trip; rustfmt's exact reflow was applied to the local sources, then
+   `cargo fmt --check` + clippy ran clean through the runner.
+3. **A back-of-envelope 46 FE/tick was wrong, not the code**: the mob multiplier applies to the
+   *sum* of the per-module truncated costs, so two modules cost `(9+28)×2 = 74`, a rise of 56.
+   Corrected in the plan and asserted against the artefact, red-first.
+4. **An e2e window's tick count is not exactly the `ctl wait` count** (65 ticks per 60-wait here),
+   so the FE-drop assertion is `> 0` and `drop % rf == 0`, with the parsed `rf` doing the exact
+   arithmetic claim — the same shape slice 20 used.
+
+### Deviations and content adaptations
+
+- **No GUI, no renderer**, as before: `environmental-set` and `buffer` replace the window; the
+  two carried modules are given by the harness, like every machine item in this port.
+- **The second module's recipe is not crafted in game**: it needs `rftoolsbase:moduleplus_template`
+  and `rftoolsbase:infused_diamond` (the parent port), so the e2e gives the module.
+- **The player-buff half of `PotionEffectModule` is not ported.** Upstream also calls
+  `BuffProperties.addBuffToPlayer(player, BUFF_REGENERATIONPLUS, 180)`; the pin has no PlayerBuff
+  surface at all (gate above), so the provable product is the potion effect read from the game's
+  own store. A user notices only the effect, not the mod's internal buff list.
+- **No new upstream defect is adopted.** The per-module truncation, the multiplier and the
+  stronger-amplifier resolution are the artefact's and vanilla's own rules.
+
+### Coverage after slice 21
+
+| family | status |
+|---|---|
+| `rftoolsutility:environmental_controller` (block, item, recipe, advancement, loot, texture) | tested — EP0: placed/read back; EP4: unknown id refused |
+| `rftoolsutility:regeneration_module` (amplifier 0, 0.0015) | tested — EP1/EP3: applied `minecraft:regeneration amplifier=0`, `rf=18` |
+| `rftoolsutility:regenerationplus_module` (amplifier 2, 0.0045) | tested — EP2: same potion at amplifier 2, `rf=74` (rise 56), removed in EP3 |
+| the 500,000 FE buffer, 20,000/tick fill and volume-scaled FE/tick | tested — EP1: 1170 = 65×18; EP2: 4810 = 65×74 |
+| the 7-slot module inventory, two modules at once, and the power timeout | tested — EP0/EP1/EP2/EP3 `modules=0/1/2/1` and `rf=0/18/74/18` |
+| the 180-tick cadence, 540-tick duration and six modes | exercised by slice 20's leg + unit rules (unchanged) |
+| the player's own effect read from `LivingRef::effect` | tested — EP1 (amp 0), EP2 (amp 2), EP3 (amp 0 after removal) |
+| `BuffEModule`s (featherfalling, flight, glowing-as-buff, …) and the 20 other modules | `blocked(no-player-buff-oracle)` for the buff ones; not ported for the remaining potion modules |
+| the GUI, the syringe item and `EnvironmentalRenderer` | not ported (a menu / a missing item / a renderer) |
+| a `rftoolsbase:` recipe craft | `blocked(rftoolsbase:machine_frame)` — the parent port's items; the e2e gives the modules |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 274,407 B | `86befcbad4ba701cc761448edea409761d05598271e387ef88d6d35a16562e57` | 346 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice21-build-a.log`, `slice21-build-b.log`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.20 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`),
+`fits --build 0a875da` → `made for`, `fits --build 0b14f8a` → `fits`,
+`verify-sdk-package.py rftoolsutility` → **1/1** (`package matches the tree`, R9, 194 tests,
+0 warnings, skills gate). The manifest description, README, crate doc and carried content were
+edited **before** the final build; the non-packed `notes.md`/`VALIDATION.md`/`CONTENT.md` edits are
+after it and the gate still reports `package matches the tree`. The launcher's `native-build`
+compiled the mod (`Compiling rftoolsutility (1 of 1)`, `native-0a875da-17a00446e334`) after the
+stale 0.2.19 tag was removed. All Rust ladder steps printed `build-slot: forwarding … to the remote
+runner` (hostname `AdLf-PC`); the game/ctl legs stayed local as designed. `BUILD_LOCAL=1` was never
+set, no lease was backgrounded, and no turn ended with a shell outstanding.
+
 ## Next slice
 
-The next environmental-family slice is the **second module** (or the whole module set): carry
-another jar module item from `assets/rftoolsutility/models/item/envmodules/*.json` (e.g.
-`regenerationplus_module`, amplifier 2, 0.0045 FE/tick/volume, or one of the 17 buff modules) and
-add its effect id/amplifier to the same seven-slot module rule. It fits the **machines** tier
-exactly — no new block entity, no new tick, one carried item and one effect constant. The artefact
-rule to read first is `EnvironmentalControllerItem.create*Module()` and `PotionEffectModule`'s
-`amplifier`/`getRfPerTick` for that module, plus `BuffEModule` for the non-potion ones (those need
-a player buff store this port does not have — check first; if the buff has no fail-capable game
-oracle, stop with `blocked(<buff>)`, as the redstone-information gate did). The concrete assertion:
-insert the new module **alongside** the regeneration module and assert the player's own effect
-readout reports both ids/amplifiers (or the stronger one replacing the weaker), with the FE spend
-rising by the module's own `rfPerTick × volume`; `SELFTEST_AT=environmental2` inverts one amplifier
-and must `EXIT:1`. If no second module has a game-readable effect, the honest next slice is a
-different machines family from the ledger or a stop — not an invented buff readout.
+The next environmental slice is the **distinct-id potion modules** (one family, still machines
+tier): carry `haste_module` (`minecraft:haste`, amplifier 0, 0.001 FE/tick/volume) — or a small set
+of `speed`/`night_vision`/`water_breathing`/`luck` — on the same seven-slot rule and extend the
+readout to print the player's **full** effect list (`LivingRef::effects`, stamped at this pin) so
+two distinct ids/amplifiers can be asserted at once. The concrete assertion: with regeneration,
+regeneration+ and haste installed, read `effects=minecraft:regeneration@2,minecraft:haste@0` from
+the player's own game store, assert `rf` rises by haste's own `(int)(0.001×volume)×multiplier`, and
+end `SELFTEST_AT=environmental3` at `EXIT:1` by inverting one amplifier. The `BuffEModule` half
+stays `blocked(no-player-buff-oracle)` unless a future pin stamps a PlayerBuff surface; recheck
+that gate at every new pin before dispatching it. If no distinct-id potion module is wanted, the
+honest alternatives are another machines family from the ledger or a stop — never an invented buff
+readout.

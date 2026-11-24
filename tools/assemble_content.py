@@ -269,6 +269,13 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/recipe/environmental_controller.json",
     "data/rftoolsutility/recipe/regeneration_module.json",
     "data/rftoolsutility/loot_table/blocks/environmental_controller.json",
+    # Slice 21: the second environmental module. The artefact's
+    # `createRegenerationPlusModule()` is the same `minecraft:regeneration` potion at amplifier 2
+    # and 0.0045 FE/tick/volume; its jar files are carried exactly as the first module's are.
+    "assets/rftoolsutility/models/item/regenerationplus_module.json",
+    "assets/rftoolsutility/textures/item/envmodules/regenerationplusmoduleitem.png",
+    "data/rftoolsutility/advancement/recipes/misc/regenerationplus_module.json",
+    "data/rftoolsutility/recipe/regenerationplus_module.json",
 ]
 # Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
 # upstream's "living?" form, and these tags are the yield a living item carries
@@ -425,6 +432,7 @@ TAB = {
         f"{MOD}:wire",
         f"{MOD}:environmental_controller",
         f"{MOD}:regeneration_module",
+        f"{MOD}:regenerationplus_module",
     ],
 }
 
@@ -755,8 +763,10 @@ LANG_KEYS = [
     "message.rftoolsutility.wire.header",
     "block.rftoolsutility.environmental_controller",
     "item.rftoolsutility.regeneration_module",
+    "item.rftoolsutility.regenerationplus_module",
     "message.rftoolsutility.environmental_controller.header",
     "message.rftoolsutility.regeneration_module.header",
+    "message.rftoolsutility.regenerationplus_module.header",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -1089,7 +1099,11 @@ def main() -> None:
     )
     # Slice 20: the controller's blockstate and block model are the jar's own (re-pointed above);
     # its item definition and the module's item definition are generated as every machine's are.
-    for name in ("environmental_controller", "regeneration_module"):
+    for name in (
+        "environmental_controller",
+        "regeneration_module",
+        "regenerationplus_module",
+    ):
         dump(
             assets / "items" / f"{name}.json",
             {"model": {"type": "minecraft:model", "model": f"{MOD}:item/{name}"}},
@@ -1119,7 +1133,8 @@ def main() -> None:
     dump(data_dir / "horizon" / "block" / "environmental_controller.json", TELEPORTER_BLOCK)
     # The module is a standalone item, not a block item: the pin needs its own item declaration,
     # otherwise `mod.requested unknown item rftoolsutility:regeneration_module` crashes the game.
-    dump(data_dir / "horizon" / "item" / "regeneration_module.json", {"template": "minecraft:stick"})
+    for name in ("regeneration_module", "regenerationplus_module"):
+        dump(data_dir / "horizon" / "item" / f"{name}.json", {"template": "minecraft:stick"})
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
