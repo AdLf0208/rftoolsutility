@@ -4023,3 +4023,307 @@ the tablet beside a transmitter on channel N, read the channel's value from the 
 matches the world file's stored strength, with an unknown channel refused and `SELFTEST_AT=information`
 ending `EXIT:1`. Redistribute the modified brief from the orchestrator; this report proposes it, it
 does not dispatch it.
+
+## Gate — `redstone_information` non-GUI oracle (2026-11-24): `blocked(no-information-oracle)`
+
+This gate is the direct child of slice 19's `## Next slice` (the only remaining logic-row gap). It
+was **gate-only**: no version, no package, no fake GUI. Pin `0a875da91d…` / `e59da909…`; artefact
+`f799314007d68042df8504e83cd549360f2627c7` (branch `1.21_neo`, shallow clone at `/tmp/opencode`,
+`HEAD` verified equal to the commit); SDK `ports/_shared/sdk/0a875da/api-source.tar.xz` unpacked to
+`/tmp/opencode/rfu-sdk-api`. Full verbatim evidence:
+`../_shared/evidence/rftoolsutility/gate-redstone-information-oracle.log`.
+
+### Artefact source evidence — the item's whole behaviour is a GUI screen
+
+- `RedstoneInformationItem.use()` (lines 88–97) does exactly one thing on the server: `openGui()` →
+  `MenuProvider` → `RedstoneInformationContainer` → `GuiRedstoneInformation`. No world write, no
+  signal, no command and no item mutation on use. `getChannels`/`addChannel`/`removeChannel`
+  (100–119) are static item-component helpers over `ITEM_REDSTONE_INFORMATION_DATA`; the tooltip
+  (62–65) lists channels client-side only.
+- The **only** in-world writer of the tablet's channel set is a *different block*:
+  `RedstoneChannelBlock.java:80` calls `RedstoneInformationItem.addChannel(stack, channel)` on a
+  right-click of the channel-marker block. That block is not in this port.
+- `RedstoneInformationContainer.broadcastChanges()` (62–99, server) merely gathers the tablet's
+  channel set plus the world `RedstoneChannels` table's name/value and sends
+  `PacketSendRedstoneData` to the client — no server state, signal or command output.
+- The "channel table" itself is client-drawn widget text (`GuiRedstoneInformation.java:113–118`:
+  `name.text(…)`, `value.text(Integer.toString(pair.getRight()))`).
+
+### SDK grep evidence — no non-GUI, fail-capable oracle for that display
+
+- `generated/wire_generated.rs:59`: `ScreenView { id, menu, title, rect, slots, mouse, partial_tick }`
+  — no field carries drawn widget text. `ctl screen`/`menu` read container slots, never the labels
+  the GUI paints; a headless run has no renderer, so a screenshot is an image, not an asserted value.
+- The table's **data is already exposed non-GUI** by slice 18's `redstone` command: `src/lib.rs`
+  `red_line()` states "the channel's table value", and `e2e-slice18-redstone.log` asserts R1
+  `value=15`, R3 `value=11` from the parsed reply. A new tablet readout would restate an existing
+  command, not add an oracle.
+- Item-component surfaces exist (`hooks/notes.rs:1725` `component_types` +
+  `native_component`/`native_set_component`; `item_stack.rs:334` `components()` / `:280`
+  `set_component_value`), and menu/screen surfaces exist (`host/players.rs:712` `player_open_menu`,
+  `host/menus.rs:20` `open_menu`, `hooks/notes.rs:1854` `screen_opening`/`ModScreen`). But the port
+  has zero menu machinery (all containers `menu: None`), the sole world writer of the set is absent,
+  and a command that writes/reads the component back only duplicates slice 18's already-proven
+  table. Porting the screen would be an unprovable claim; fabricating a command stand-in would be the
+  "fake GUI" the gate forbids.
+
+### Verdict
+
+**`blocked(no-information-oracle)`** — no version, no package, no fake GUI. Do not dispatch a 0.2.19
+information slice on the current evidence; the item's only product is a GUI whose values are already
+proven by slice 18.
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices (rust-review/rust-port did not apply: a source/SDK gate, not an audit or a translation)
+
+## Next slice (proposal — not dispatched): environmental controller, first module slice
+
+With `redstone_information` blocked, the honest next machines-family slice is from the shared gap
+line `## Gaps (the rest of the mod)` (verbatim):
+
+> **Environmental controller** and its 23 modules; ~~the **spawner** with its 100 mob recipes~~ …
+
+It is the only unported **machines** family on that line that is expressible at this pin: the teleporter
+GUI/dialing-device family was already gated as not a slice (`DialingDeviceTileEntity` has no tick and
+no redstone output — "a new subsystem, not a slice"), and matter transmitter/receiver/booster +
+destination analyzer are done (slices 9 and 10). The environmental controller is a block entity with a
+500,000 FE buffer (`environmentalMaxRF`), a 20,000/tick input, a 7-slot module inventory, a server tick
+and a radius/miny/maxy area — exactly the machines tier, no renderer or AI required (the
+`EnvironmentalRenderer` is a client half dropped as a standing deviation).
+
+**First surface gate to run (Step-0 gate):** confirm the artefact's effect application is expressible
+— grep for and reach `LevelRef::entities_in` (`host/levels.rs:293`, `level_reads.rs:116`),
+`Registrar::effect_key` (`parts/effects.rs:10`), and `LivingHost::living_effect(s)` /
+`living_add_effect` (`host/living.rs:30/37/357`). If any is missing or unstamped, stop with
+`blocked(<symbol>)` rather than invent an inert module. The 7 module slots and their carried item
+component follow the already-proven crafter/slot path.
+
+**Concrete fail-capable assertion (the slice's product):** a controller placed at `P`, mode
+`MODE_ALL`, `radius=8`, `miny`/`maxy` around the player, one regeneration module inserted, fed
+`>= rfNeeded`, enabled; after the module's `MAXTICKS=180` cadence the port's `/rftoolsutility
+environmental <pos>` readout prints the player's active effect id and amplifier read from
+`LivingHost::living_effect` — assert the parsed `effect=minecraft:regeneration amplifier=0` and that
+the `energy` buffer fell by `rfNeeded`. Differentials: the same player with the controller disabled
+(or outside `radius`) reads no such effect, and a controller with no module stays `active=false`;
+`SELFTEST_AT=environmental` inverts the effect assertion and ends `EXIT:1`. Not dispatched here —
+the orchestrator must cut a fresh self-contained brief.
+
+## Slice 20 — the environmental controller, first module (2026-11-24)
+
+**Chosen from the port's own gap list** — `## Gaps (the rest of the mod)` (verbatim):
+
+> **Environmental controller** and its 23 modules; ~~the **spawner** with its 100 mob recipes~~ …
+
+and the gate agent's `## Next slice (proposal — not dispatched): environmental controller, first
+module slice` immediately above. It is the only unported **machines** family on that line that is
+expressible at this pin: the teleporter GUI/dialing-device family was gated as a new subsystem, and
+the transmitter/receiver/booster and destination analyzer are done (slices 9–10). One block entity
+(500,000 FE, 20,000/tick input, seven module slots, a server tick over a radius/miny/maxy area)
+fits the ledger's **machines** tier exactly — no renderer, no AI, no new client half.
+`EnvironmentalRenderer` is dropped as a standing deviation.
+
+**Pin** `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+API `0.2`, game 26.3. **Version 0.2.19.** Class **content**, tier **machines** (ledger). MIT, ours
+on main → an **Update** of the entry (never a first `Add`).
+
+### Surface gate first (the dispatch's Step-0 gate): not blocked
+
+Measured against `ports/_shared/sdk/0a875da/api-source.tar.xz` (unpacked at
+`/tmp/opencode/rfu-sdk-api`), not the historical gap table. Full verbatim evidence:
+`../_shared/evidence/rftoolsutility/gate-environmental-effect-surface.log`. The artefact clone is
+at `f799314007d68042df8504e83cd549360f2627c7`.
+
+| Symbol | Where | Wired? |
+|---|---|---|
+| `LevelRef::entities_in(host, min, max)` | `generated/mod_api_generated_host.rs:1716`, `host/levels.rs:293` | `Backend::level_entities_in` hash in `generated/wire_generated.rs:1102` and the guest import — yes |
+| `Registrar::effect_key(id)` | `src/parts/effects.rs:10` | `Registrar::effect_key` hash in `wire_generated.rs:1845` — yes |
+| `LivingRef::effect(s)` | `host/living.rs:30/37`, generated host `:2583/:2593` | `Backend::living_effect`/`living_effects` hashes at `:1167/:1168` — yes |
+| `LivingRef::add_effect(host, &ActiveEffect)` | `host/living.rs:357`, generated host `:2967` | `BackendMut::living_add_effect` hash at `:1527` — yes |
+| `ActiveEffect::new(id,duration,amplifier,ambient,visible,show_icon)` | `entity/types.rs:296` | plain data — yes |
+
+The effect is applied through the game's own `LivingEntity.addEffect`; the readout reads it back
+through `LivingEntity.getEffect`. No effect command is invented. **Verdict: not blocked.**
+
+### The artefact's constants (read first, not inferred from the name)
+
+Read from `McJtyMods/RFToolsUtility` branch `1.21_neo`, commit `f799314…` (analysis only):
+
+| Number | Value | Source |
+|---|---|---|
+| energy capacity / fill | 500,000 / 20,000 FE | `EnvironmentalConfiguration.ENVIRONMENTAL_MAXENERGY` / `…RECEIVEPERTICK` (`environmentalMaxRF` / `environmentalRFPerTick`) |
+| minimum active usage | 5 FE/tick | `EnvironmentalConfiguration.MIN_USAGE` (`environmentalMinRFUsage`) |
+| mob-mode multiplier | 2.0 | `EnvironmentalConfiguration.mobsPowerMultiplier`, applied in `MODE_HOSTILE/PASSIVE/MOBS/ALL` |
+| module slots | 7 | `EnvironmentalControllerTileEntity.ENV_MODULES`, `SLOT_MODULES = 0` |
+| volume | `(int)(radius² × π × (maxy − miny + 1))` | `EnvironmentalControllerTileEntity.getVolume()` |
+| RF need | `(int)(Σ(module.rfPerTick × volume) × multiplier × (4 − infusion)/4)`, clamped up to 5 with modules | `getTotalRfPerTick()`; infusion 0 here |
+| effect cadence / duration | 180 / 540 ticks | `PotionEffectModule.MAXTICKS`, `new MobEffectInstance(potion, MAXTICKS*3, amplifier, true, false)` |
+| regeneration module | id `rftoolsutility:regeneration_module`, `minecraft:regeneration`, amplifier 0, 0.0015 FE/tick/volume | `EnvironmentalControllerItem.createRegenerationModule()`, `EnvironmentalConfiguration.REGENERATION_RFPERTICK` |
+| area filter | horizontal `x²+z² < radius²`, absolute `miny ≤ y ≤ maxy` | `PotionEffectModule.processPlayers/processEntities`, AABB from `pos±radius` |
+| `MODE_ALL` | affects players (`isPlayerAffected` true) **and every other entity** | `isEntityAffected` switch / `isPlayerAffected` |
+| default data | radius 50, miny 30, maxy 70, blacklist, empty players | `EnvironmentalData.createDefault()` |
+| timeout on a failed power check | 20 ticks | `EnvironmentalControllerTileEntity.tickServer` (`powerTimeout = 20`) |
+
+### What it does
+
+- **The block.** `rftoolsutility:environmental_controller` on the `minecraft:iron_block` template
+  (full cube, `RotationType.NONE`, STANDARD_IRON properties), with the jar's multipart cube model
+  and its `machineenvironmentalcontroller` side texture; the jar's `rftoolsbase:` base textures are
+  re-pointed into this namespace. `rftoolsutility:regeneration_module` is a standalone item
+  (`horizon/item/regeneration_module.json`, `template: minecraft:stick`) with the jar's own item
+  texture. Both items, recipes, advancements, loot and lang lines are carried by
+  `tools/assemble_content.py`.
+- **The machine.** 500,000 FE fill-only on every face, seven automation-reachable module slots,
+  and a server tick that follows the artefact's order: timeout → energy/module gate → spend →
+  module cadence → area query → effect. A module installed while the buffer is empty (or the
+  machine disabled) deactivates and waits 20 ticks; the first powered tick applies the effect and
+  re-arms the 180-tick cadence (`activate(true)` seeds `ticks = 1`). `mode all` affects every
+  living entity in the horizontal sphere and y band; the five other modes select by player list
+  or mob kind. The jar's `SyringeRecipe` file is carried and its serializer registered as an inert
+  **data kind** (`rftoolsutility:syringe`), exactly as the spawner's 70 recipes are — without it
+  the game crashes on load with "unregistered recipe serializer".
+- **The harness.** `/rftoolsutility environmental <pos> [nonce]` prints
+  `energy=<held>/500000 active=<bool> mode=<mode> radius=<n> miny=<n> maxy=<n> rf=<need> modules=<n>
+  effect=<id|none> amplifier=<n|->`. `effect` is read from the **command player's own** game store
+  (`LivingRef::effect`), so the assertion is on the game, not a mirror. `environmental-set <pos>
+  <radius> <miny> <maxy> <mode> <enabled>` replaces the GUI's area/mode/on-off fields; `buffer`
+  fills a module slot and `energy` charges the buffer (both extended to this machine).
+
+### Red → green (unit, verbatim)
+
+Nine new runtime rules were written behind `todo!()` bodies first (`slice20-red-full.log`):
+
+```
+test result: FAILED. 182 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out
+  an_environmental_volume_is_pi_times_radius_squared_times_height   panicked at src/runtime.rs:1865:5: not yet implemented
+  environmental_power_scales_with_volume_and_the_mode_multiplier    panicked at src/runtime.rs:1865:5: not yet implemented
+  one_regeneration_module_costs_the_minimum_usage_when_its_volume_is_small  panicked at src/runtime.rs:…: not yet implemented
+  the_environmental_area_is_a_horizontal_sphere_inside_a_y_band     panicked at src/runtime.rs:1886:5: not yet implemented
+  mode_all_affects_players_and_every_other_entity / the_player_list_modes… / the_mob_modes… / an_unknown_mode… / the_effect_is_due… / the_effect_duration…
+```
+
+One expectation was wrong on the first green run and was corrected *against the artefact* (radius
+50, miny 30, maxy 70 → `(int)(2500×π×41) = 322,013`, not `314,159`); the red leg above is the
+before-implementation run. Green: **191 passed; 0 failed** (`sdk-test.log` regenerated for 0.2.19
+after the final build) — 191 runtime + glue tests. `cargo fmt --check` clean, `cargo clippy
+--all-targets -- -D warnings` 0 warnings (`sdk-clippy.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-environmental.sh` — a focused, fail-capable leg on the launcher-built game; one lease
+per leg, every log ends with its exit.
+
+| log | verdict |
+|---|---|
+| `e2e-slice20-environmental.log` | **PASS**, `EXIT:0` — EN–EN6 |
+| `e2e-slice20-environmental-control.log` | **FAIL: ctl place rftoolsutility:environmental_controller … was refused three times**, `EXIT:1` (unmodded Nightly) |
+| `e2e-slice20-environmental-selftest.log` | **FAIL: SELFTEST environmental: the powered module read minecraft:regeneration amplifier=0, expected none**, `EXIT:1` |
+| `e2e-slice20-wire-regression.log`, `e2e-slice20-teleporter-regression.log` | each **PASS**, `EXIT:0` (earlier families on the final bytes) |
+
+The phases, each asserting parsed fields of a nonce-pinned reply (verbatim from the green log):
+
+```
+EN:    energy=0/500000 active=false mode=all radius=8 miny=100 maxy=102 rf=0 modules=0 effect=none amplifier=- nonce=1
+EN-control: a vanilla /effect give reads effect=minecraft:regeneration amplifier=0 (nonce=2); after /effect clear, effect=none (nonce=3)
+EN1:   energy=0/500000 active=false … rf=5 modules=1 effect=none amplifier=- nonce=4       (a module with no FE)
+EN2:   energy=4020/500000 active=true … rf=5 modules=1 effect=minecraft:regeneration amplifier=0 nonce=5
+       the buffer fell 5000 → 4020 = 980 FE = 196 × rfNeeded=5
+EN3:   energy=3980/500000 active=false … effect=none amplifier=- nonce=6                   (disabled)
+EN4:   energy=2930/500000 active=true … effect=none amplifier=- nonce=7                     (player outside radius 8)
+EN5:   energy=2885/500000 active=false … rf=0 modules=0 effect=none amplifier=- nonce=8     (module removed)
+EN6:   give rftoolsutility:not_a_controller → rc=1, unknown item
+```
+
+Counterfactuals: EN-control proves the readout can see an effect at all; EN1 (no power), EN3
+(disabled), EN4 (outside the radius) and EN5 (no module) each differ from EN2 in one input only;
+`SELFTEST_AT=environmental` inverts EN2's effect assertion and fails as designed, so it can fail.
+`CONTROL=1` runs the same script on the unmodded Nightly, where the block does not exist. The
+power assertion is a parsed drop that is a positive multiple of the readout's own `rf` field.
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=123 ok=123 missing-exit=0 bad-exit=0`
+(the 118 earlier logs plus the five new ones).
+
+### Measured traps this slice cost
+
+1. **A standalone module item needs its own `horizon/item/` declaration.** With only the item
+   model and item definition, the game crashed at load: `mod rftoolsutility requested unknown item
+   rftoolsutility:regeneration_module`. `{"template": "minecraft:stick"}` fixes it and is generated
+   by `assemble_content.py`.
+2. **A carried recipe with an unregistered serializer crashes the game.** The jar's
+   `regeneration_module.json` has `type: rftoolsutility:syringe`; dropping the file or registering
+   a no-op crafting kind were the options. The port registers an inert data kind (as the spawner
+   does), so the file loads and the module remains a harness-given item, like every machine.
+3. **The first volume expectation was wrong**, not the code: `(radius² × π × height)` for the
+   artefact's default bounds is 322,013, not 314,159. Recorded and corrected red-first.
+4. **The remote pull-back clobbers locally-teed `sdk-test.log`/`sdk-clippy.log`.** Both were staged
+   under `/tmp/opencode` and copied into the evidence tree **after** the last forwarded run, so the
+   verifier reports `191 passed` / `0 warning(s)` rather than the stale slice-8 numbers.
+
+### Deviations and content adaptations
+
+- **No GUI, no renderer.** `environmental-set` writes the area/mode/on-off fields the GUI would,
+  and `buffer` fills a module slot; `EnvironmentalRenderer` (the client half that draws the area)
+  is dropped — outside the machines tier. A user cannot teach or arrange modules in a window.
+- **One module of 23.** Only the regeneration module is carried and applied; the other 22 module
+  items and their effects (including the four debuffs) are a later slice, as are their config
+  multipliers. The seven slots and the module rule are already in place for them.
+- **No infusing discount.** `getTotalRfPerTick`'s `(4 − infused)/4` term is carried as the
+  uninfused value (infusion 0); upstream's infusable path needs `rftoolsbase`'s items (the crafter's
+  standing gap).
+- **The syringe recipe is inert data.** Upstream crafts a module with a witch syringe and a module
+  template — neither item is ported — so the file is registered as a data kind and the module is
+  given by the harness, like every machine block in this port.
+- **The carried controller recipe is not crafted in game.** Its middle ingredient is
+  `rftoolsbase:machine_frame`, which only the parent port registers (the tank's and the crafter's
+  own gap); the e2e gives the block.
+- **No new upstream defect was adopted.** The timeout, the module cadence, the area filter and the
+  15 FE floor are the artefact's own rules.
+
+### Coverage after slice 20
+
+| family | status |
+|---|---|
+| `rftoolsutility:environmental_controller` (block, item, recipe, advancement, loot, texture) | tested — EN: placed and read back; EN6: an unknown id refused; content regenerated by `assemble_content.py` |
+| `rftoolsutility:regeneration_module` (item, texture, syringe recipe data) | tested — EN1–EN5: inserted into slot 0, applied `minecraft:regeneration` amplifier 0, removed again |
+| the 500,000 FE buffer, 20,000/tick fill and the volume-scaled FE/tick | tested — EN2: 5000 → 4020 FE = 196 × the readout's `rf=5`; EN1: no FE → inactive |
+| the 7-slot module inventory and the power timeout | tested — EN1/EN5: 0 modules → `rf=0 active=false`; EN3: disabled → inactive |
+| the 180-tick module cadence and 540-tick effect duration | exercised — EN2 after a 200-tick wait; unit rules `the_effect_is_due_on_the_first_active_tick_and_every_maxicks_after`, `the_effect_duration_is_three_module_cadences` |
+| MODE_ALL, the six modes and the horizontal-sphere/y-band filter | tested — EN2 (inside), EN4 (outside); unit rules for all six modes and the area test |
+| the player's own effect read from `LivingRef::effect` | tested — EN-control (vanilla give/clear), EN2 (mod effect), EN1/EN3/EN4/EN5 (none) |
+| the other 22 environmental modules, the GUI and `EnvironmentalRenderer` | not ported (a later slice / a menu / a renderer) |
+| a `rftoolsbase:machine_frame` recipe craft | blocked(`rftoolsbase:machine_frame`) — the parent port's item; the e2e gives the block |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 270,586 B | `7a13f87dcf1804dfee0d72971a02603ad2611deb060dd3f59b71d0be20fae612` | 340 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice20-build-a.sha`, `-b.sha`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.19 (native-mod, format
+native-1/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/e59da9094f0c2fdda6c627fe9eff22dec6a906f0, for
+26.3)`), `fits --build 0a875da` → `0a875da  made for`, `fits --build 0b14f8a` → `0b14f8a  fits`,
+`verify-sdk-package.py rftoolsutility` → **1/1** (`package matches the tree`, 191 tests, 0 warnings,
+R9, skills gate). The packed docs (manifest description, README, crate doc) were edited **before**
+the final build; `sdk-test.log`/`sdk-clippy.log` were regenerated after it. The launcher's
+`native-build` compiled the mod (`Compiling rftoolsutility (1 of 1)`,
+`native-0a875da-32eb334b0e05`) after stale `native-*` tags were removed. All Rust ladder steps
+printed `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`); no `BUILD_LOCAL=1`
+was set, no lease was backgrounded, and no turn ended with a shell outstanding.
+
+## Next slice
+
+The next environmental-family slice is the **second module** (or the whole module set): carry
+another jar module item from `assets/rftoolsutility/models/item/envmodules/*.json` (e.g.
+`regenerationplus_module`, amplifier 2, 0.0045 FE/tick/volume, or one of the 17 buff modules) and
+add its effect id/amplifier to the same seven-slot module rule. It fits the **machines** tier
+exactly — no new block entity, no new tick, one carried item and one effect constant. The artefact
+rule to read first is `EnvironmentalControllerItem.create*Module()` and `PotionEffectModule`'s
+`amplifier`/`getRfPerTick` for that module, plus `BuffEModule` for the non-potion ones (those need
+a player buff store this port does not have — check first; if the buff has no fail-capable game
+oracle, stop with `blocked(<buff>)`, as the redstone-information gate did). The concrete assertion:
+insert the new module **alongside** the regeneration module and assert the player's own effect
+readout reports both ids/amplifiers (or the stronger one replacing the weaker), with the FE spend
+rising by the module's own `rfPerTick × volume`; `SELFTEST_AT=environmental2` inverts one amplifier
+and must `EXIT:1`. If no second module has a game-readable effect, the honest next slice is a
+different machines family from the ledger or a stop — not an invented buff readout.

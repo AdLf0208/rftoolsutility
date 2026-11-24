@@ -20,7 +20,9 @@
     "rftoolsutility:invchecker",
     "rftoolsutility:redstone_transmitter",
     "rftoolsutility:redstone_receiver",
-    "rftoolsutility:wire"
+    "rftoolsutility:wire",
+    "rftoolsutility:environmental_controller",
+    "rftoolsutility:regeneration_module"
   ],
   "title": "itemGroup.rftoolsutility"
 }

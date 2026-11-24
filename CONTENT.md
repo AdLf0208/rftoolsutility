@@ -240,3 +240,26 @@ well. The jar's 24 `logic_facing` rotations are not expressible as a content blo
 The carried recipe's middle ingredient is `rftoolsbase:machine_base`, the parent port's item, so
 the e2e gives the block, as every machine slice has. The deterministic regeneration is part of the
 package build; `tools/assemble_content.py` is the only writer of `assets/` and `data/`.
+
+## Slice 20 — the environmental controller and the regeneration module (2026-11-24)
+
+Two new carried items, both regenerated deterministically by `tools/assemble_content.py` from the
+pack jar (`rftoolsutility-1.21-7.0.13.jar`, SHA-256 `615642b1…d3ff`):
+
+| File | Origin / adaptation |
+|---|---|
+| `assets/rftoolsutility/blockstates/environmental_controller.json` | the jar's one multipart variant, carried |
+| `assets/rftoolsutility/models/block/environmental_controller.json` | the jar's cube, with `rftoolsbase:block/base/…` textures re-pointed into this namespace (`machinebottom`/`machinetop` come from the RFToolsBase jar) |
+| `assets/rftoolsutility/textures/block/machineenvironmentalcontroller.png` | jar, byte for byte |
+| `assets/rftoolsutility/models/item/{environmental_controller,regeneration_module}.json`, `assets/rftoolsutility/textures/item/envmodules/regenerationmoduleitem.png` | jar, byte for byte |
+| `assets/rftoolsutility/items/{environmental_controller,regeneration_module}.json` | generated 26.3 item definitions (`minecraft:model`) |
+| `data/rftoolsutility/recipe/{environmental_controller,regeneration_module}.json` | carried; the controller's `c:ender_pearls` ingredient is upgraded, the module's `rftoolsutility:syringe` recipe stays verbatim and its serializer is registered as an inert data kind (the syringe item is not ported) |
+| `data/rftoolsutility/advancement/recipes/misc/{environmental_controller,regeneration_module}.json`, `data/rftoolsutility/loot_table/blocks/environmental_controller.json` | carried; the loot table's `copy_components` functions are dropped as for every machine |
+| `data/rftoolsutility/horizon/block/environmental_controller.json` | generated: `minecraft:iron_block` template, hardness 2.0 / blast 2.0, correct tool, metal sound, no state properties (`RotationType.NONE`) |
+| `data/rftoolsutility/horizon/item/regeneration_module.json` | generated: `{"template": "minecraft:stick"}` — a standalone item needs its own declaration, not just a model |
+| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json`, `data/minecraft/tags/block/{mineable/pickaxe,needs_iron_tool}.json` | both new ids added |
+| `assets/rftoolsutility/lang/en_us.json` | the controller's block/header lines and the module's item/header lines, verbatim from the jar |
+
+The controller's carried recipe needs `rftoolsbase:machine_frame`, so the e2e gives the block, as
+every machine slice has. The 22 other module items are not carried; their textures exist in the jar
+but no effect oracle in this slice is claimed for them.

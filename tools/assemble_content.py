@@ -253,6 +253,22 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/wire.json",
     "data/rftoolsutility/recipe/wire.json",
     "data/rftoolsutility/loot_table/blocks/wire.json",
+    # Slice 20: the environmental controller (the only unported machines family left) and its
+    # first module, the regeneration module. The controller's cube model names `rftoolsbase:`
+    # base textures and is re-pointed below like the other machines'; the module's recipe is the
+    # jar's `rftoolsutility:syringe` recipe, carried verbatim (the syringe type is not registered
+    # here, so the file is inert — the harness gives the module instead of crafting it).
+    "assets/rftoolsutility/blockstates/environmental_controller.json",
+    "assets/rftoolsutility/models/block/environmental_controller.json",
+    "assets/rftoolsutility/models/item/environmental_controller.json",
+    "assets/rftoolsutility/models/item/regeneration_module.json",
+    "assets/rftoolsutility/textures/block/machineenvironmentalcontroller.png",
+    "assets/rftoolsutility/textures/item/envmodules/regenerationmoduleitem.png",
+    "data/rftoolsutility/advancement/recipes/misc/environmental_controller.json",
+    "data/rftoolsutility/advancement/recipes/misc/regeneration_module.json",
+    "data/rftoolsutility/recipe/environmental_controller.json",
+    "data/rftoolsutility/recipe/regeneration_module.json",
+    "data/rftoolsutility/loot_table/blocks/environmental_controller.json",
 ]
 # Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
 # upstream's "living?" form, and these tags are the yield a living item carries
@@ -343,6 +359,8 @@ TELEPORTER_MODELS = [
     "assets/rftoolsutility/models/block/wire_1.json",
     "assets/rftoolsutility/models/block/wire_2.json",
     "assets/rftoolsutility/models/block/wire_3.json",
+    # Slice 20: the controller's multipart cube names `rftoolsbase:` machine base textures.
+    "assets/rftoolsutility/models/block/environmental_controller.json",
 ]
 # The teleporter family's three blocks (McJtyLib `STANDARD_IRON`; the booster is
 # `.strength(2, 6)`). The transmitter and receiver carry a block entity; the booster is a plain
@@ -405,6 +423,8 @@ TAB = {
         f"{MOD}:redstone_transmitter",
         f"{MOD}:redstone_receiver",
         f"{MOD}:wire",
+        f"{MOD}:environmental_controller",
+        f"{MOD}:regeneration_module",
     ],
 }
 
@@ -733,6 +753,10 @@ LANG_KEYS = [
     "message.rftoolsutility.redstone_receiver.header",
     "block.rftoolsutility.wire",
     "message.rftoolsutility.wire.header",
+    "block.rftoolsutility.environmental_controller",
+    "item.rftoolsutility.regeneration_module",
+    "message.rftoolsutility.environmental_controller.header",
+    "message.rftoolsutility.regeneration_module.header",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -1063,6 +1087,13 @@ def main() -> None:
             }
         },
     )
+    # Slice 20: the controller's blockstate and block model are the jar's own (re-pointed above);
+    # its item definition and the module's item definition are generated as every machine's are.
+    for name in ("environmental_controller", "regeneration_module"):
+        dump(
+            assets / "items" / f"{name}.json",
+            {"model": {"type": "minecraft:model", "model": f"{MOD}:item/{name}"}},
+        )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
@@ -1082,6 +1113,13 @@ def main() -> None:
     dump(data_dir / "horizon" / "block" / "redstone_transmitter.json", RED_TX_BLOCK)
     dump(data_dir / "horizon" / "block" / "redstone_receiver.json", RED_RX_BLOCK)
     dump(data_dir / "horizon" / "block" / "wire.json", WIRE_BLOCK)
+    # Slice 20: `EnvironmentalControllerTileEntity.createBlock` is `RotationType.NONE` on
+    # McJtyLib's STANDARD_IRON builder — the same full-cube iron-block template the teleporter
+    # family uses, with no state property (the area is a saved setting, not a block state).
+    dump(data_dir / "horizon" / "block" / "environmental_controller.json", TELEPORTER_BLOCK)
+    # The module is a standalone item, not a block item: the pin needs its own item declaration,
+    # otherwise `mod.requested unknown item rftoolsutility:regeneration_module` crashes the game.
+    dump(data_dir / "horizon" / "item" / "regeneration_module.json", {"template": "minecraft:stick"})
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
@@ -1107,6 +1145,7 @@ def main() -> None:
                 f"{MOD}:redstone_transmitter",
                 f"{MOD}:redstone_receiver",
                 f"{MOD}:wire",
+                f"{MOD}:environmental_controller",
             ]
         },
     )
@@ -1132,6 +1171,7 @@ def main() -> None:
                 f"{MOD}:redstone_transmitter",
                 f"{MOD}:redstone_receiver",
                 f"{MOD}:wire",
+                f"{MOD}:environmental_controller",
             ]
         },
     )

@@ -1,11 +1,11 @@
-# Package receipt — rftoolsutility 0.2.18
+# Package receipt — rftoolsutility 0.2.19
 
 | field | value |
 |---|---|
-| version | `0.2.18` |
+| version | `0.2.19` |
 | file | `rftoolsutility.hmod` |
-| bytes | 255,734 |
-| sha256 | `cb690fab949b3c4fb2f0353324f9687b62ea20aa4365ddb7157141d2a299d0fd` |
+| bytes | 270,586 |
+| sha256 | `7a13f87dcf1804dfee0d72971a02603ad2611deb060dd3f59b71d0be20fae612` |
 | source | this tag — the tree here is the source that produced the archive |
 | game | 26.3 |
 | horizon | `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` |

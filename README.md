@@ -1,16 +1,16 @@
-# RFTools Utility for Horizon — slices 1–19: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer, the timer, the counter, the analog, the logic gate, the inventory checker, the redstone transmitter/receiver and the wire
+# RFTools Utility for Horizon — slices 1–20: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer, the timer, the counter, the analog, the logic gate, the inventory checker, the redstone transmitter/receiver, the wire and the environmental controller
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–19, the tank, the crafter tiers, the spawner's matter gate, the matter
+**Status: slices 1–20, the tank, the crafter tiers, the spawner's matter gate, the matter
 beamer, the matter transmitter / receiver / booster, the destination analyzer, the sensor,
 the sequencer, the timer, the counter, the analog, the logic gate, the inventory checker, the
-redstone transmitter / receiver and the wire.**
+redstone transmitter / receiver, the wire and the environmental controller (first module).**
 One flat SDK package (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the
-models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 19 — the wire", § "Slice 18 — the redstone transmitter/receiver", § "Slice 17 — the inventory checker",
+models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 20 — the environmental controller", § "Slice 19 — the wire", § "Slice 18 — the redstone transmitter/receiver", § "Slice 17 — the inventory checker",
 § "Slice 16 — the logic gate",
 § "Slice 15 — the analog",
 § "Slice 14 — the counter",
@@ -168,6 +168,16 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
    a fresh id), and `/rftoolsutility redstone <pos> [nonce]` prints the parsed channel, power,
    table value, output, lamp and game time — so a leg can prove a lamp beside a receiver on the
    fed channel lights while one on another channel stays dark, across a relaunch.
+- `rftoolsutility:environmental_controller` and `rftoolsutility:regeneration_module` — the
+   first module of the environmental family. A **500,000 FE** buffer filling at **20,000 a
+   call**, seven module slots and a server tick over a radius/miny/maxy area. With a module
+   installed and at least the artefact's volume-scaled FE/tick (at least **5**) in the buffer,
+   it reads the area's living entities (`LevelRef::entities_in`) and applies the regeneration
+   module's `minecraft:regeneration` (amplifier 0, 540 ticks) on the artefact's **180-tick**
+   cadence. In `MODE_ALL` every entity in the horizontal sphere and y band is affected; a
+   controller with no module, out of power or disabled deactivates and reads no effect. The
+   GUI is replaced by `environmental-set`, and the effect assertion reads the player's own
+   game store with `/rftoolsutility environmental <pos>`.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
@@ -218,10 +228,17 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
    is a game-time stamp, `forward` is the neighbour the loop-guarded propagation feeds, and
    `output` is the exact strength the redstone hook reports **only on the input side**).
 
+   The environmental controller's commands are `/rftoolsutility environmental <pos> [nonce]` and
+   `environmental-set <pos> <radius> <miny> <maxy> <mode> <enabled>`. Its readout prints
+   `energy=…/500000 active=… mode=… radius=… miny=… maxy=… effect=… amplifier=…`, where the
+   effect is read from the command player's **own** game effect store (`LivingRef::effect`) —
+   `effect=minecraft:regeneration amplifier=0` while the module is powered and the player is in
+   the controller's area, `effect=none` when it is disabled or out of range.
+
 ## What does not (yet)
 
 The dialing device, destination GUI, screens and their 30 modules, the rest of the logic
-blocks (the sensor, sequencer, timer, counter, analog, logic gate, inventory checker, redstone transmitter/receiver and wire are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
+blocks (the sensor, sequencer, timer, counter, analog, logic gate, inventory checker, redstone transmitter/receiver and wire are ported), the other 22 environmental modules, the controller's GUI, the tank's GUI and filter slot, the
 fluid quad inside its window, the crafter's GUI, the spawner's GUI, the syringe that sets the
 mob, six-way facing, the item tooltips, the wrench item (a command links the beamer instead),
 the infusing power discount and the analyzer's vanilla redstone output (the artefact has none —

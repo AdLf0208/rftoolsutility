@@ -822,3 +822,36 @@ helpers are `WirePart`, `wire_face`/`wire_java_side` and the `runtime::wire_*` f
 `fits` run false-failed. Every Rust step printed `build-slot: forwarding … to the remote runner`
 (hostname `AdLf-PC`), no `BUILD_LOCAL=1` was set, no lease was backgrounded, and all path exports
 came from `launcher-game.sh env` (`E2E_TMP`, never `/tmp`).
+
+## Slice 20 — the environmental controller, first module (2026-11-24)
+
+Pin `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+version **0.2.19**. Every Rust step ran through `ports/tools/build-slot.sh` (forwarded to AdLf-PC;
+no `BUILD_LOCAL=1`); the native build and game legs ran locally in their own leases.
+
+| # | Step | Evidence | Result |
+|---|---|---|---|
+| 0 | effect-surface gate | `../evidence/rftoolsutility/gate-environmental-effect-surface.log` | `entities_in`, `effect_key`, `living_effect(s)`, `add_effect` all present and stamped — not blocked |
+| 1 | red | `../evidence/rftoolsutility/slice20-red-full.log` | `FAILED. 182 passed; 9 failed` — every new rule at `not yet implemented` |
+| 2 | green | `../evidence/rftoolsutility/sdk-test.log` | `ok. 191 passed; 0 failed` (regenerated after the final build) |
+| 3 | fmt + clippy | `../evidence/rftoolsutility/sdk-clippy.log` | `cargo fmt --check` clean; clippy `-D warnings` 0 warnings |
+| 4 | build ×2 | `slice20-build-{1,2}.log`, `slice20-build-{a,b}.sha` | `cmp` identical, sha `7a13f87d…e612`, 270,586 B, 340 entries, no packed `Cargo.lock` |
+| 5 | check + fits | `slice20-check-fits.log` | `0.2.19 native-1/0a875da…/e59da909…, for 26.3`; `0a875da made for`, `0b14f8a fits` |
+| 6 | gate | `slice20-verify-sdk.log` | `1/1` — package matches the tree, R9, skills gate |
+| 7 | native build | `slice20-native-build.log` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-32eb334b0e05` |
+| 8 | green leg | `../evidence/rftoolsutility-e2e/e2e-slice20-environmental.log` | **PASS**, `EXIT:0` — EN–EN6 |
+| 9 | control | `e2e-slice20-environmental-control.log` | **FAIL: ctl place … refused three times**, `EXIT:1` (unmodded Nightly) |
+| 10 | selftest | `e2e-slice20-environmental-selftest.log` | **FAIL: SELFTEST environmental … expected none**, `EXIT:1` |
+| 11 | regressions | `e2e-slice20-{wire,teleporter}-regression.log` | each **PASS**, `EXIT:0` |
+| 12 | strict e2e gate | `../evidence/rftoolsutility-e2e/slice20-e2e-gate.log` | `logs=123 ok=123 missing-exit=0 bad-exit=0` |
+
+The in-game assertion reads the player's own `LivingRef::effect` through
+`/rftoolsutility environmental <pos>`: `effect=minecraft:regeneration amplifier=0` with a module,
+enough FE and MODE_ALL, and `effect=none` with no module, no power, the controller disabled or the
+player outside radius 8. The FE drop (5000 → 4020 = 196 × the readout's `rf=5`) is the artefact's
+volume-scaled cost; a vanilla `/effect give`/`clear` proves the readout can see an effect at all.
+Two load-time defects were found and fixed while building this slice (a standalone module item
+needs `data/…/horizon/item/…json`, and a carried recipe needs its serializer registered as an
+inert data kind); both are recorded in `notes.md` § "Measured traps this slice cost".
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices

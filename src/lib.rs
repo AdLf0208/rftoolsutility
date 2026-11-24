@@ -28,6 +28,12 @@
 //! loop-guarded neighbour-change nudge of `WireTileEntity.checkRedstone`. Its input side and cached
 //! strength live in the block state because the redstone hook can read state but not block-entity
 //! data; `/rftoolsutility wire-set` replaces the GUI that set the jar's `logic_facing`.
+//! [`EnvironmentalPart`] is the environmental controller: a 500,000 FE block entity with seven
+//! module slots whose server tick reads the living entities in its radius/y-area and applies its
+//! regeneration module's `minecraft:regeneration` effect every 180 ticks, at the artefact's
+//! volume-scaled FE/tick. `/rftoolsutility environmental` reads the player's own effect back from
+//! the game's own effect store; `environmental-set` and `buffer` replace the GUI. The client-only
+//! `EnvironmentalRenderer` is dropped as a standing deviation.
 //! (The display-only `digit` is not ported: upstream's whole behaviour is a client renderer, with
 //! no redstone output for a fail-capable lamp assertion.) The `/rftoolsutility …` commands serve
 //! the harness, because upstream's controls are its GUIs.
@@ -36,15 +42,16 @@
 //! spawn cost — are in [`runtime`], a plain module with no `mod_api` types, so `cargo test`
 //! alone proves them.
 use mod_api::{
-    self, BlockClick, BlockDropsEvent, BlockEntityPart, BlockEntityRef, BlockEntityTickEvent,
-    BlockEntityTickReply, BlockEntityTicksEvent, BlockPart, BlockSignalEvent, Command,
-    CommandArgumentValue, CommandSource, Compound, ConfigPath, CraftingGrid, CraftingRecipeCodec,
-    CraftingRecipeKind, Direction, Flow, FluidResource, FluidStack, Hand, Hooks, Host,
-    HostBlockStates, HostSide, HostTransaction, ITEM_FLUIDS, ITEMS, Identifier, InteractionResult,
-    IsSignalSourceEvent, ItemKey, ItemPart, ItemPlace, ItemStack, LevelHost, LevelRef,
-    ModContainer, ModEnergyBuffer, ModFluidTanks, NeighbourUpdate, OnBlockPlacedByEvent, PlayerRef,
-    RecipeInput, RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent,
-    ServerHost, ServerTickEvent, SpawnReason, Tag, Text, UseItemOnBlockEvent, UsePhase, fluid_util,
+    self, ActiveEffect, BlockClick, BlockDropsEvent, BlockEntityPart, BlockEntityRef,
+    BlockEntityTickEvent, BlockEntityTickReply, BlockEntityTicksEvent, BlockPart, BlockSignalEvent,
+    Command, CommandArgumentValue, CommandSource, Compound, ConfigPath, CraftingGrid,
+    CraftingRecipeCodec, CraftingRecipeKind, Direction, EffectKey, Flow, FluidResource, FluidStack,
+    Hand, Hooks, Host, HostBlockStates, HostSide, HostTransaction, ITEM_FLUIDS, ITEMS, Identifier,
+    InteractionResult, IsSignalSourceEvent, ItemKey, ItemPart, ItemPlace, ItemStack, LevelHost,
+    LevelRef, MobCategory, ModContainer, ModEnergyBuffer, ModFluidTanks, NeighbourUpdate,
+    OnBlockPlacedByEvent, PlayerRef, RecipeInput, RegisterCommandsEvent, Registrar,
+    RegistrationContext, RunModCommandEvent, ServerHost, ServerTickEvent, SpawnReason, Tag, Text,
+    UseItemOnBlockEvent, UsePhase, fluid_util,
 };
 use std::sync::{Mutex, OnceLock};
 
@@ -54,20 +61,24 @@ use runtime::{
     AVERAGE_YIELD, AnalogData, BEAMER_CAPACITY, BEAMER_RECEIVE, BOOST_RF, BUCKET, BUFFER_IN,
     BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CHANNEL_UNSET, CRAFTER_CAPACITY,
     CRAFTER_RECEIVE, CRAFTER_SLOTS, CheckStack, Click, CounterData, CounterState, CraftMode,
-    CrafterTier, DamageMode, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, InvCheckerData, LOW_YIELD,
-    LogicInputs, LogicTable, MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe,
-    RECEIVER_CAPACITY, RECEIVER_RECEIVE, RF_PER_TICK, RedstoneChannels, SENSOR_OFF, SENSOR_ON,
-    SPAWNER_CAPACITY, SPAWNER_RECEIVE, SensorKind, SequencerData, SequencerMode, SequencerState,
-    Speed, TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter,
-    analog_branch, analog_neighbours, analog_output, analyzer_due, analyzer_status, beam_due,
-    beam_reach, beam_send, bucket_click, carried, check_output, clamped, counter_signal,
-    counter_tick as run_counter_tick, fill_level, format_channels, in_beam, invchecker_countdown,
-    invchecker_due, invchecker_signal, logic_cell, logic_neighbours, logic_output, parse_channels,
-    placements, plan, receiver_output, receiver_ready, recipe_for, result_range, rising_edge,
-    sensor_due, sensor_front, sensor_sees, sensor_signal, sequencer_tick as run_sequencer_tick,
-    spawn_at, spawn_cycle, spend, start_cost, start_time, steps, timer_signal,
-    timer_tick as run_timer_tick, transmitter_update, wire_forward, wire_loop_allows, wire_output,
-    wire_source,
+    CrafterTier, DamageMode, ENVIRONMENTAL_CAPACITY, ENVIRONMENTAL_EFFECT_DURATION,
+    ENVIRONMENTAL_MOB_MULTIPLIER, ENVIRONMENTAL_RECEIVE, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD,
+    InvCheckerData, LOW_YIELD, LogicInputs, LogicTable, MATTER_STORAGE, MAX_BEAM_DISTANCE,
+    MatterSource, MobRecipe, RECEIVER_CAPACITY, RECEIVER_RECEIVE, REGENERATION_RF_PER_TICK,
+    RF_PER_TICK, RedstoneChannels, SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE,
+    SensorKind, SequencerData, SequencerMode, SequencerState, Speed, TRANSMITTER_CAPACITY,
+    TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter, analog_branch, analog_neighbours,
+    analog_output, analyzer_due, analyzer_status, beam_due, beam_reach, beam_send, bucket_click,
+    carried, check_output, clamped, counter_signal, counter_tick as run_counter_tick,
+    environmental_affected, environmental_default_maxy, environmental_default_miny,
+    environmental_default_mode, environmental_default_radius, environmental_due,
+    environmental_in_area, environmental_rf_needed, environmental_volume, fill_level,
+    format_channels, in_beam, invchecker_countdown, invchecker_due, invchecker_signal, logic_cell,
+    logic_neighbours, logic_output, parse_channels, placements, plan, receiver_output,
+    receiver_ready, recipe_for, result_range, rising_edge, sensor_due, sensor_front, sensor_sees,
+    sensor_signal, sequencer_tick as run_sequencer_tick, spawn_at, spawn_cycle, spend, start_cost,
+    start_time, steps, timer_signal, timer_tick as run_timer_tick, transmitter_update,
+    wire_forward, wire_loop_allows, wire_output, wire_source,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -471,6 +482,31 @@ const KEY_WIRE_PROPAGATE: &str = "wirePropagate";
 /// The block-state keys the `BlockPart` reads: the exact 0..15 strength and the input side.
 const WIRE_STATE_FACING: &str = "wire_facing";
 static WIRE_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+/// Slice 20: the environmental controller and its first module.
+/// `EnvironmentalModule.ENVIRONENTAL_CONTROLLER` — a block entity with a 500,000 FE buffer, a
+/// 20,000-a-call fill, a seven-slot module inventory and a server tick that applies its modules'
+/// effects over a radius/miny/maxy area. `EnvironmentalRenderer` is a client half dropped as a
+/// standing deviation (the machines tier has no renderer).
+const ENV_CONTROLLER: &str = "rftoolsutility:environmental_controller";
+const ENV_CONTROLLER_TYPE: &str = "environmental_controller";
+const ENV_REGEN_MODULE: &str = "rftoolsutility:regeneration_module";
+/// The saved `EnvironmentalData` fields and the tick state the jar keeps beside the energy and
+/// items (`EnvironmentalControllerTileEntity.saveAdditional`): radius, bounds, mode, the player
+/// blacklist/whitelist, its `active` flag, the power timeout and the module's own cadence.
+const KEY_ENV_RADIUS: &str = "envRadius";
+const KEY_ENV_MINY: &str = "envMinY";
+const KEY_ENV_MAXY: &str = "envMaxY";
+const KEY_ENV_MODE: &str = "envMode";
+const KEY_ENV_PLAYERS: &str = "envPlayers";
+const KEY_ENV_ENABLED: &str = "envEnabled";
+const KEY_ENV_ACTIVE: &str = "envActive";
+const KEY_ENV_TIMEOUT: &str = "envTimeout";
+const KEY_ENV_TICKS: &str = "envTicks";
+const KEY_ENV_MODULE_ACTIVE: &str = "envModuleActive";
+/// `Registrar::effect_key("minecraft:regeneration")`, requested once at registration: the
+/// resolved registry slot every `ActiveEffect` the module applies carries.
+static ENV_EFFECT_KEY: OnceLock<EffectKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -3787,6 +3823,335 @@ fn is_fluid_container(host: &mut dyn ServerHost, player: PlayerRef, hand: Hand) 
 }
 
 // ---------------------------------------------------------------------------
+// The environmental controller (slice 20): its block entity, its area tick and its readout
+// ---------------------------------------------------------------------------
+
+/// The jar's `rftoolsutility:syringe` recipe serializes a module recipe. The port carries the
+/// regeneration module's file verbatim; the syringe item and `module_template` are not ported, so
+/// the kind is registered as a **data table** (like `rftoolsutility:spawner`) — without it the game
+/// crashes on load with "unregistered recipe serializer rftoolsutility:syringe". No grid matches or
+/// assembles it: the harness gives the module, as it gives every machine block.
+#[derive(Clone, Debug, PartialEq, mod_api::Wire)]
+struct SyringeValue {
+    result: String,
+}
+
+struct SyringeRecipeKind;
+
+impl CraftingRecipeKind for SyringeRecipeKind {
+    type Value = SyringeValue;
+
+    fn codec(&self) -> Option<CraftingRecipeCodec<Self::Value>> {
+        Some(CraftingRecipeCodec::wire())
+    }
+
+    fn decode(&self, json: &str) -> Result<Self::Value, String> {
+        let value: mod_api::serde_json::Value =
+            mod_api::serde_json::from_str(json).map_err(|error| error.to_string())?;
+        let result = value
+            .get("result")
+            .and_then(|result| result.get("id"))
+            .and_then(mod_api::serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        Ok(SyringeValue { result })
+    }
+
+    fn write(&self, value: &Self::Value) -> Result<String, String> {
+        Ok(format!("{{\"result\":{{\"id\":\"{}\"}}}}", value.result))
+    }
+
+    fn matches(&self, _: &Self::Value, _: CraftingGrid) -> bool {
+        false
+    }
+
+    fn assemble(&self, _: &Self::Value, _: CraftingGrid) -> Option<ItemStack> {
+        None
+    }
+}
+
+/// The controller's container: seven module slots, automation in and out on every face
+/// (`EnvironmentalControllerTileEntity.CONTAINER_FACTORY`'s one `box(specific(module))`). The
+/// jar's GUI is not carried; `buffer <pos> <slot> <item> <count>` fills a slot instead.
+fn environmental_container() -> ModContainer {
+    let slots: Vec<usize> = (0..ENVIRONMENTAL_SLOTS_RUNTIME).collect();
+    ModContainer {
+        slots: ENVIRONMENTAL_SLOTS_RUNTIME,
+        faces: std::array::from_fn(|_| slots.clone()),
+        inputs: slots.clone(),
+        outputs: slots,
+        menu: None,
+    }
+}
+
+/// The number of module slots (`EnvironmentalControllerTileEntity.ENV_MODULES = 7`).
+const ENVIRONMENTAL_SLOTS_RUNTIME: usize = 7;
+
+/// The controller's energy domain (`new GenericEnergyStorage(this, true, 500,000, 20,000)`):
+/// fill only, every face, the `energy` int in the saved compound.
+fn environmental_energy() -> ModEnergyBuffer {
+    ModEnergyBuffer {
+        capacity: ENVIRONMENTAL_CAPACITY,
+        max_insert: ENVIRONMENTAL_RECEIVE,
+        max_extract: 0,
+        insert_faces: [true; 6],
+        extract_faces: [false; 6],
+    }
+}
+
+/// The controller's Part: a block entity that ticks on the server and applies its module's
+/// effect over the configured area. `EnvironmentalRenderer` is a client half, not ported.
+struct EnvironmentalPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for EnvironmentalPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for EnvironmentalPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        environmental_tick(host, event);
+    }
+}
+
+/// `EnvironmentalControllerTileEntity.tickServer`: the power timeout, the energy/module gate,
+/// the spend, and (on the potion module's 180-tick cadence) the area effect application.
+fn environmental_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let timeout = read_int(&event.entity.nbt, KEY_ENV_TIMEOUT);
+    if timeout > 0 {
+        write_int(&mut event.entity.nbt, KEY_ENV_TIMEOUT, timeout - 1);
+        return;
+    }
+    let energy = read_int_or(&event.entity.nbt, KEY_ENERGY, 0).clamp(0, ENVIRONMENTAL_CAPACITY);
+    // Upstream's `isMachineEnabled()` is its redstone mode; this port's GUI-equivalent command
+    // writes the same on/off bit. A missing key means enabled, as a fresh tile entity is.
+    let enabled = !matches!(tag(&event.entity.nbt, KEY_ENV_ENABLED), Some(Tag::Byte(v)) if *v == 0);
+    let available = if enabled { energy } else { 0 };
+    let modules = event
+        .entity
+        .items
+        .iter()
+        .filter(|slot| {
+            slot.as_ref()
+                .is_some_and(|stack| stack.item().id(&*host) == ENV_REGEN_MODULE)
+        })
+        .count();
+
+    // `deactivate()` in the artefact also tells each module to stop and arms a 20-tick timeout so
+    // an unpowered controller is not re-evaluated every tick.
+    if modules == 0 {
+        deactivate_environmental(&mut event.entity.nbt);
+        return;
+    }
+    let radius = read_int_or(
+        &event.entity.nbt,
+        KEY_ENV_RADIUS,
+        environmental_default_radius(),
+    );
+    let miny = read_int_or(
+        &event.entity.nbt,
+        KEY_ENV_MINY,
+        environmental_default_miny(),
+    );
+    let maxy = read_int_or(
+        &event.entity.nbt,
+        KEY_ENV_MAXY,
+        environmental_default_maxy(),
+    );
+    let mode = read_text(&event.entity.nbt, KEY_ENV_MODE)
+        .unwrap_or_else(|| environmental_default_mode().to_owned());
+    let total = (REGENERATION_RF_PER_TICK * environmental_volume(radius, miny, maxy) as f32) as i32
+        * modules as i32;
+    let multiplier = if matches!(mode.as_str(), "all" | "hostile" | "passive" | "mobs") {
+        ENVIRONMENTAL_MOB_MULTIPLIER
+    } else {
+        1.0
+    };
+    let needed = environmental_rf_needed(total, multiplier, 0.0, false);
+    if needed > available {
+        deactivate_environmental(&mut event.entity.nbt);
+        return;
+    }
+    write_int(&mut event.entity.nbt, KEY_ENERGY, energy - needed);
+    let (ticks, due) = if read_flag(&event.entity.nbt, KEY_ENV_MODULE_ACTIVE) {
+        environmental_due(read_int_or(&event.entity.nbt, KEY_ENV_TICKS, 1))
+    } else {
+        // `activate(true)` resets a module's countdown to 1 so its first powered tick applies.
+        (1, true)
+    };
+    write_int(&mut event.entity.nbt, KEY_ENV_TICKS, ticks);
+    write_flag(&mut event.entity.nbt, KEY_ENV_MODULE_ACTIVE, true);
+    write_flag(&mut event.entity.nbt, KEY_ENV_ACTIVE, true);
+    if !due {
+        return;
+    }
+    let Some(level) = ticking_level(&*host) else {
+        return;
+    };
+    // Upstream's AABB is the cube around the controller; the module then filters to a horizontal
+    // sphere and an absolute y band, which `environmental_in_area` applies to each entity.
+    let Some(entities) = level.entities_in(
+        &*host,
+        [
+            pos[0] as f64 - radius as f64,
+            miny as f64 - 1.0,
+            pos[2] as f64 - radius as f64,
+        ],
+        [
+            pos[0] as f64 + radius as f64,
+            maxy as f64 + 1.0,
+            pos[2] as f64 + radius as f64,
+        ],
+    ) else {
+        return;
+    };
+    let players = level.online_players(&*host).unwrap_or_default();
+    let names = read_text(&event.entity.nbt, KEY_ENV_PLAYERS).unwrap_or_default();
+    let Some(key) = ENV_EFFECT_KEY.get().copied() else {
+        return;
+    };
+    for entity in entities {
+        let Some(at) = entity.position(&*host) else {
+            continue;
+        };
+        if !environmental_in_area(at, pos, radius, miny, maxy) {
+            continue;
+        }
+        let player = players.iter().copied().find(|p| p.entity() == entity);
+        let is_player = player.is_some();
+        let is_mob = host.mob(entity).is_some();
+        let is_enemy = entity.classification(&*host) == Some(MobCategory::Monster);
+        let listed = player
+            .and_then(|p| p.name(&*host))
+            .is_some_and(|name| names.split(',').any(|entry| entry == name));
+        if !environmental_affected(&mode, is_player, is_mob, is_enemy, listed) {
+            continue;
+        }
+        let Some(living) = host.living(entity) else {
+            continue;
+        };
+        // `new MobEffectInstance(potion, MAXTICKS * 3, amplifier, true, false)` — ambient, no
+        // particles, the icon shown (vanilla's sixth argument defaults to true).
+        let effect = ActiveEffect::new(key, ENVIRONMENTAL_EFFECT_DURATION, 0, true, false, true);
+        let _ = living.add_effect(host, &effect);
+    }
+}
+
+/// The artefact's `deactivate()`: modules stop, the cached active flag clears, and a failed
+/// power check waits 20 ticks before it tries again.
+fn deactivate_environmental(nbt: &mut Compound) {
+    write_flag(nbt, KEY_ENV_ACTIVE, false);
+    write_flag(nbt, KEY_ENV_MODULE_ACTIVE, false);
+    write_int(nbt, KEY_ENV_TICKS, 1);
+    write_int(nbt, KEY_ENV_TIMEOUT, 20);
+}
+
+/// What `/rftoolsutility environmental` prints. The player's effect is read straight from
+/// `LivingRef::effect` — the pin's `LivingEntity.getEffect` — so the assertion is on the game's
+/// own effect store, not on a mirror the port writes.
+fn environmental_readout(
+    host: &dyn Host,
+    entity: BlockEntityRef,
+    pos: [i32; 3],
+    nbt: &Compound,
+    source: &CommandSource,
+    nonce: Option<&str>,
+) -> String {
+    let energy = read_int_or(nbt, KEY_ENERGY, 0).clamp(0, ENVIRONMENTAL_CAPACITY);
+    let active = read_flag(nbt, KEY_ENV_ACTIVE);
+    let radius = read_int_or(nbt, KEY_ENV_RADIUS, environmental_default_radius());
+    let miny = read_int_or(nbt, KEY_ENV_MINY, environmental_default_miny());
+    let maxy = read_int_or(nbt, KEY_ENV_MAXY, environmental_default_maxy());
+    let mode =
+        read_text(nbt, KEY_ENV_MODE).unwrap_or_else(|| environmental_default_mode().to_owned());
+    let modules = (0..ENVIRONMENTAL_SLOTS_RUNTIME)
+        .filter(|slot| {
+            entity
+                .item_slot(host, *slot as u32)
+                .ok()
+                .flatten()
+                .is_some_and(|stack| stack.item().id(host) == ENV_REGEN_MODULE)
+        })
+        .count();
+    let total = (REGENERATION_RF_PER_TICK * environmental_volume(radius, miny, maxy) as f32) as i32
+        * modules as i32;
+    let multiplier = if matches!(mode.as_str(), "all" | "hostile" | "passive" | "mobs") {
+        ENVIRONMENTAL_MOB_MULTIPLIER
+    } else {
+        1.0
+    };
+    let needed = environmental_rf_needed(total, multiplier, 0.0, modules == 0);
+    let effect = ENV_EFFECT_KEY.get().copied().and_then(|key| match source {
+        CommandSource::Player { player, .. } => host
+            .living(player.entity())
+            .and_then(|living| living.effect(host, key)),
+        _ => None,
+    });
+    let (id, amplifier) = effect.map_or_else(
+        || ("none".to_owned(), "-".to_owned()),
+        |effect| (effect.id.id(host), effect.amplifier.to_string()),
+    );
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: Environmental controller at {pos:?}: energy={energy}/{ENVIRONMENTAL_CAPACITY} \
+         active={active} mode={mode} radius={radius} miny={miny} maxy={maxy} rf={needed} modules={modules} \
+         effect={id} amplifier={amplifier}{suffix}"
+    )
+}
+
+/// The GUI's area, mode and on/off fields the harness writes at once.
+struct EnvironmentalSettings {
+    radius: i32,
+    miny: i32,
+    maxy: i32,
+    mode: String,
+    enabled: bool,
+}
+
+/// `/rftoolsutility environmental-set`: the GUI's area/mode/enabled fields, written to the
+/// block entity's saved compound. Unknown modes are refused by the caller's own word check.
+fn set_environmental(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    settings: EnvironmentalSettings,
+) -> String {
+    let Some(entity) = machine_at(&*host, level, pos, ENV_CONTROLLER) else {
+        return "No environmental controller there.".to_owned();
+    };
+    let Some(mut data) = entity.data(&*host) else {
+        return "No environmental controller there.".to_owned();
+    };
+    let EnvironmentalSettings {
+        radius,
+        miny,
+        maxy,
+        mode,
+        enabled,
+    } = settings;
+    write_int(&mut data, KEY_ENV_RADIUS, radius.max(0));
+    write_int(&mut data, KEY_ENV_MINY, miny);
+    write_int(&mut data, KEY_ENV_MAXY, maxy);
+    write_text(&mut data, KEY_ENV_MODE, &mode);
+    write_flag(&mut data, KEY_ENV_ENABLED, enabled);
+    // A setting change re-arms the module so the next powered tick applies the new area at once.
+    write_flag(&mut data, KEY_ENV_MODULE_ACTIVE, false);
+    write_int(&mut data, KEY_ENV_TICKS, 1);
+    write_int(&mut data, KEY_ENV_TIMEOUT, 0);
+    if entity.replace_data(host, data).is_err() {
+        return "No environmental controller there.".to_owned();
+    }
+    format!(
+        "/rftoolsutility: the environmental controller at {pos:?} now covers radius {radius}, \
+         y {miny}..{maxy}, mode {mode}, enabled={enabled}."
+    )
+}
+
+// ---------------------------------------------------------------------------
 // The tank part: its block entity, its tick and its bucket click
 // ---------------------------------------------------------------------------
 
@@ -4081,6 +4446,29 @@ impl Hooks for Mod {
                 "rftoolsutility: the wire part was refused: {error}"
             ));
         }
+
+        // Slice 20: the environmental controller's block entity, seven-slot module container and
+        // energy domain, and its one requested effect key. The module's item is carried content;
+        // the first module is the regeneration module (`PotionEffectModule.create("regeneration",
+        // 0, …)`). No GUI and no renderer: `environmental-set`/`buffer` replace them.
+        let env = r.block_key(ENV_CONTROLLER);
+        let env_kind = r
+            .block_entity_type(ENV_CONTROLLER_TYPE)
+            .blocks(&[ENV_CONTROLLER])
+            .build();
+        if let Err(error) = r.block_entity_part(&env_kind, EnvironmentalPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the environmental controller part was refused: {error}"
+            ));
+            return;
+        }
+        r.block_container(&env, environmental_container());
+        r.block_energy(&env, environmental_energy());
+        let _ = ENV_EFFECT_KEY.set(r.effect_key("minecraft:regeneration"));
+        r.item_key(ENV_REGEN_MODULE);
+        // The carried regeneration-module recipe names this serializer; registering it as a data
+        // kind (not a grid recipe) is what lets the game load the jar's file at all.
+        r.register_crafting_recipe_serializer("rftoolsutility:syringe", SyringeRecipeKind);
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -4448,6 +4836,15 @@ impl Hooks for Mod {
             "rftoolsutility wire-set <pos:block_pos> <facing:word>",
             2,
         ));
+        // Slice 20: the environmental controller's GUI-equivalent controls — the readout that
+        // includes the player's own effect, and the area/mode/on-off fields the GUI wrote.
+        event.commands.push(Command::new(
+            "rftoolsutility environmental <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility environmental-set <pos:block_pos> <radius:integer> <miny:integer> <maxy:integer> <mode:word> <enabled:word>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -4499,6 +4896,8 @@ impl Hooks for Mod {
                     | "redstone-set"
                     | "wire"
                     | "wire-set"
+                    | "environmental"
+                    | "environmental-set"
                     | "recipes"
             ]
         );
@@ -5815,6 +6214,77 @@ impl Hooks for Mod {
                 host.set_block_property(pos, WIRE_STATE_FACING, facing);
                 feedback(host, &format!("Wire input set to the {facing}."));
             }
+            ["rftoolsutility", "environmental"] => {
+                let Some(entity) = machine_at(&*host, level, pos, ENV_CONTROLLER) else {
+                    feedback(host, "No environmental controller there.");
+                    return Flow::Cancel;
+                };
+                let Some(nbt) = entity.data(&*host) else {
+                    feedback(host, "No environmental controller there.");
+                    return Flow::Cancel;
+                };
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let line = environmental_readout(&*host, entity, pos, &nbt, event.source, nonce);
+                feedback(host, &line);
+            }
+            ["rftoolsutility", "environmental-set"] => {
+                let usage = "Usage: /rftoolsutility environmental-set <pos> <radius> <miny> <maxy> <mode> <enabled>";
+                let (
+                    Some(CommandArgumentValue::Integer(radius)),
+                    Some(CommandArgumentValue::Integer(miny)),
+                    Some(CommandArgumentValue::Integer(maxy)),
+                ) = (
+                    invocation.argument("radius"),
+                    invocation.argument("miny"),
+                    invocation.argument("maxy"),
+                )
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                let (
+                    Some(CommandArgumentValue::String(mode)),
+                    Some(CommandArgumentValue::String(enabled)),
+                ) = (invocation.argument("mode"), invocation.argument("enabled"))
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                if !matches!(
+                    mode.as_str(),
+                    "blacklist" | "whitelist" | "hostile" | "passive" | "mobs" | "all"
+                ) {
+                    feedback(
+                        host,
+                        "unknown mode (blacklist|whitelist|hostile|passive|mobs|all).",
+                    );
+                    return Flow::Cancel;
+                }
+                let enabled = match enabled.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        feedback(host, "enabled must be true or false.");
+                        return Flow::Cancel;
+                    }
+                };
+                let line = set_environmental(
+                    host,
+                    level,
+                    pos,
+                    EnvironmentalSettings {
+                        radius: *radius,
+                        miny: *miny,
+                        maxy: *maxy,
+                        mode: mode.clone(),
+                        enabled,
+                    },
+                );
+                feedback(host, &line);
+            }
             _ => return Flow::Continue,
         }
         Flow::Cancel
@@ -6029,6 +6499,12 @@ fn set_slot(
         (entity, BUFFER_IN..BUFFER_OUT + BUFFER_OUT_SLOTS, "crafter")
     } else if let Some(entity) = machine_at(&*host, level, pos, BEAMER) {
         (entity, BEAMER_SLOT..BEAMER_SLOT + 1, "matter beamer")
+    } else if let Some(entity) = machine_at(&*host, level, pos, ENV_CONTROLLER) {
+        (
+            entity,
+            0..ENVIRONMENTAL_SLOTS_RUNTIME,
+            "environmental controller",
+        )
     } else {
         return "No machine there.".to_owned();
     };
@@ -6083,6 +6559,8 @@ fn set_energy(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3], amount:
         (entity, TRANSMITTER_CAPACITY, "matter transmitter")
     } else if let Some(entity) = machine_at(&*host, level, pos, RECEIVER) {
         (entity, RECEIVER_CAPACITY, "matter receiver")
+    } else if let Some(entity) = machine_at(&*host, level, pos, ENV_CONTROLLER) {
+        (entity, ENVIRONMENTAL_CAPACITY, "environmental controller")
     } else {
         return "No machine there.".to_owned();
     };

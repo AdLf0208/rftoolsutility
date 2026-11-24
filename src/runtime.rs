@@ -1818,6 +1818,121 @@ pub const fn wire_loop_allows(detector: i32) -> bool {
     detector <= 0
 }
 
+// ---------------------------------------------------------------------------
+// The environmental controller (slice 20)
+// ---------------------------------------------------------------------------
+
+/// `EnvironmentalConfiguration.ENVIRONMENTAL_MAXENERGY` (`environmentalMaxRF`).
+pub const ENVIRONMENTAL_CAPACITY: i32 = 500_000;
+/// `EnvironmentalConfiguration.ENVIRONMENTAL_RECEIVEPERTICK` (`environmentalRFPerTick`).
+pub const ENVIRONMENTAL_RECEIVE: i32 = 20_000;
+/// `EnvironmentalConfiguration.MIN_USAGE` (`environmentalMinRFUsage`).
+pub const ENVIRONMENTAL_MIN_USAGE: i32 = 5;
+/// `EnvironmentalConfiguration.mobsPowerMultiplier` — applied in `MODE_HOSTILE`,
+/// `MODE_PASSIVE`, `MODE_MOBS` and `MODE_ALL`, not in the two player-list modes.
+pub const ENVIRONMENTAL_MOB_MULTIPLIER: f32 = 2.0;
+/// `EnvironmentalControllerTileEntity.ENV_MODULES` — the module inventory's size.
+pub const ENVIRONMENTAL_SLOTS: usize = 7;
+/// `PotionEffectModule.MAXTICKS` — the cadence at which a potion module re-applies its effect.
+pub const ENVIRONMENTAL_MAXTICKS: i32 = 180;
+/// `new MobEffectInstance(potion, MAXTICKS * 3, amplifier, true, false)` in
+/// `PotionEffectModule.processPlayers/processEntities` (the 540-tick duration).
+pub const ENVIRONMENTAL_EFFECT_DURATION: i32 = ENVIRONMENTAL_MAXTICKS * 3;
+/// `EnvironmentalConfiguration.REGENERATION_RFPERTICK` (`regenerationRFPerTick`):
+/// FE per tick per unit of the controller's volume, for one regeneration module.
+pub const REGENERATION_RF_PER_TICK: f32 = 0.0015;
+/// `EnvironmentalData.createDefault()` — radius 50, miny 30, maxy 70, blacklist, no players.
+pub fn environmental_default_radius() -> i32 {
+    50
+}
+/// The lower bound of `EnvironmentalData.createDefault()`.
+pub fn environmental_default_miny() -> i32 {
+    30
+}
+/// The upper bound of `EnvironmentalData.createDefault()`.
+pub fn environmental_default_maxy() -> i32 {
+    70
+}
+/// The mode of `EnvironmentalData.createDefault()`.
+pub fn environmental_default_mode() -> &'static str {
+    "blacklist"
+}
+
+/// `EnvironmentalControllerTileEntity.getVolume`: `(int)(radius² × π × (maxy − miny + 1))`.
+/// Truncation is upstream's own `(int)` cast of the product, not a rounding step.
+#[must_use]
+pub fn environmental_volume(radius: i32, miny: i32, maxy: i32) -> i32 {
+    let height = maxy - miny + 1;
+    ((radius as f64) * (radius as f64) * std::f64::consts::PI * (height as f64)) as i32
+}
+
+/// `EnvironmentalControllerTileEntity.getTotalRfPerTick`: the modules' summed
+/// `rfPerTick × volume`, multiplied by the mode's power multiplier and the (unimplemented
+/// here) infusion factor, then clamped up to `MIN_USAGE` while any module is installed.
+#[must_use]
+pub fn environmental_rf_needed(total: i32, multiplier: f32, factor: f32, empty: bool) -> i32 {
+    let rf = (total as f32 * multiplier * (4.0 - factor) / 4.0) as i32;
+    if empty {
+        rf
+    } else {
+        rf.max(ENVIRONMENTAL_MIN_USAGE)
+    }
+}
+
+/// `PotionEffectModule`'s horizontal sphere test (x/z squared distance `< radius²`) and its
+/// absolute `miny..=maxy` band. The caller supplies the entity's position.
+#[must_use]
+pub fn environmental_in_area(
+    entity: [f64; 3],
+    pos: [i32; 3],
+    radius: i32,
+    miny: i32,
+    maxy: i32,
+) -> bool {
+    if entity[1] < miny as f64 || entity[1] > maxy as f64 {
+        return false;
+    }
+    let dx = entity[0] - pos[0] as f64;
+    let dz = entity[2] - pos[2] as f64;
+    dx * dx + dz * dz < (radius as f64) * (radius as f64)
+}
+
+/// `EnvironmentalControllerTileEntity.isEntityAffected` for each `EnvironmentalMode`.
+/// `listed` is the player's membership in the `EnvironmentalData.players` set; kind flags
+/// are the game's own classification of the entity. `MODE_ALL` affects every entity (a
+/// player is always affected there), as upstream's switch does.
+#[must_use]
+pub fn environmental_affected(
+    mode: &str,
+    is_player: bool,
+    is_mob: bool,
+    is_enemy: bool,
+    listed: bool,
+) -> bool {
+    match mode {
+        "all" => true,
+        "blacklist" => is_player && !listed,
+        "whitelist" => is_player && listed,
+        "hostile" => is_enemy,
+        "passive" => is_mob && !is_enemy,
+        "mobs" => is_mob,
+        _ => false,
+    }
+}
+
+/// `PotionEffectModule.tick`'s countdown: decrement, and when it reaches zero re-arm at
+/// `MAXTICKS` and apply the effect. `activate(true)` seeds `ticks = 1`, so the first active
+/// tick applies the effect and the next one is `MAXTICKS` later.
+#[must_use]
+pub fn environmental_due(ticks: i32) -> (i32, bool) {
+    let next = ticks - 1;
+    if next > 0 {
+        (next, false)
+    } else {
+        (ENVIRONMENTAL_MAXTICKS, true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3943,5 +4058,151 @@ mod tests {
         assert!(wire_loop_allows(0));
         assert!(wire_loop_allows(-1));
         assert!(!wire_loop_allows(1));
+    }
+
+    // Slice 20: the environmental controller's first (regeneration) module.
+
+    #[test]
+    fn an_environmental_volume_is_pi_times_radius_squared_times_height() {
+        // 8² × π × 3 = 603.18…, truncated as the artefact's `(int)` cast does.
+        assert_eq!(environmental_volume(8, 100, 102), 603);
+        // The jar's default bounds: 50² × π × 41 = 322,013.18…, truncated.
+        assert_eq!(environmental_volume(50, 30, 70), 322_013);
+        assert_eq!(environmental_volume(4, 100, 100), 50);
+    }
+
+    #[test]
+    fn one_regeneration_module_costs_the_minimum_usage_when_its_volume_is_small() {
+        // (int)(0.0015 × 603) = 0 for one module at radius 8, so the min-usage floor wins.
+        let total = (REGENERATION_RF_PER_TICK * environmental_volume(8, 100, 102) as f32) as i32;
+        assert_eq!(total, 0);
+        assert_eq!(
+            environmental_rf_needed(total, ENVIRONMENTAL_MOB_MULTIPLIER, 0.0, false),
+            ENVIRONMENTAL_MIN_USAGE
+        );
+    }
+
+    #[test]
+    fn environmental_power_scales_with_volume_and_the_mode_multiplier() {
+        // At radius 20 the volume is 6283: (int)(0.0015 × 6283) = 9, doubled in MODE_ALL.
+        let total = (REGENERATION_RF_PER_TICK * environmental_volume(20, 100, 104) as f32) as i32;
+        assert_eq!(total, 9);
+        assert_eq!(environmental_rf_needed(total, 2.0, 0.0, false), 18);
+        // A fully infused controller divides the cost by four, back to the floor.
+        assert_eq!(
+            environmental_rf_needed(total, 2.0, 4.0, false),
+            ENVIRONMENTAL_MIN_USAGE
+        );
+        // With no modules upstream returns the raw figure (zero), and the tick deactivates.
+        assert_eq!(environmental_rf_needed(total, 2.0, 0.0, true), 18);
+        assert_eq!(environmental_rf_needed(0, 2.0, 0.0, true), 0);
+    }
+
+    #[test]
+    fn the_artefacts_default_environmental_data_is_radius_50_bounds_30_70_blacklist() {
+        assert_eq!(environmental_default_radius(), 50);
+        assert_eq!(environmental_default_miny(), 30);
+        assert_eq!(environmental_default_maxy(), 70);
+        assert_eq!(environmental_default_mode(), "blacklist");
+    }
+
+    #[test]
+    fn the_environmental_area_is_a_horizontal_sphere_inside_a_y_band() {
+        let pos = [200, 101, 0];
+        assert!(environmental_in_area([207.0, 101.0, 0.0], pos, 8, 100, 102));
+        assert!(environmental_in_area([200.0, 102.0, 0.0], pos, 8, 100, 102));
+        // x² + z² must be strictly below radius², and y outside the band is refused.
+        assert!(!environmental_in_area(
+            [208.0, 101.0, 0.0],
+            pos,
+            8,
+            100,
+            102
+        ));
+        assert!(!environmental_in_area([200.0, 99.0, 0.0], pos, 8, 100, 102));
+        assert!(!environmental_in_area(
+            [205.0, 101.0, 205.0],
+            pos,
+            8,
+            100,
+            102
+        ));
+    }
+
+    #[test]
+    fn mode_all_affects_players_and_every_other_entity() {
+        assert!(environmental_affected("all", true, false, false, false));
+        assert!(environmental_affected("all", false, true, false, false));
+        assert!(environmental_affected("all", false, true, true, false));
+    }
+
+    #[test]
+    fn the_player_list_modes_only_affect_players_and_blacklist_excludes_listed() {
+        assert!(environmental_affected(
+            "blacklist",
+            true,
+            false,
+            false,
+            false
+        ));
+        assert!(!environmental_affected(
+            "blacklist",
+            true,
+            false,
+            false,
+            true
+        ));
+        assert!(!environmental_affected(
+            "blacklist",
+            false,
+            true,
+            true,
+            false
+        ));
+        assert!(environmental_affected(
+            "whitelist",
+            true,
+            false,
+            false,
+            true
+        ));
+        assert!(!environmental_affected(
+            "whitelist",
+            true,
+            false,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn the_mob_modes_select_by_entity_kind() {
+        assert!(environmental_affected("hostile", false, true, true, false));
+        assert!(!environmental_affected(
+            "hostile", false, true, false, false
+        ));
+        assert!(environmental_affected("passive", false, true, false, false));
+        assert!(!environmental_affected("passive", false, true, true, false));
+        assert!(environmental_affected("mobs", false, true, true, false));
+        assert!(environmental_affected("mobs", false, true, false, false));
+        assert!(!environmental_affected("mobs", false, false, false, false));
+    }
+
+    #[test]
+    fn an_unknown_mode_affects_nothing() {
+        assert!(!environmental_affected("nonesuch", true, true, true, false));
+    }
+
+    #[test]
+    fn the_effect_is_due_on_the_first_active_tick_and_every_maxicks_after() {
+        assert_eq!(environmental_due(1), (ENVIRONMENTAL_MAXTICKS, true));
+        assert_eq!(environmental_due(180), (179, false));
+        assert_eq!(environmental_due(2), (1, false));
+        assert_eq!(environmental_due(1).0, ENVIRONMENTAL_MAXTICKS);
+    }
+
+    #[test]
+    fn the_effect_duration_is_three_module_cadences() {
+        assert_eq!(ENVIRONMENTAL_EFFECT_DURATION, 540);
     }
 }
