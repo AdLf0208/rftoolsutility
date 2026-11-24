@@ -198,7 +198,9 @@ expect_signal 15 ok
 
 echo "== AJ3: a block above the receiver drops the signal back to 0 =="
 ctl command "execute in minecraft:the_end run setblock $RX_X $((RX_Y + 1)) $RX_Z minecraft:stone" >/dev/null
-ctl wait 8 >/dev/null
+# The analyzer re-checks every 20 ticks (game_time % 20 == 0); an 8-tick wait can read the
+# previous check's 15. Wait a full period so the assertion sees the re-check, not setup latency.
+ctl wait 40 >/dev/null
 analyzer "$AX_X" "$AX_Y" "$AX_Z"
 echo "  blocked: $REPLY"
 expect_signal 0 warn

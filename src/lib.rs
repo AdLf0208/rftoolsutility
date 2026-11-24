@@ -8,8 +8,9 @@
 //! a tick that runs taught 3x3 recipes from its buffer. [`SpawnerPart`] is the spawner:
 //! 200,000 FE and a tick that spawns the mob its own recipe names, for that recipe's RF cost;
 //! [`SpawnerRecipeKind`] is the `rftoolsutility:spawner` recipe kind its 70 carried mob recipes
-//! need. [`SensorPart`] and [`SequencerPart`] are the two logic blocks: a ten-tick block check and
-//! a rising-edge-driven 64-step pattern, both emitting a real 15/0 redstone signal. The
+//! need. [`SensorPart`], [`SequencerPart`] and [`TimerPart`] are the three logic blocks: a ten-tick
+//! block check, a rising-edge-driven 64-step pattern and a rising-edge-reloaded delay that emits
+//! a one-tick 15 pulse every `delay` ticks, all emitting a real 15/0 redstone signal. The
 //! `/rftoolsutility …` commands serve the harness, because upstream's controls are its GUIs.
 //!
 //! The numbers — the capacity, the fill level, what a bucket click does, the craft loop, the
@@ -37,11 +38,11 @@ use runtime::{
     MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe, RECEIVER_CAPACITY,
     RECEIVER_RECEIVE, RF_PER_TICK, SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE,
     SensorKind, SequencerData, SequencerMode, SequencerState, Speed, TRANSMITTER_CAPACITY,
-    TRANSMITTER_RECEIVE, Tank, add_matter, analyzer_due, analyzer_status, beam_due, beam_reach,
-    beam_send, bucket_click, carried, clamped, fill_level, in_beam, placements, plan,
-    receiver_ready, recipe_for, result_range, sensor_due, sensor_front, sensor_sees, sensor_signal,
-    sequencer_tick as run_sequencer_tick, spawn_at, spawn_cycle, spend, start_cost, start_time,
-    steps,
+    TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter, analyzer_due, analyzer_status,
+    beam_due, beam_reach, beam_send, bucket_click, carried, clamped, fill_level, in_beam,
+    placements, plan, receiver_ready, recipe_for, result_range, rising_edge, sensor_due,
+    sensor_front, sensor_sees, sensor_signal, sequencer_tick as run_sequencer_tick, spawn_at,
+    spawn_cycle, spend, start_cost, start_time, steps, timer_signal, timer_tick as run_timer_tick,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -242,6 +243,38 @@ const KEY_SEQ_RS: &str = "rs";
 const KEY_SEQ_FACING: &str = "seqFacing";
 /// A sequencer's item, resolved once in `register` for `block_drops`.
 static SEQUENCER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// The timer (slice 13) — `TimerTileEntity`
+// ---------------------------------------------------------------------------
+
+/// `LogicBlockModule.TIMER`: the sensor's other sibling. Its `delay` and `pauses` are written by
+/// the jar's GUI, so this port writes them with `/rftoolsutility timer-set`; the tick rule is the
+/// artefact's own. The input side is a saved advisory for the same reason the sensor's is.
+const TIMER: &str = "rftoolsutility:timer";
+const TIMER_TYPE: &str = "timer";
+const TIMER_TYPE_ID: &str = "rftoolsutility:timer";
+/// `TimerData`'s two record fields and `TimerTileEntity`'s three live saved fields.
+const KEY_TIMER_DELAY: &str = "delay";
+const KEY_TIMER_PAUSES: &str = "pauses";
+const KEY_TIMER_PREV: &str = "prevIn";
+const KEY_TIMER_TIMER: &str = "timer";
+const KEY_TIMER_RS: &str = "rs";
+const KEY_TIMER_FACING: &str = "timerFacing";
+/// Harness-only tick stamps: the game time of the last rising edge and of the last 15 output.
+/// Upstream saves no such fields; they let the in-game leg measure the delay in the game's own
+/// ticks instead of wall time (the beamer's `sent` counter is the same pattern).
+const KEY_TIMER_PULSE_AT: &str = "timerPulseAt";
+const KEY_TIMER_FIRED_AT: &str = "timerFiredAt";
+/// A latch so the `fired` stamp is the **first** pulse after the last edge, not the latest of the
+/// timer's repeating pulses (the leg needs the first one to measure the delay).
+const KEY_TIMER_FIRED_LOCK: &str = "timerFiredLock";
+/// The vanilla lamp's own `lit` state at the fire tick, read from the game right after the
+/// neighbour update. A one-tick pulse is too brief for a polling `ctl block`; this is the lamp's
+/// real state at the instant the timer emits 15, and the leg asserts it.
+const KEY_TIMER_LAMP: &str = "timerLampLit";
+/// A timer's item, resolved once in `register` for `block_drops`.
+static TIMER_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -1949,6 +1982,166 @@ impl BlockEntityPart for SequencerPart {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The timer's glue (slice 13)
+// ---------------------------------------------------------------------------
+
+/// `TimerData` out of the saved compound; a freshly placed block entity's compound is empty, so
+/// the artefact's `createDefault()` supplies the two values a GUI would have written.
+fn timer_data(nbt: &Compound) -> TimerData {
+    let defaults = TimerData::default();
+    TimerData {
+        delay: read_int_or(nbt, KEY_TIMER_DELAY, defaults.delay),
+        redstone_pauses: read_flag(nbt, KEY_TIMER_PAUSES),
+    }
+}
+
+/// The live fields `TimerTileEntity` saves beside its data (`prevIn`, `timer`, `rs`).
+fn timer_state(nbt: &Compound) -> TimerState {
+    TimerState {
+        prev_in: read_flag(nbt, KEY_TIMER_PREV),
+        timer: read_int_or(nbt, KEY_TIMER_TIMER, 0),
+        output: read_flag(nbt, KEY_TIMER_RS),
+    }
+}
+
+/// Write the data and the live fields back. The engine persists the compound when the tick answers
+/// `Changed` (the default), as the sequencer's tick does.
+fn write_timer(nbt: &mut Compound, data: &TimerData, state: &TimerState) {
+    write_int(nbt, KEY_TIMER_DELAY, data.delay);
+    write_flag(nbt, KEY_TIMER_PAUSES, data.redstone_pauses);
+    write_flag(nbt, KEY_TIMER_PREV, state.prev_in);
+    write_int(nbt, KEY_TIMER_TIMER, state.timer);
+    write_flag(nbt, KEY_TIMER_RS, state.output);
+}
+
+/// The four saved input-side spellings (the jar's 24 `logic_facing` slab rotations cannot be a
+/// content block's states, so the side is a saved advisory).
+fn timer_front(facing: &str) -> bool {
+    sensor_front([0, 0, 0], facing).is_some()
+}
+
+/// `/rftoolsutility timer <pos> [nonce]`: the harness reads the **parsed** delay, countdown and
+/// 15/0 output. `pulse`/`fired` are game-time stamps and `time` is the readout's own tick, so the
+/// leg can say "exactly `delay` ticks" from the replies alone.
+#[allow(clippy::too_many_arguments)]
+fn timer_line(
+    pos: [i32; 3],
+    data: &TimerData,
+    state: &TimerState,
+    pulse: i32,
+    fired: i32,
+    facing: &str,
+    time: i32,
+    lamp: &str,
+    nonce: Option<&str>,
+) -> String {
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: timer at {pos:?}: delay={} pauses={} output={} timer={} pulse={pulse} fired={fired} facing={facing} time={time} lamp={lamp}{suffix}",
+        data.delay,
+        data.redstone_pauses,
+        timer_signal(state.output),
+        state.timer,
+    )
+}
+
+/// `TimerTileEntity.tickOnServer`: latch a rising edge of the input-side neighbour's own signal,
+/// run the artefact's countdown, persist the live fields and mirror the cached 15/0 into the
+/// block's `signal` property so a vanilla lamp beside it sees the pulse. The neighbour is read
+/// **directionally** (`SignalGetter.getSignal(neighbour, into)`), never with
+/// `getBestNeighborSignal`: the latter includes this block's own 15 and would latch a phantom
+/// edge on the next tick (sequencer, slice 12).
+fn timer_block_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let data = timer_data(&event.entity.nbt);
+    let mut state = timer_state(&event.entity.nbt);
+    let Some(level) = ticking_level(&*host) else {
+        return;
+    };
+    let facing =
+        read_text(&event.entity.nbt, KEY_TIMER_FACING).unwrap_or_else(|| "north".to_owned());
+    let (front, into) = match facing.as_str() {
+        "north" => ([pos[0], pos[1], pos[2] - 1], Direction::South),
+        "south" => ([pos[0], pos[1], pos[2] + 1], Direction::North),
+        "west" => ([pos[0] - 1, pos[1], pos[2]], Direction::East),
+        "east" => ([pos[0] + 1, pos[1], pos[2]], Direction::West),
+        _ => ([pos[0], pos[1], pos[2] - 1], Direction::South),
+    };
+    let powered = level.signal(&*host, front, into).unwrap_or(0) > 0;
+    let time = level.game_time(&*host).unwrap_or(0) as i32;
+    let was_output = state.output;
+    let was_prev = state.prev_in;
+    run_timer_tick(&data, &mut state, powered);
+    write_timer(&mut event.entity.nbt, &data, &state);
+    if rising_edge(powered, was_prev) {
+        write_int(&mut event.entity.nbt, KEY_TIMER_PULSE_AT, time);
+        write_flag(&mut event.entity.nbt, KEY_TIMER_FIRED_LOCK, false);
+    }
+    let wanted = timer_signal(state.output);
+    if wanted != cached_signal(&*host, level, pos) {
+        host.set_block_property(pos, KEY_SIGNAL, if state.output { "1" } else { "0" });
+        if let Some(block_state) = level.block_state(&*host, pos) {
+            let _ = level.update_neighbors(host, pos, block_state, NeighbourUpdate::Neighbours);
+        }
+    }
+    // Stamp the *first* fire after the edge once, with the lamp's own state at that instant. The
+    // one-tick pulse is far too brief for a polling `ctl block`, so this captured stamp is the
+    // fail-capable evidence of the lamp flip; it stays until the next edge or a `timer-set`.
+    if !was_output && state.output && !read_flag(&event.entity.nbt, KEY_TIMER_FIRED_LOCK) {
+        write_int(&mut event.entity.nbt, KEY_TIMER_FIRED_AT, time);
+        write_flag(&mut event.entity.nbt, KEY_TIMER_FIRED_LOCK, true);
+        let lit = [
+            [pos[0], pos[1], pos[2] - 1],
+            [pos[0], pos[1], pos[2] + 1],
+            [pos[0] - 1, pos[1], pos[2]],
+            [pos[0] + 1, pos[1], pos[2]],
+        ]
+        .iter()
+        .any(|&around| {
+            level
+                .block_state(&*host, around)
+                .and_then(|s| host.block_state_string(s))
+                .is_some_and(|name| {
+                    name.contains("redstone_lamp")
+                        && sensor_state_property(&name, "lit") == Some("true")
+                })
+        });
+        write_flag(&mut event.entity.nbt, KEY_TIMER_LAMP, lit);
+    }
+}
+
+/// The timer's one Part: a block entity with a tick, and the two redstone methods that make its
+/// cached 15/0 a real vanilla signal (`LogicSupport.getRedstoneOutput`/`isSignalSource`).
+struct TimerPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for TimerPart {
+    fn is_signal_source(&self, _level: &dyn LevelHost, event: &mut IsSignalSourceEvent) {
+        event.source = true;
+    }
+
+    fn block_signal(&self, level: &dyn LevelHost, event: &mut BlockSignalEvent) {
+        let Some(name) = level.state_string(event.state) else {
+            return;
+        };
+        if sensor_state_property(&name, KEY_SIGNAL) == Some("1") {
+            event.signal = SENSOR_ON;
+        }
+    }
+}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for TimerPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        timer_block_tick(host, event);
+    }
+}
+
 /// `/rftoolsutility analyzer <pos> [nonce]`: the harness's readout of the passive analyzer block.
 /// It finds the adjacent dialed transmitter and prints the receiver-check status the transmitter
 /// keeps (`green=ok` → 15, `yellow=unknown` → 7, `red=warn` → 0). The artefact has no redstone
@@ -2585,6 +2778,16 @@ impl Hooks for Mod {
                 "rftoolsutility: the sequencer part was refused: {error}"
             ));
         }
+
+        // Slice 13: the timer's block entity, countdown state machine and redstone Part, on the
+        // same iron-block template and `signal` state as the sensor and the sequencer.
+        let _ = TIMER_ITEM.set(r.item_key(TIMER));
+        let timer_kind = r.block_entity_type(TIMER_TYPE).blocks(&[TIMER]).build();
+        if let Err(error) = r.block_entity_part(&timer_kind, TimerPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the timer part was refused: {error}"
+            ));
+        }
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -2734,6 +2937,12 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(TIMER) {
+            if let Some(item) = TIMER_ITEM.get() {
+                carry_machine(level, event, *item, TIMER_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -2840,6 +3049,15 @@ impl Hooks for Mod {
             "rftoolsutility sequencer-set <pos:block_pos> <mode:word> <bits:word> <delay:integer> <count:integer> <endstate:word> <facing:word>",
             2,
         ));
+        // Slice 13: the timer's GUI equivalent — a readout of its parsed state and a way to write
+        // the delay/pauses settings the jar's integer field and toggle button write.
+        event.commands.push(Command::new(
+            "rftoolsutility timer <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility timer-set <pos:block_pos> <delay:integer> <pauses:word> <facing:word>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -2877,6 +3095,8 @@ impl Hooks for Mod {
                     | "sensor-set"
                     | "sequencer"
                     | "sequencer-set"
+                    | "timer"
+                    | "timer-set"
                     | "recipes"
             ]
         );
@@ -3419,6 +3639,99 @@ impl Hooks for Mod {
                         "Sequencer at {pos:?}: mode {} pattern {bits} over {count} steps, output {}.",
                         mode.as_str(),
                         state.output as i32 * SENSOR_ON
+                    ),
+                );
+            }
+            ["rftoolsutility", "timer"] => {
+                let Some(entity) = machine_at(&*host, level, pos, TIMER) else {
+                    feedback(host, "No timer there.");
+                    return Flow::Cancel;
+                };
+                let Some(nbt) = entity.data(&*host) else {
+                    feedback(host, "No timer there.");
+                    return Flow::Cancel;
+                };
+                let data = timer_data(&nbt);
+                let state = timer_state(&nbt);
+                let pulse = read_int_or(&nbt, KEY_TIMER_PULSE_AT, -1);
+                let fired = read_int_or(&nbt, KEY_TIMER_FIRED_AT, -1);
+                let facing =
+                    read_text(&nbt, KEY_TIMER_FACING).unwrap_or_else(|| "north".to_owned());
+                let lamp = if read_flag(&nbt, KEY_TIMER_LAMP) {
+                    "lit"
+                } else {
+                    "dark"
+                };
+                let time = level.game_time(&*host).unwrap_or(0) as i32;
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                feedback(
+                    host,
+                    &timer_line(pos, &data, &state, pulse, fired, &facing, time, lamp, nonce),
+                );
+            }
+            ["rftoolsutility", "timer-set"] => {
+                let Some(entity) = machine_at(&*host, level, pos, TIMER) else {
+                    feedback(host, "No timer there.");
+                    return Flow::Cancel;
+                };
+                let usage = "Usage: /rftoolsutility timer-set <pos> <delay> <pauses> <facing>";
+                let delay = match invocation.argument("delay") {
+                    Some(CommandArgumentValue::Integer(value)) => *value,
+                    _ => {
+                        feedback(host, usage);
+                        return Flow::Cancel;
+                    }
+                };
+                let pauses = match invocation.argument("pauses") {
+                    Some(CommandArgumentValue::String(word)) if word == "true" => true,
+                    Some(CommandArgumentValue::String(word)) if word == "false" => false,
+                    _ => {
+                        feedback(host, "pauses must be true or false.");
+                        return Flow::Cancel;
+                    }
+                };
+                let Some(CommandArgumentValue::String(facing)) = invocation.argument("facing")
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                if !timer_front(facing) {
+                    feedback(host, "unknown timer facing (north|south|east|west).");
+                    return Flow::Cancel;
+                }
+                let data = TimerData {
+                    delay,
+                    redstone_pauses: pauses,
+                };
+                // The jar writes these through a GUI that also waits out the current countdown;
+                // with no menu the harness starts a fresh one, so every phase begins from a known
+                // state (recorded as a deviation in notes.md).
+                let state = TimerState {
+                    prev_in: false,
+                    timer: data.delay,
+                    output: false,
+                };
+                let Some(mut nbt) = entity.data(&*host) else {
+                    feedback(host, "No timer there.");
+                    return Flow::Cancel;
+                };
+                write_timer(&mut nbt, &data, &state);
+                write_int(&mut nbt, KEY_TIMER_PULSE_AT, -1);
+                write_int(&mut nbt, KEY_TIMER_FIRED_AT, -1);
+                write_flag(&mut nbt, KEY_TIMER_FIRED_LOCK, false);
+                write_flag(&mut nbt, KEY_TIMER_LAMP, false);
+                write_text(&mut nbt, KEY_TIMER_FACING, facing);
+                if entity.replace_data(host, nbt).is_err() {
+                    feedback(host, "No timer there.");
+                    return Flow::Cancel;
+                }
+                feedback(
+                    host,
+                    &format!(
+                        "Timer at {pos:?}: delay {delay} ticks, pauses={pauses}, input to the {facing}."
                     ),
                 );
             }
@@ -4549,5 +4862,34 @@ mod tests {
         assert_eq!(parse_bits("nonsense"), None);
         assert!(sequencer_front("north"));
         assert!(!sequencer_front("up"));
+    }
+
+    // -- the timer's harness readout (slice 13) -------------------------------
+
+    #[test]
+    fn the_timer_readout_is_the_line_the_harness_parses() {
+        let data = TimerData {
+            delay: 6,
+            redstone_pauses: false,
+        };
+        let state = TimerState {
+            prev_in: false,
+            timer: 3,
+            output: false,
+        };
+        assert_eq!(
+            timer_line(
+                [201, 101, 0],
+                &data,
+                &state,
+                12,
+                -1,
+                "north",
+                18,
+                "lit",
+                Some("1")
+            ),
+            "/rftoolsutility: timer at [201, 101, 0]: delay=6 pauses=false output=0 timer=3 pulse=12 fired=-1 facing=north time=18 lamp=lit nonce=1"
+        );
     }
 }

@@ -12,7 +12,8 @@
     "rftoolsutility:matter_booster",
     "rftoolsutility:destination_analyzer",
     "rftoolsutility:sensor",
-    "rftoolsutility:sequencer"
+    "rftoolsutility:sequencer",
+    "rftoolsutility:timer"
   ],
   "title": "itemGroup.rftoolsutility"
 }

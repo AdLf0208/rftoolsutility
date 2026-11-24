@@ -1234,6 +1234,64 @@ pub fn sequencer_tick(data: &SequencerData, state: &mut SequencerState, powered:
     }
 }
 
+// ---- slice 13: the timer (`TimerTileEntity`) ----
+
+/// `TimerData(int delay, boolean redstonePauses)`. Both fields are written by the jar's GUI
+/// (`integerfield('delay')` and the `pauses` toggle), so this port writes them with a harness
+/// command; the tick's rule below is the artefact's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimerData {
+    pub delay: i32,
+    pub redstone_pauses: bool,
+}
+
+impl Default for TimerData {
+    fn default() -> Self {
+        // `TimerData.createDefault()`.
+        Self {
+            delay: 20,
+            redstone_pauses: false,
+        }
+    }
+}
+
+/// `TimerTileEntity`'s three live saved fields: `prevIn`, `timer` and the cached `rs` output the
+/// redstone hook reads through `LogicSupport`. The derived default is the Java one: an `int`
+/// starts at 0 and both `boolean`s at false (which is why a fresh timer fires on its first tick).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TimerState {
+    pub prev_in: bool,
+    pub timer: i32,
+    pub output: bool,
+}
+
+/// The redstone strength `support.setRedstoneState(this, newout)` writes for a timer: the same
+/// 15/0 as the sensor and the sequencer.
+#[must_use]
+pub fn timer_signal(output: bool) -> i32 {
+    if output { SENSOR_ON } else { SENSOR_OFF }
+}
+
+/// One `TimerTileEntity.tickOnServer()`: latch the rising edge, reload the countdown on it, hold
+/// the countdown while a pauses-timer's input is high, and emit one 15 tick whenever `timer--`
+/// reaches zero (reloading it to `delay`). The order is the artefact's, verbatim.
+pub fn timer_tick(data: &TimerData, state: &mut TimerState, powered: bool) {
+    let pulse = rising_edge(powered, state.prev_in);
+    state.prev_in = powered;
+    if pulse {
+        state.timer = data.delay;
+    }
+    if !data.redstone_pauses || !powered {
+        state.timer -= 1;
+    }
+    if state.timer <= 0 {
+        state.timer = data.delay;
+        state.output = true;
+    } else {
+        state.output = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2663,5 +2721,140 @@ mod tests {
         assert!(!state.output);
         sequencer_tick(&data, &mut state, false);
         assert!(state.output, "the third tick refreshes the new bit");
+    }
+
+    // -- slice 13: the timer --------------------------------------------------
+
+    #[test]
+    fn the_artefacts_default_timer_data_is_delay_twenty_and_no_pause() {
+        let data = TimerData::default();
+        assert_eq!(data.delay, 20, "TimerData.createDefault()");
+        assert!(!data.redstone_pauses);
+    }
+
+    #[test]
+    fn the_output_is_fifteen_only_while_the_timer_is_high() {
+        assert_eq!(timer_signal(true), SENSOR_ON);
+        assert_eq!(timer_signal(false), SENSOR_OFF);
+    }
+
+    #[test]
+    fn a_fresh_java_timer_fires_on_its_first_tick() {
+        // The Java field starts at 0, so `timer--` makes it negative on the very first tick.
+        let data = TimerData {
+            delay: 6,
+            redstone_pauses: false,
+        };
+        let mut state = TimerState::default();
+        timer_tick(&data, &mut state, false);
+        assert!(
+            state.output,
+            "timer 0 decrements past zero and fires at once"
+        );
+        assert_eq!(state.timer, 6, "the countdown reloads after the fire");
+    }
+
+    #[test]
+    fn a_rising_edge_reloads_the_delay_and_the_first_output_is_after_that_delay() {
+        let data = TimerData {
+            delay: 4,
+            redstone_pauses: false,
+        };
+        let mut state = TimerState {
+            timer: 4,
+            ..TimerState::default()
+        };
+        timer_tick(&data, &mut state, false);
+        assert_eq!(state.timer, 3);
+        assert!(!state.output);
+        timer_tick(&data, &mut state, true);
+        assert!(state.prev_in, "the input is latched");
+        assert_eq!(
+            state.timer, 3,
+            "the edge reloads 4, then this tick decrements"
+        );
+        assert!(!state.output);
+        timer_tick(&data, &mut state, true);
+        assert_eq!(state.timer, 2);
+        assert!(!state.output);
+        timer_tick(&data, &mut state, true);
+        assert_eq!(state.timer, 1);
+        assert!(!state.output);
+        timer_tick(&data, &mut state, true);
+        assert_eq!(state.timer, 4, "the fire reloads the countdown");
+        assert!(
+            state.output,
+            "the fourth tick of the delay is the one-tick pulse"
+        );
+        timer_tick(&data, &mut state, true);
+        assert!(!state.output, "a timer pulse lasts exactly one tick");
+    }
+
+    #[test]
+    fn a_new_edge_restarts_the_countdown_and_the_output_repeats_every_delay_ticks() {
+        let data = TimerData {
+            delay: 4,
+            redstone_pauses: false,
+        };
+        let mut state = TimerState {
+            timer: 4,
+            ..TimerState::default()
+        };
+        timer_tick(&data, &mut state, true); // edge at tick 1
+        timer_tick(&data, &mut state, false);
+        timer_tick(&data, &mut state, false);
+        timer_tick(&data, &mut state, false); // tick 4: fire
+        assert!(state.output);
+        for _ in 0..3 {
+            timer_tick(&data, &mut state, false);
+            assert!(!state.output, "the timer is dark between its pulses");
+        }
+        timer_tick(&data, &mut state, false); // tick 8: free-running fire
+        assert!(state.output, "the timer repeats every delay ticks");
+        timer_tick(&data, &mut state, false);
+        timer_tick(&data, &mut state, true); // a second edge at tick 10 restarts it
+        assert_eq!(state.timer, 3, "the new edge reloads the countdown");
+        for _ in 0..2 {
+            timer_tick(&data, &mut state, false);
+            assert!(!state.output, "the old due tick was cancelled by the edge");
+        }
+        timer_tick(&data, &mut state, false);
+        assert!(
+            state.output,
+            "the restarted countdown fires at edge + delay - 1"
+        );
+    }
+
+    #[test]
+    fn pauses_holds_the_countdown_while_the_input_is_high_and_fires_when_it_ends() {
+        let data = TimerData {
+            delay: 4,
+            redstone_pauses: true,
+        };
+        let mut state = TimerState {
+            timer: 4,
+            ..TimerState::default()
+        };
+        timer_tick(&data, &mut state, true); // the edge loads the delay
+        assert_eq!(
+            state.timer, 4,
+            "a pauses timer does not decrement while powered"
+        );
+        for _ in 0..6 {
+            timer_tick(&data, &mut state, true);
+            assert_eq!(state.timer, 4);
+            assert!(!state.output, "timely input keeps the overdue timer dark");
+        }
+        timer_tick(&data, &mut state, false); // the countdown resumes
+        assert_eq!(state.timer, 3);
+        for _ in 0..2 {
+            timer_tick(&data, &mut state, false);
+            assert!(!state.output);
+        }
+        timer_tick(&data, &mut state, false);
+        assert!(
+            state.output,
+            "the pulse comes delay - 1 ticks after the input ends"
+        );
     }
 }

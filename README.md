@@ -1,15 +1,16 @@
-# RFTools Utility for Horizon — slices 1–12: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor and the sequencer
+# RFTools Utility for Horizon — slices 1–13: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer and the timer
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–12, the tank, the crafter tiers, the spawner's matter gate, the matter
-beamer, the matter transmitter / receiver / booster, the destination analyzer, the sensor and
-the sequencer.**
+**Status: slices 1–13, the tank, the crafter tiers, the spawner's matter gate, the matter
+beamer, the matter transmitter / receiver / booster, the destination analyzer, the sensor,
+the sequencer and the timer.**
 One flat SDK package (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the
-models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 12 — the sequencer",
+models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 13 — the timer",
+§ "Slice 12 — the sequencer",
 § "Slice 11 — the sensor",
 § "Slice 10 — the destination analyzer", § "Slice 9 — the teleporter family",
 § "Slice 8 — the matter beamer", § "Slice 7 — the spawner's matter gate", § "Slice 6 — the tick's own dimension",
@@ -97,9 +98,23 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
    run one cycle, `Loop1/2` cycle forever, `Loop3/4` follow the signal level and `Loop4` resets
    when it ends. `checkOutput()` reads the pattern bit at the current step, or the `endstate` when
    stopped at step −1; the checker runs every `delay` ticks (default 1 over 64 steps). A vanilla
-   lever on any side supplies the edges through `Level.getBestNeighborSignal`; `/rftoolsutility
-   sequencer-set <pos> <mode> <bits> <delay> <count> <endstate> <facing>` is the GUI's equivalent
-   (bits in decimal or `0x` hex), and a broken sequencer's item carries its whole state.
+   lever on the input side supplies clean edges: the tick reads that neighbour's directional
+   `SignalGetter.getSignal`, not `getBestNeighborSignal` (which includes the block's own 15 and
+   would latch a phantom edge). `/rftoolsutility sequencer-set <pos> <mode> <bits> <delay>
+   <count> <endstate> <facing>` is the GUI's equivalent (bits in decimal or `0x` hex), and a
+   broken sequencer's item carries its whole state.
+- `rftoolsutility:timer` — a **repeating redstone pulse** machine (`TimerTileEntity`). Its
+  `delay` (20 ticks by default) and `pauses` toggle are written by the jar's GUI, so here
+  `/rftoolsutility timer-set <pos> <delay> <pauses> <facing>` sets them. A rising edge on the
+  input side (`powered && !prevIn`, read directionally as the sequencer's is) reloads the
+  countdown; when it reaches zero the block emits **15 for exactly one tick** and restarts, so
+  without a new edge it pulses every `delay` ticks — the jar's manual calls it "a simple gate
+  that will repeatedly send a redstone pulse". With `pauses=true` the countdown is held while
+  the input stays high, so timely pulses stop the output (overdue detection). `/rftoolsutility
+  timer <pos> [nonce]` prints the parsed `delay`, `pauses`, `output`, `timer`, the game-time
+  stamps of the last edge and fire, and the input side; the in-game leg uses those stamps to
+  assert a pulse exactly `delay - 1` game ticks after an edge. A broken timer's item carries
+  its state, as every machine's does.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
@@ -117,10 +132,14 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
   <pos> <mode> <bits> <delay> <count> <endstate> <facing>`; its readout prints `step=… bits=…
   mode=… output=<0|15> …`.
 
+   The timer's commands are `/rftoolsutility timer <pos> [nonce]` and `timer-set <pos> <delay>
+   <pauses> <facing>`; its readout prints `delay=… pauses=… output=… timer=… pulse=… fired=…
+   facing=… time=…` (the last three are game-time stamps, so a leg can count ticks).
+
 ## What does not (yet)
 
 The dialing device, destination GUI, screens and their 30 modules, the rest of the logic
-blocks (the sensor and sequencer are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
+blocks (the sensor, sequencer and timer are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
 fluid quad inside its window, the crafter's GUI, the spawner's GUI, the syringe that sets the
 mob, six-way facing, the item tooltips, the wrench item (a command links the beamer instead),
 the infusing power discount and the analyzer's vanilla redstone output (the artefact has none —
@@ -130,10 +149,10 @@ the harness reads the signal instead). The full list, with the reason for each, 
 ## Building and checking
 
 ```sh
-BUILD_LOCAL=1 ports/tools/build-slot.sh run --job sdk-rfu --port ports/rftoolsutility \
-    --step build -- bash -c 'cd ports/rftoolsutility && rm -f Cargo.lock && cargo horizon-mod build'
-BUILD_LOCAL=1 ports/tools/build-slot.sh run --job sdk-rfu --port ports/rftoolsutility \
-    --step check -- bash -c 'cd ports/rftoolsutility && cargo horizon-mod check rftoolsutility.hmod &&
+ports/tools/build-slot.sh run --job W1-rftoolsutility --port ports/rftoolsutility \
+    --step build -- bash -c 'rm -f Cargo.lock && CARGO_INCREMENTAL=0 cargo horizon-mod build'
+ports/tools/build-slot.sh run --job W1-rftoolsutility --port ports/rftoolsutility \
+    --step check -- bash -c 'cargo horizon-mod check rftoolsutility.hmod &&
         cargo horizon-mod fits rftoolsutility.hmod --build 0a875da'
 ```
 

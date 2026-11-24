@@ -559,3 +559,39 @@ build and the gate confirmed `package matches the tree`; R9 holds (SDK path dep 
 `[workspace]`, no packed lock); no local type or variant is named `Block`/`Item`, so neither `fits`
 run false-failed; `E2E_TMP` and all four path exports came from `launcher-game.sh env`, never
 `/tmp`.
+
+## Slice 13 — the timer (0.2.12, forwarded to AdLf-PC)
+
+All Rust ladder steps went through `build-slot.sh run --job W1-rftoolsutility --port
+ports/rftoolsutility --step test|lint|build|check`, each printing `build-slot: forwarding … to the
+remote runner` (hostname `AdLf-PC`); `BUILD_LOCAL=1` was never set. The launcher native build and
+the game legs ran locally in `--step native`/`--step e2e` leases. No lease was backgrounded.
+
+| # | check | command | result |
+|---|---|---|---|
+| 1 | red, full | 5 rules + the harness formatter stubbed `todo!()` behind their tests, `cargo test --offline` | **FAILED. 118 passed; 5 failed**, each at `not yet implemented` (`slice13-red-full.log`) |
+| 2 | green | `cargo test --offline` | **123 passed; 0 failed** (`sdk-test.log` regenerated for 0.2.12) |
+| 3 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`slice13-clippy.log`) |
+| 4 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **188,195 B**, sha `d384c526…597b13f`, 240 entries, no `Cargo.lock` (`slice13-build-a.sha`, `-b.sha`) |
+| 5 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.12 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`slice13-check-fits.log`) |
+| 6 | fits the pin | `fits … --build 0a875da` | `0a875da  made for`, **FITS_EXIT:0** |
+| 7 | fits another build | `fits … --build 0b14f8a` | `0b14f8a  fits`, **FITS_OTHER_EXIT:0** |
+| 8 | gate | `verify-sdk-package.py rftoolsutility` | **1/1** (package matches the tree, R9, skills gate; `slice13-package-gate.log`) |
+| 9 | native build | `launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-14e27cf88cac` (`slice13-native-build.log`); the stale 0.2.11 tag was removed first |
+| 10 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e-timer.sh` | **PASS**, `EXIT:0` — AM–AM4 (`e2e-slice13-timer.log`): a lever edge at tick 309 → the lamp's fire at tick 312 (delay 4 = 3 ticks), the lamp's own `lit` state stamped at the fire, a 600-tick delay proving the one-tick pulse, the pauses case and a refused id |
+| 11 | in game, c/f | `SELFTEST=1 SELFTEST_AT=timer SELFTEST_SHIFT=1` | **FAIL: SELFTEST timer: the pulse came 3 ticks after the edge, expected the inverted 4**, `EXIT:1` (`e2e-slice13-timer-selftest.log`) |
+| 12 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: ctl place rftoolsutility:timer … was refused three times**, `EXIT:1` (`e2e-slice13-timer-control.log`) |
+| 13 | no regression | the same game, `e2e-teleporter.sh`, `e2e-analyzer.sh`, `e2e-sensor.sh`, `e2e-sequencer.sh` | each **PASS**, `EXIT:0` (`e2e-slice13-{teleporter,analyzer,sensor,sequencer}.log`) |
+| 14 | log gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=65 ok=65 missing-exit=0 bad-exit=0`, `EXIT:0` (`slice13-e2e-gate.log`) |
+
+**Traps handled:** the free-running timer rewrote the harness stamps on every repeat (a poll read
+19 instead of 3), so the fire/lamp stamps are latched at the first fire after an edge; a one-tick
+lamp pulse could not be caught by `ctl block` polling, so the tick now reads the lamp's own `lit`
+state right after `update_neighbors` and the leg asserts that captured value; a pauses timer with a
+low input free-ran, so AM3 raises the lever first; and the analyzer leg's 8-tick wait against its
+20-tick check flaked twice, so `e2e-analyzer.sh` now waits 40 ticks without weakening the assertion
+(the e2e script is not packed). The manifest, README, crate doc and content were edited **before**
+the final build; the later harness-only edits are not packed, and the gate still reports
+`package matches the tree`. R9 holds (SDK path dep only, no `[workspace]`, no packed lock); no local
+type or variant is named `Block`/`Item`, so neither `fits` run false-failed; `E2E_TMP` and all four
+path exports came from `launcher-game.sh env`, never `/tmp`.

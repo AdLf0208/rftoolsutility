@@ -1,8 +1,10 @@
-# RFTools Utility — port notes (slices 1–12: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor and the sequencer)
+# RFTools Utility — port notes (slices 1–13: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer and the timer)
 
-> **Current state (2026-11-24): slice 12, package 0.2.11 at pin
+> **Current state (2026-11-24): slice 13, package 0.2.12 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 12 — the sequencer (2026-11-24)`** first: the rising-edge rule, the seven modes and
+> **`## Slice 13 — the timer (2026-11-24)`** first: the delay/edge rules, the one-tick pulse and
+> the game-time-stamped lamp leg. Then
+> **`## Slice 12 — the sequencer (2026-11-24)`**: the rising-edge rule, the seven modes and
 > the vanilla-lever-driven lamp leg (including the self-feedback trap). Then
 > **`## Slice 11 — the sensor (2026-11-24)`**: the sensor, its real redstone output and the
 > fail-capable lamp leg. Then
@@ -2607,14 +2609,193 @@ The manifest, README, crate doc and content were edited **before** the final bui
 ladder steps printed `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no
 `BUILD_LOCAL=1` was set, and no lease was backgrounded.
 
+## Slice 13 — the timer (2026-11-24)
+
+**Chosen from the port's own gap list** (the same line slices 11 and 12 took), verbatim:
+
+> **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`, `digit`, `logic`,
+> `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+
+It is the sequencer's sibling and fits the ledger's **machines** tier exactly: one block entity, a
+delay counter, a rising-edge input and the real `block_signal` surface 0.2.10/0.2.11 proved in game —
+no renderer, no entity AI, no new client half. **Pin** `0a875da…` / `e59da909…`, API `0.2`, game
+26.3. **Version 0.2.12.** Class **content**, tier **machines** (ledger). MIT, ours on main → an
+**Update** of the entry (never a first `Add`).
+
+### The artefact's delay and edge rules (read first, not inferred from the name)
+
+Read from the jar and the upstream `1.21_neo` clone at the artefact's own commit
+`f799314007d68042df8504e83cd549360f2627c7` (analysis only, clone at `/tmp/opencode`):
+
+- `TimerData(int delay, boolean redstonePauses)`; `createDefault()` is `(20, false)`. Both fields
+  are written only by the jar's GUI (`integerfield('delay')`, the `pauses` toggle button), so this
+  port writes them with `/rftoolsutility timer-set` — the deviation is recorded below.
+- `TimerTileEntity.tickOnServer`: `pulse = (powerLevel > 0) && !prevIn`; `prevIn = powerLevel > 0`;
+  on a pulse `timer = data.delay()`; `if (!data.redstonePauses() || !prevIn) timer--`; then
+  `timer <= 0` → `timer = data.delay()`, output **15**, else **0**. So it is a **repeating** pulse
+  train: a 20-tick-delay timer emits 15 for one tick every 20 ticks; the first pulse after an edge
+  is at edge + delay − 1 (the edge tick already decrements). With `pauses=true` the countdown is
+  held while the input is high, so timely pulses stop the output — the "overdue" detection the
+  jar's manual describes ("given timely input pulses this block will never output a pulse itself").
+  `loadAdditional`/`saveAdditional` keep `rs`, `prevIn` and `timer` in the saved compound.
+- The input is read from the input-side neighbour's own emitted signal. The pin expresses that with
+  `LevelRef::signal(host, neighbour, into)` (`SignalGetter.getSignal(pos, dir)`), **not**
+  `getBestNeighborSignal`: the latter includes the block's own 15 (it `isSignalSource`), which made
+  the sequencer latch a phantom edge and advance by itself (slice 12's trap). **Not blocked.**
+
+### What it does
+
+- **The block.** `rftoolsutility:timer` on `minecraft:iron_block` with a `signal` state (`0`/`1`,
+  default `0`) caching the strength for the redstone hook, exactly as the sensor's and the
+  sequencer's. The jar's four slab models, face texture, item model, recipe, advancement, loot
+  table and lang lines are carried; its 24 `logic_facing` rotations are replaced by the two
+  `signal` variants the hook caches.
+- **The tick.** Reads the input-side neighbour's directional signal, runs the artefact's countdown,
+  persists `prevIn`/`timer`/`rs` into the block entity's compound and mirrors the cached 15/0 into
+  the block state, then wakes the neighbours so a vanilla lamp beside it sees the pulse.
+- **The redstone.** `BlockPart::block_signal` reports 15 when `signal=1` (direct and indirect) and
+  `is_signal_source` marks the timer a source — a **real vanilla redstone signal**.
+- **The harness.** `/rftoolsutility timer <pos> [nonce]` prints `delay=… pauses=… output=<0|15>
+  timer=… pulse=… fired=… facing=… time=… lamp=<lit|dark>`; `timer-set <pos> <delay> <pauses>
+  <facing>` is the GUI's equivalent (a bad pauses word or an unknown facing is refused). `pulse`
+  and `fired` are game-time stamps of the last rising edge and the first pulse after it, and
+  `lamp` is the vanilla lamp's own `lit` state at that fire tick — the one-tick pulse is too brief
+  for a polling `ctl block`, so the stamp is the fail-capable lamp observation. A broken timer's
+  item carries its state (`minecraft:block_entity_data`, like every machine's).
+
+### Red → green (unit, verbatim)
+
+Five runtime rules and the harness formatter were `todo!()` stubs behind their tests first
+(`slice13-red-full.log`):
+
+```
+failures:
+    runtime::tests::a_fresh_java_timer_fires_on_its_first_tick
+    runtime::tests::a_rising_edge_reloads_the_delay_and_the_first_output_is_after_that_delay
+    runtime::tests::a_new_edge_restarts_the_countdown_and_the_output_repeats_every_delay_ticks
+    runtime::tests::pauses_holds_the_countdown_while_the_input_is_high_and_fires_when_it_ends
+    tests::the_timer_readout_is_the_line_the_harness_parses
+
+test result: FAILED. 118 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Each new failure was `panicked at src/runtime.rs:…` / `src/lib.rs:…: not yet implemented`. Green:
+**123 passed; 0 failed** (`sdk-test.log` regenerated for 0.2.12) — 65 runtime and 58 glue tests.
+`cargo fmt --check` clean, `cargo clippy --all-targets --offline -- -D warnings` 0 warnings
+(`slice13-clippy.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-timer.sh` — a focused, fail-capable leg reusing the launcher-built game; one lease per
+leg, every log ends with its exit. The assertion is a **vanilla redstone lamp** beside the timer,
+driven by a **vanilla lever** on its north input side, with the delay read from the replies' own
+game-time stamps (never wall time).
+
+| log | verdict |
+|---|---|
+| `e2e-slice13-timer.log` | **PASS**, `EXIT:0` — AM–AM4 |
+| `e2e-slice13-timer-selftest.log` | **FAIL: SELFTEST timer: the pulse came 3 ticks after the edge, expected the inverted 4**, `EXIT:1` |
+| `e2e-slice13-timer-control.log` | **FAIL: ctl place rftoolsutility:timer … was refused three times** (unmodded Nightly), `EXIT:1` |
+| `e2e-slice13-teleporter.log`, `-analyzer.log`, `-sensor.log`, `-sequencer.log` | each **PASS**, `EXIT:0` — the earlier families, no regression |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=65 ok=65 missing-exit=0 bad-exit=0`
+(`slice13-e2e-gate.log`).
+
+The phases, each asserting a parsed value (verbatim from the green transcript):
+
+```
+AM-control: lamp with a vanilla redstone block: minecraft:redstone_lamp[lit=true] / after removing it: [lit=false]
+AM0: /rftoolsutility: timer at [201, 101, 0]: delay=600 pauses=false output=0 timer=578 pulse=-1 fired=-1 facing=north time=259 lamp=dark nonce=1
+AM2: lamp recorded at the fire: lamp=lit (output=15); edge at tick 309, 15 output at tick 312 (delay=4 → 3 ticks)
+AM2b: lamp recorded at the fire: lamp=lit; 4 ticks after the fire: output=0 lamp=[lit=false] (delay 600 → no re-fire)
+AM3: pauses held the countdown from the edge until release; lamp recorded at the fire: lamp=lit
+AM4: give rftoolsutility:not_a_timer → rc=1 {"error":"unknown item rftoolsutility:not_a_timer"}
+```
+
+Counterfactuals: the redstone-block control proves the lamp and its parser work in this game; the
+no-pulse window (AM1) keeps `fired` unchanged; the long delay in AM2b makes any second fire
+impossible inside the observation window, so the one-tick pulse is proved; `SELFTEST_AT=timer`
+inverts the exact-tick assertion by a named `SELFTEST_SHIFT=1` and fails as designed, so the tick
+count can fail. `CONTROL=1` runs the same script on the unmodded Nightly, where the timer item does
+not exist.
+
+### Measured traps this slice cost (harness and engine)
+
+1. **A repeating timer rewrites the harness stamps.** The first leg asserted `fired - pulse` after
+   a 12-tick poll and read 19, not 3: the free-running timer had fired four more times, so the
+   stamp held the *last* fire. The fire and lamp stamps are now latched at the **first** fire after
+   an edge (a `timerFiredLock` flag, reset by `timer-set`), so the delay is measured against the
+   right pulse.
+2. **A one-tick lamp pulse cannot be caught by `ctl block` polling.** The lamp is lit for ~1–2
+   game ticks; a poll at 3-tick granularity saw `[lit=false]` even though the signal had fired.
+   The timer's tick now reads the adjacent lamp's own `lit` state immediately after `update_neighbors`
+   and stamps it into the saved compound; the leg asserts that stamp, which is the lamp's real
+   state at the fire instant (no polling race).
+3. **A pauses timer with a low input is just a free-running timer.** AM3 originally set
+   `pauses=true, delay=4` while the lever was low and saw `output=15` before the test began; the
+   leg now raises the lever first, so the held countdown is genuinely held.
+4. **The analyzer leg's 8-tick wait vs a 20-tick check flaked twice.** `e2e-analyzer.sh`'s AJ3 now
+   waits 40 ticks (> one check period) before asserting the block-above case; the assertion itself
+   is unchanged. No product code changed for this harness fix (the e2e script is not packed).
+
+### Deviations and content adaptations
+
+- **The delay and `pauses` are command-driven, not a GUI.** The jar exposes both only through
+  `integerfield('delay')`/the `pauses` toggle; the SDK has no menu machinery in this port, so
+  `/rftoolsutility timer-set` writes the same `TimerData` fields. A user notices: no GUI.
+- **The input side is a saved advisory.** The jar's 24 `logic_facing` slab rotations cannot be a
+  content block's states, so `/rftoolsutility timer-set` writes one of four horizontal sides, as
+  the sensor's and the sequencer's do. A user cannot orient the block by placement.
+- **Harness tick stamps are not upstream fields.** `pulse`, `fired`, `lamp` and their lock exist
+  only to make the timing fail-capable with `horizon-ctl`; they travel on the item with the rest of
+  the saved compound and do not change the artefact's behaviour.
+- **No new upstream defect adopted.** The countdown order and the 15/0 output are the artefact's
+  own. No comparator/TOP/Jade, no sounds, no infusing bonus, no GUI — the standing gaps.
+- The carried recipe needs `rftoolsbase:machine_base`, so the e2e gives the block, as every
+  machine slice has.
+
+### Coverage after slice 13
+
+| family | status |
+|---|---|
+| `rftoolsutility:timer` (block, item, recipe, advancement, loot, texture, `signal` state) | tested — AM: placed and read back; content regenerated by `assemble_content.py` |
+| the rising edge and the delay reload | tested — AM2/AM2b: edge at tick 309 → fire at 312 for delay 4 (= delay − 1); unit rules for edge, restart and repeat |
+| the one-tick 15 pulse and the lamp flip | tested — AM2/AM2b: the lamp's own `lit` state at the fire is `lit`, and 4 ticks later output is 0 and the lamp dark; `SELFTEST_AT=timer` inverts the tick |
+| `pauses` (the overdue case) | tested — AM3: the countdown is held while the lever is high, no fire, and it fires after release; unit `pauses_holds_the_countdown…` |
+| the input side (four horizontal facings, unknown refused) | tested in code (`timer_front`, `timer-set`'s refusal); AM uses north |
+| the item carrying the timer's state | carried (`block_drops` + `minecraft:block_entity_data`, the same path as the other machines); no dedicated phase |
+| a `rftoolsbase:machine_base` recipe craft | blocked(`rftoolsbase:machine_base`) — the parent port's item; the e2e gives the block |
+| the GUI (delay field, `pauses` toggle) | not ported (no menu; `timer-set` is its equivalent) |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 188,195 B | `d384c5262a6a9f4838cc2f3d26b3b1c2026c220c54bc0216d747bd457597b13f` | 240 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice13-build-a.sha`, `-b.sha`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.12 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`);
+`fits --build 0a875da` → `0a875da  made for`; `fits --build 0b14f8a` → `0b14f8a  fits`;
+`verify-sdk-package.py rftoolsutility` → **1/1** (package matches the tree, R9, skills gate).
+The manifest, README, crate doc and content were edited **before** the final build; the e2e harness
+fixes came after it but are not packed, so the gate still reports `package matches the tree`. The
+launcher's `native-build` compiled the mod (`Compiling rftoolsutility (1 of 1)`,
+`native-0a875da-14e27cf88cac`) after the stale 0.2.11 tag was removed. All Rust ladder steps printed
+`build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no `BUILD_LOCAL=1` was set,
+and no lease was backgrounded.
+
 ## Next slice
 
-The next logic-family gap on the same line is the **timer** (`rftoolsutility:timer`,
-`TimerTileEntity`), the other simple redstone machine: a delay counter set by a GUI command that
-measures a rising edge and emits a timed pulse. Before dispatching, read its `tickServer` and
-`TimerData` from the artefact first and check the same `LevelRef::signal` input surface this slice
-proved; the concrete assertion would be: set a known delay by command, pulse the vanilla lever on
-the input side, and assert the adjacent lamp's `lit` state turns on after exactly that many ticks
-and off after the pulse length (redstone-block control, no-pulse differential,
-`SELFTEST_AT=timer` `EXIT:1`). If the artefact needs a GUI-only setting that cannot be a command,
-stop with `blocked(<symbol>)` rather than inventing one.
+The next logic-family gap on the same line is the **counter** (`rftoolsutility:counter`,
+`CounterTileEntity`), the sibling of the timer: a redstone-pulse counter with a configurable max
+whose output fires when the count is reached and whose GUI sets the limit. Before dispatching, read
+its `tickServer`/`CounterData` from the artefact first and check the same `LevelRef::signal` input
+surface the sensor, sequencer and timer proved. The concrete assertion: set a known limit by
+command, pulse the vanilla lever on the input side that many times and assert the adjacent lamp
+lights only on the limit-th pulse (with the output reset by a second edge or a command as the
+artefact declares), the redstone-block control, a no-pulse differential and `SELFTEST_AT=counter`
+`EXIT:1`. If the artefact needs a GUI-only setting that cannot be a command, stop with
+`blocked(<symbol>)` rather than inventing one.

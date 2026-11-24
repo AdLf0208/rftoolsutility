@@ -11,6 +11,7 @@
   "block.rftoolsutility.sequencer": "Sequencer",
   "block.rftoolsutility.spawner": "Spawner",
   "block.rftoolsutility.tank": "Tank",
+  "block.rftoolsutility.timer": "Timer",
   "itemGroup.rftoolsutility": "RFTools Utility",
   "message.rftoolsutility.crafter1.header": "This machine can handle up to 2 recipes at once and allows recipes to use the crafting results of previous steps",
   "message.rftoolsutility.crafter2.header": "This machine can handle up to 4 recipes at once and allows recipes to use the crafting results of previous steps",
@@ -27,5 +28,6 @@
   "message.rftoolsutility.spawner.gold": "Infusing bonus: reduced power usage",
   "message.rftoolsutility.spawner.header": "This block can spawn creatures. It needs a syringe of the appropriate type, RF power and also it needs beams of energized matter",
   "message.rftoolsutility.tank.contents": "Contents: ",
-  "message.rftoolsutility.tank.header": "A tank for fluids with support for filtering"
+  "message.rftoolsutility.tank.header": "A tank for fluids with support for filtering",
+  "message.rftoolsutility.timer.header": "The Timer block can send out timed redstone pulses"
 }

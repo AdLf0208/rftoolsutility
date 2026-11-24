@@ -1,6 +1,6 @@
 id = "rftoolsutility"
 name = "RFTools Utility"
-version = "0.2.11"
+version = "0.2.12"
 description = """A port of RFTools Utility for Horizon: the tank, a 32,000 mB fluid tank that holds
 one fluid at a time, takes and gives a bucket on a right click, exposes the fluid
 capability on every face and shows its fill level through the jar's own nine textures;
@@ -16,8 +16,10 @@ dimensions, charging the trip's RF over its ticks and interrupting on a power fa
 leaving the beam; and the passive destination analyzer, which lets a dialed transmitter check its
 receiver's readiness (two clear blocks and 5,000 FE) every 20 ticks and report it as a signal
 strength; the sensor, which checks the block on its input side every ten ticks and emits a
-real 15/0 redstone signal beside it; and the sequencer, whose seven-mode state machine pulses a
-64-bit pattern from rising edges of an input signal into the same real 15/0 redstone output."""
+real 15/0 redstone signal beside it; the sequencer, whose seven-mode state machine pulses a
+64-bit pattern from rising edges of an input signal into the same real 15/0 redstone output; and
+the timer, whose rising-edge-reloaded countdown emits a one-tick 15 pulse every delay ticks (held
+while the input stays high when pauses is set) through that same redstone output."""
 authors = ["McJty", "Horizon native mod contributors"]
 # A native mod: Rust in src/, compiled by the launcher against the game build [native] pins,
 # beside the carried data/ and assets/. The id is the resource namespace and the only identity:

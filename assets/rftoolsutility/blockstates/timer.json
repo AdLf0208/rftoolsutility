@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "signal=0": {
+      "model": "rftoolsutility:block/timer_0"
+    },
+    "signal=1": {
+      "model": "rftoolsutility:block/timer_0"
+    }
+  }
+}
