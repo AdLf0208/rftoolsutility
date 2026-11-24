@@ -206,6 +206,18 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/logic.json",
     "data/rftoolsutility/recipe/logic.json",
     "data/rftoolsutility/loot_table/blocks/logic.json",
+    # Slice 17: the inventory checker, the last logic-row sibling. Its four slab models, top
+    # texture, item model, recipe, advancement and loot table are the jar's own; the 24
+    # `logic_facing` rotations are replaced below by the `signal` variants the redstone hook caches.
+    "assets/rftoolsutility/models/block/invchecker_0.json",
+    "assets/rftoolsutility/models/block/invchecker_1.json",
+    "assets/rftoolsutility/models/block/invchecker_2.json",
+    "assets/rftoolsutility/models/block/invchecker_3.json",
+    "assets/rftoolsutility/models/item/invchecker.json",
+    "assets/rftoolsutility/textures/block/logic/machineinvchecker.png",
+    "data/rftoolsutility/advancement/recipes/misc/invchecker.json",
+    "data/rftoolsutility/recipe/invchecker.json",
+    "data/rftoolsutility/loot_table/blocks/invchecker.json",
 ]
 # Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
 # upstream's "living?" form, and these tags are the yield a living item carries
@@ -277,6 +289,11 @@ TELEPORTER_MODELS = [
     "assets/rftoolsutility/models/block/logic_1.json",
     "assets/rftoolsutility/models/block/logic_2.json",
     "assets/rftoolsutility/models/block/logic_3.json",
+    # Slice 17: the four inventory-checker slab models name the same base textures.
+    "assets/rftoolsutility/models/block/invchecker_0.json",
+    "assets/rftoolsutility/models/block/invchecker_1.json",
+    "assets/rftoolsutility/models/block/invchecker_2.json",
+    "assets/rftoolsutility/models/block/invchecker_3.json",
 ]
 # The teleporter family's three blocks (McJtyLib `STANDARD_IRON`; the booster is
 # `.strength(2, 6)`). The transmitter and receiver carry a block entity; the booster is a plain
@@ -335,6 +352,7 @@ TAB = {
         f"{MOD}:counter",
         f"{MOD}:analog",
         f"{MOD}:logic",
+        f"{MOD}:invchecker",
     ],
 }
 
@@ -535,6 +553,26 @@ LOGIC_BLOCK = {
     "item": True,
 }
 
+# `InvCheckerTileEntity.createBlock` is another `LogicSlabBlock` on McJtyLib's `STANDARD_IRON`,
+# so the full-cube iron-block template and the generated 15/0 `signal` state are the same as its
+# logic siblings'. The jar's 24 `logic_facing` slab rotations and `GuiInvChecker` are replaced by
+# the saved input side and `/rftoolsutility invchecker-set`.
+INVCHECKER_BLOCK = {
+    "template": "minecraft:iron_block",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "state_properties": {
+        "signal": {"type": "enum", "values": ["0", "1"]}
+    },
+    "default_state": {"signal": "0"},
+    "item": True,
+}
+
 # The jar's recipes name `c:` convention tags the prepared 26.3 root does not
 # ship (it ships `minecraft` tags only), and an unknown tag is an empty
 # ingredient. These are the smallest honest memberships, the same ones this
@@ -548,6 +586,8 @@ CONVENTION_TAGS = {
     "ender_pearls": ["minecraft:ender_pearl"],
     # Slice 11, the sensor's own recipe (`data/rftoolsutility/recipe/sensor.json`).
     "gems/quartz": ["minecraft:quartz"],
+    # Slice 17, the inventory checker's own recipe (`c:chests`).
+    "chests": ["minecraft:chest"],
 }
 
 # The jar's lang lines for the tank, the crafter tiers, the spawner and the matter beamer,
@@ -576,6 +616,8 @@ LANG_KEYS = [
     "message.rftoolsutility.analog.header",
     "block.rftoolsutility.logic",
     "message.rftoolsutility.logic.header",
+    "block.rftoolsutility.invchecker",
+    "message.rftoolsutility.invchecker.header",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -856,6 +898,16 @@ def main() -> None:
         assets / "blockstates" / "logic.json",
         {"variants": {f"signal={value}": {"model": f"{MOD}:block/logic_0"} for value in ("0", "1")}},
     )
+    # Slice 17: the inventory checker's 24 jar rotations are replaced by the cached `signal`
+    # variants, as its five 15/0 logic siblings are.
+    dump(
+        assets / "items" / "invchecker.json",
+        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/invchecker"}},
+    )
+    dump(
+        assets / "blockstates" / "invchecker.json",
+        {"variants": {f"signal={value}": {"model": f"{MOD}:block/invchecker_0"} for value in ("0", "1")}},
+    )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
@@ -871,6 +923,7 @@ def main() -> None:
     dump(data_dir / "horizon" / "block" / "counter.json", COUNTER_BLOCK)
     dump(data_dir / "horizon" / "block" / "analog.json", ANALOG_BLOCK)
     dump(data_dir / "horizon" / "block" / "logic.json", LOGIC_BLOCK)
+    dump(data_dir / "horizon" / "block" / "invchecker.json", INVCHECKER_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
@@ -892,6 +945,7 @@ def main() -> None:
                 f"{MOD}:counter",
                 f"{MOD}:analog",
                 f"{MOD}:logic",
+                f"{MOD}:invchecker",
             ]
         },
     )
@@ -913,6 +967,7 @@ def main() -> None:
                 f"{MOD}:counter",
                 f"{MOD}:analog",
                 f"{MOD}:logic",
+                f"{MOD}:invchecker",
             ]
         },
     )

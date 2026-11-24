@@ -1521,6 +1521,137 @@ pub fn logic_neighbours(pos: [i32; 3], facing: &str) -> Option<[[i32; 3]; 3]> {
     analog_neighbours(pos, facing)
 }
 
+// ---------------------------------------------------------------------------
+// The inventory checker (slice 17) — `InvCheckerTileEntity.checkOutput`, `IncCheckerData`
+// ---------------------------------------------------------------------------
+
+/// `InvCheckerDamageMode`: `DMG_MATCH` compares item id **and** damage (upstream's
+/// `ItemStack.isSameItem`), `DMG_IGNORE` compares only the item id. The artefact's default is
+/// `DMG_IGNORE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageMode {
+    Match,
+    Ignore,
+}
+
+impl DamageMode {
+    /// The artefact's serialized spelling (`InvCheckerDamageMode.getSerializedName`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Match => "Match",
+            Self::Ignore => "Ignore",
+        }
+    }
+
+    /// Parse the serialized spelling, for the GUI-equivalent command.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "Match" => Some(Self::Match),
+            "Ignore" => Some(Self::Ignore),
+            _ => None,
+        }
+    }
+}
+
+/// `IncCheckerData(amount, slot, useDamage, tag)`. `createDefault()` is
+/// `(1, 0, DMG_IGNORE, null)`: a freshly placed checker asks for one item in slot 0.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvCheckerData {
+    pub amount: i32,
+    pub slot: i32,
+    pub use_damage: DamageMode,
+    pub tag: Option<String>,
+}
+
+impl Default for InvCheckerData {
+    fn default() -> Self {
+        // `IncCheckerData.createDefault()`.
+        Self {
+            amount: 1,
+            slot: 0,
+            use_damage: DamageMode::Ignore,
+            tag: None,
+        }
+    }
+}
+
+/// The three facts a neighbour slot gives the check: item id, damage component and count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckStack {
+    pub id: String,
+    pub damage: u32,
+    pub count: i32,
+}
+
+/// `tickServer`'s check interval: `checkCounter = 10` after every check.
+pub const INVCHECKER_TICKS: i32 = 10;
+
+/// `isItemMatching` as a count: the ghost matcher slot empty gives `stack.getCount()`, a matcher
+/// present gives that count only when it matches under the selected damage mode.
+#[must_use]
+pub fn matching_count(matcher: Option<&CheckStack>, stack: &CheckStack, mode: DamageMode) -> i32 {
+    match matcher {
+        None => stack.count,
+        Some(matcher) => {
+            let same = match mode {
+                // `matcher.getItem() == stack.getItem()` — damage and other components ignored.
+                DamageMode::Ignore => matcher.id == stack.id,
+                // `ItemStack.isSameItem(matcher, stack)` — item id and damage component.
+                DamageMode::Match => matcher.id == stack.id && matcher.damage == stack.damage,
+            };
+            if same { stack.count } else { 0 }
+        }
+    }
+}
+
+/// `checkOutput`: the neighbour slot named by `data.slot` must hold at least `data.amount` of a
+/// matching item, and its id must be in `data.tag` when one is configured.
+#[must_use]
+pub fn check_output(
+    slots: &[Option<CheckStack>],
+    matcher: Option<&CheckStack>,
+    data: &InvCheckerData,
+    tag_matches: bool,
+) -> bool {
+    // `data.slot() >= 0 && data.slot() < capability.getSlots()`, then `!stack.isEmpty()`.
+    let Some(stack) = usize::try_from(data.slot)
+        .ok()
+        .and_then(|slot| slots.get(slot))
+        .and_then(Option::as_ref)
+    else {
+        return false;
+    };
+    // `nr = isItemMatching(stack); if (nr >= data.amount()) …`
+    matching_count(matcher, stack, data.use_damage) >= data.amount
+        // `data.tag() == null || stack.getItem().builtInRegistryHolder().is(data.tag())`.
+        && (data.tag.is_none() || tag_matches)
+}
+
+/// The strength `tickServer` writes: 15 for a satisfied check, 0 otherwise.
+#[must_use]
+pub fn invchecker_signal(matched: bool) -> i32 {
+    if matched { SENSOR_ON } else { SENSOR_OFF }
+}
+
+/// Whether the stored `checkCounter` means "check this tick": upstream decrements first and
+/// returns while `checkCounter > 0`, so a stored 1 (or a fresh 0) is due.
+#[must_use]
+pub fn invchecker_due(counter: i32) -> bool {
+    counter <= 1
+}
+
+/// The counter stored for the next tick: 10 after a check, else one less.
+#[must_use]
+pub fn invchecker_countdown(counter: i32) -> i32 {
+    if invchecker_due(counter) {
+        INVCHECKER_TICKS
+    } else {
+        counter - 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3356,5 +3487,172 @@ mod tests {
         assert_eq!(a, [199, 101, 0]);
         assert_eq!(b, [201, 101, 0]);
         assert!(logic_neighbours([200, 101, 0], "up").is_none());
+    }
+
+    // ---- slice 17: the inventory checker ----
+
+    fn check_stack(id: &str, damage: u32, count: i32) -> CheckStack {
+        CheckStack {
+            id: id.to_owned(),
+            damage,
+            count,
+        }
+    }
+
+    #[test]
+    fn an_invchecker_starts_at_amount_one_slot_zero_damage_ignore_no_tag() {
+        let data = InvCheckerData::default();
+        assert_eq!(data.amount, 1, "IncCheckerData.createDefault().amount");
+        assert_eq!(data.slot, 0, "IncCheckerData.createDefault().slot");
+        assert_eq!(data.use_damage, DamageMode::Ignore, "DMG_IGNORE");
+        assert_eq!(data.tag, None);
+        assert_eq!(DamageMode::Match.as_str(), "Match");
+        assert_eq!(DamageMode::parse("Ignore"), Some(DamageMode::Ignore));
+        assert_eq!(DamageMode::parse("broken"), None);
+    }
+
+    #[test]
+    fn an_empty_ghost_matcher_accepts_the_stack_count() {
+        assert_eq!(
+            matching_count(
+                None,
+                &check_stack("minecraft:stone", 0, 7),
+                DamageMode::Ignore
+            ),
+            7
+        );
+        assert_eq!(
+            matching_count(
+                None,
+                &check_stack("minecraft:stone", 0, 7),
+                DamageMode::Match
+            ),
+            7
+        );
+    }
+
+    #[test]
+    fn dmg_ignore_matches_by_item_id_only() {
+        let matcher = check_stack("minecraft:stone", 0, 1);
+        assert_eq!(
+            matching_count(
+                Some(&matcher),
+                &check_stack("minecraft:stone", 9, 7),
+                DamageMode::Ignore
+            ),
+            7,
+            "a different damage does not matter in DMG_IGNORE"
+        );
+        assert_eq!(
+            matching_count(
+                Some(&matcher),
+                &check_stack("minecraft:dirt", 0, 7),
+                DamageMode::Ignore
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn dmg_match_refuses_a_different_damage() {
+        let matcher = check_stack("minecraft:stone", 0, 1);
+        assert_eq!(
+            matching_count(
+                Some(&matcher),
+                &check_stack("minecraft:stone", 0, 7),
+                DamageMode::Match
+            ),
+            7
+        );
+        assert_eq!(
+            matching_count(
+                Some(&matcher),
+                &check_stack("minecraft:stone", 9, 7),
+                DamageMode::Match
+            ),
+            0,
+            "ItemStack.isSameItem compares damage too"
+        );
+    }
+
+    #[test]
+    fn check_output_needs_count_at_least_amount() {
+        let data = InvCheckerData::default();
+        let slots = [Some(check_stack("minecraft:stone", 0, 1))];
+        assert!(check_output(&slots, None, &data, false), "1 >= 1");
+        let data2 = InvCheckerData {
+            amount: 2,
+            ..InvCheckerData::default()
+        };
+        assert!(
+            !check_output(&slots, None, &data2, false),
+            "a single stack against amount 2 is the differential"
+        );
+        let big = [Some(check_stack("minecraft:stone", 0, 2))];
+        assert!(check_output(&big, None, &data2, false), "2 >= 2");
+    }
+
+    #[test]
+    fn check_output_refuses_out_of_range_or_empty_slots() {
+        let slots = [Some(check_stack("minecraft:stone", 0, 3)), None];
+        for slot in [-1, 2, 99] {
+            let data = InvCheckerData {
+                slot,
+                ..InvCheckerData::default()
+            };
+            assert!(
+                !check_output(&slots, None, &data, false),
+                "slot {slot} is out of range"
+            );
+        }
+        let data = InvCheckerData {
+            slot: 1,
+            ..InvCheckerData::default()
+        };
+        assert!(!check_output(&slots, None, &data, false), "slot 1 is empty");
+    }
+
+    #[test]
+    fn check_output_honors_the_tag_gate() {
+        let slots = [Some(check_stack("minecraft:stone", 0, 3))];
+        let tagged = InvCheckerData {
+            tag: Some("minecraft:stone_tag".to_owned()),
+            ..InvCheckerData::default()
+        };
+        assert!(
+            !check_output(&slots, None, &tagged, false),
+            "the item is not in the tag"
+        );
+        assert!(
+            check_output(&slots, None, &tagged, true),
+            "the item is in the tag"
+        );
+        assert!(
+            check_output(&slots, None, &InvCheckerData::default(), false),
+            "no tag means no gate"
+        );
+    }
+
+    #[test]
+    fn the_invchecker_writes_full_or_no_strength() {
+        assert_eq!(invchecker_signal(true), SENSOR_ON);
+        assert_eq!(invchecker_signal(false), SENSOR_OFF);
+    }
+
+    #[test]
+    fn the_invchecker_checks_every_ten_ticks() {
+        assert!(invchecker_due(0), "a fresh counter checks at once");
+        assert!(invchecker_due(1));
+        assert_eq!(invchecker_countdown(1), INVCHECKER_TICKS);
+        assert!(!invchecker_due(INVCHECKER_TICKS));
+        assert_eq!(invchecker_countdown(INVCHECKER_TICKS), INVCHECKER_TICKS - 1);
+        // From a reset 10, nine skipped ticks precede the next check.
+        let mut counter = INVCHECKER_TICKS;
+        let mut ticks_until_due = 0;
+        while !invchecker_due(counter) {
+            counter = invchecker_countdown(counter);
+            ticks_until_due += 1;
+        }
+        assert_eq!(ticks_until_due, 9);
     }
 }

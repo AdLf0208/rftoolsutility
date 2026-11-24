@@ -1,8 +1,11 @@
-# RFTools Utility — port notes (slices 1–16: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer, the timer, the counter, the analog and the logic gate)
+# RFTools Utility — port notes (slices 1–17: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer, the timer, the counter, the analog, the logic gate and the inventory checker)
 
-> **Current state (2026-11-24): slice 16, package 0.2.15 at pin
+> **Current state (2026-11-24): slice 17, package 0.2.16 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 16 — the logic gate (2026-11-24)`** first: the artefact's eight-cell truth table, the
+> **`## Slice 17 — the inventory checker (2026-11-24)`** first: the artefact's `checkOutput`/
+> `isItemMatching` and `IncCheckerData.createDefault()`, the capability gate proving a vanilla
+> chest's live slots are readable with no provider of ours, and the count/threshold lamp leg.
+> Then **`## Slice 16 — the logic gate (2026-11-24)`**: the artefact's eight-cell truth table, the
 > 15/0 lamp leg with its game-time stamps, and the first-gate finding on the invchecker. Then
 > **`## Slice 15 — the analog (2026-11-24)`**: the artefact's arithmetic and the exact-strength lamp
 > leg. Then
@@ -214,8 +217,9 @@ this slice does not implement. Recorded so slice 2 does not carry it:
   `tablet_redstone`, `screen_link`, `storage_control_module` and the 30 screen
   modules.
 - **Logic:** `wire`, ~~`sensor`~~ (slice 11), ~~`sequencer`~~ (slice 12), ~~`timer`~~ (slice 13),
-  ~~`counter`~~ (slice 14), ~~`analog`~~ (slice 15), ~~`logic`~~ (slice 16), `digit` (blocked — no
-  redstone output), `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+  ~~`counter`~~ (slice 14), ~~`analog`~~ (slice 15), ~~`logic`~~ (slice 16), ~~`invchecker`~~
+  (slice 17), `digit` (blocked — no redstone output), `redstone_transmitter/receiver`,
+  `redstone_information`.
 - **Environmental controller** and its 23 modules; ~~the **spawner** with its 100
   mob recipes~~ — **the spawner is done in slice 4** (the block, its 200,000 FE buffer, the
   mob setting from the recipe table and the spawn tick, with the jar's **70** mob recipes
@@ -3356,18 +3360,193 @@ edits are not packed, and the gate still reports `package matches the tree`. The
 `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no `BUILD_LOCAL=1` was set,
 and no lease was backgrounded.
 
+## Slice 17 — the inventory checker (2026-11-24)
+
+**Chosen from the port's own `## Next slice`** (the section immediately above this one at the
+previous slice), verbatim:
+
+> The next logic-family gap is `invchecker` (`rftoolsutility:invchecker`, `InvCheckerTileEntity`,
+> `IncCheckerData`), the inventory-check sibling. The first gate proved it is expressible: read the
+> neighbour's live item slots with `level.capability(host, &ITEMS, pos, side)` (SDK `hooks/notes.rs:598`,
+> proven by `parts/capabilities.rs:295`), and replace the matcher ghost slot and the amount/slot/damage/
+> tag `@GuiValue`s with a `/rftoolsutility invchecker-set` command, as every logic sibling's GUI is
+> replaced. Read `checkOutput`/`isItemMatching` and `IncCheckerData.createDefault()` (amount=1, slot=0,
+> DMG_IGNORE, tag=null) from the artefact at `f799314` first. The concrete in-game assertion: place a
+> vanilla chest on the input side with a known stack in the configured slot, assert the artefact's
+> declared 15 when `count >= amount` and 0 when below it (a stack of 1 against amount=2 is the
+> zero-input differential), with a redstone-block lamp control and `SELFTEST_AT=invchecker` `EXIT:1`.
+> If the neighbour-capability read turns out to need a mod provider the pin cannot supply for a vanilla
+> chest, stop with `blocked(<symbol>)` and the grep evidence; the `redstone_transmitter/receiver`
+> family is the following gap.
+
+and the shared gap line `## Gaps (the rest of the mod)`:
+
+> **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`, `digit`, `logic`,
+> `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+
+It fits the ledger's **machines** tier exactly: one block entity, a ten-tick check of a neighbour's
+item slots, a four-field data record and the already-proven `BlockPart::block_signal` surface — no
+renderer, no entity AI, no new client half. **Pin** `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` /
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, API `0.2`, game 26.3. **Version 0.2.16.** Class
+**content**, tier **machines** (ledger). MIT, ours on main → an **Update** of the entry (never a
+first `Add`).
+
+### The artefact's rule (read first, not inferred from the name)
+
+Read from the upstream `1.21_neo` clone at the artefact's own commit
+`f799314007d68042df8504e83cd549360f2627c7` (analysis only, clone at `/tmp/opencode`):
+
+- `IncCheckerData.createDefault()` = `(amount=1, slot=0, useDamage=DMG_IGNORE, tag=null)`; its four
+  fields are `@GuiValue`s upstream only writes from `GuiInvChecker`, so this port writes them with
+  `/rftoolsutility invchecker-set`.
+- `checkOutput()`: `inputSide = LogicSupport.getFacing(state).getInputSide()`; neighbour
+  `pos.relative(inputSide)`; if it is an inventory, `CapabilityTools.getItemCapabilitySafe(te)`;
+  `slot` in `0..getSlots()`, stack not empty, `nr = isItemMatching(stack)`, `nr >= amount`, and the
+  tag gate `tag == null || item.is(tag)` → **true**. Anything else (no inventory, no capability, an
+  out-of-range or empty slot, too few matching items, a failed tag) → false.
+- `isItemMatching(stack)`: ghost matcher slot empty → `stack.getCount()`; matcher present with
+  `DMG_MATCH` → `ItemStack.isSameItem` (item id **and** damage) ? count : 0; with `DMG_IGNORE` →
+  same item id ? count : 0.
+- `tickServer()`: `checkCounter--; if (checkCounter > 0) return; checkCounter = 10` — a check every
+  ten ticks — then `support.setRedstoneState(this, checkOutput() ? 15 : 0)`, exactly 15 or 0.
+
+### First gate: the vanilla-chest capability read needs no provider of ours
+
+Confirmed for a vanilla chest on the input side, not assumed: the SDK doc
+`hooks/notes.rs:598` states `level.capability(host, &ITEMS, pos, side)` reaches a block entity's
+slots "by the rules hoppers follow", and the test
+`a_mod_reads_a_vanilla_chests_items_from_the_game_with_no_provider_for_it`
+(`parts/capabilities.rs:294–308`) proves it directly: with `block_providers(&ITEMS, host, on(CHEST,
+None)).is_none()` (no mod provider registered for the chest's type), the read still returns the
+game's own handler (`owner()` = `"the game"`, `size(host)` and `resource(host, 0)` give the live
+slot). The gate's `Some(intos[0])` side is the chest's face toward the checker (south for a north
+input). Nothing is `blocked(<symbol>)`.
+
+### Red → green (unit, verbatim)
+
+Eight new pure rules were `todo!()` stubs behind their tests first (`slice17-red.log`):
+
+```
+test result: FAILED. 149 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+  runtime::tests::an_empty_ghost_matcher_accepts_the_stack_count     not yet implemented
+  runtime::tests::check_output_honors_the_tag_gate                   not yet implemented
+  runtime::tests::check_output_needs_count_at_least_amount           not yet implemented
+  runtime::tests::check_output_refuses_out_of_range_or_empty_slots   not yet implemented
+  runtime::tests::dmg_ignore_matches_by_item_id_only                 not yet implemented
+  runtime::tests::dmg_match_refuses_a_different_damage               not yet implemented
+  runtime::tests::the_invchecker_checks_every_ten_ticks               not yet implemented
+  runtime::tests::the_invchecker_writes_full_or_no_strength           not yet implemented
+```
+
+Green: **161 passed; 0 failed** (`sdk-test.log`, regenerated for 0.2.16 after the final build) — 94
+runtime and 67 glue tests, including `an_invcheckers_four_fields_round_trip_through_the_saved_compound`
+and `the_invchecker_readout_is_the_line_the_harness_parses`. `cargo fmt --check` clean,
+`cargo clippy --all-targets --offline -- -D warnings` 0 warnings (`slice17-lint.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-invchecker.sh` — a focused, fail-capable leg reusing the launcher-built game; one lease
+per leg, every log ends with its exit. The assertion is a **vanilla redstone lamp** beside the
+checker, with a **vanilla chest** holding a known stack on the north input side; a vanilla redstone
+block powers the same lamp first as the positive control.
+
+| log | verdict |
+|---|---|
+| `e2e-slice17-invchecker.log` | **PASS**, `EXIT:0` — IV–IV6 |
+| `e2e-slice17-invchecker-selftest.log` | **FAIL: SELFTEST invchecker: the satisfied check reads 15, expected it inverted**, `EXIT:1` |
+| `e2e-slice17-invchecker-control.log` | **FAIL: ctl place rftoolsutility:invchecker at 202,101,0 was refused three times**, `EXIT:1` (unmodded Nightly) |
+| `e2e-slice17-{sensor,sequencer,timer,counter,analog,logic}.log` | each **PASS**, `EXIT:0` — the earlier logic families, no regression on the final bytes |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=97 ok=97 missing-exit=0 bad-exit=0`
+(`slice17-e2e-gate.log`) — the 88 earlier logs plus the 9 slice-17 logs.
+
+The phases, each asserting a parsed value (verbatim from the green transcript):
+
+```
+IV-control: lamp with a vanilla redstone block: minecraft:redstone_lamp[lit=true] / after removing it: [lit=false]
+IV0:  seen=minecraft:stone count=1 amount=1 slot=0 matched=true output=15 changed=252 lamp=lit facing=north time=271 nonce=1
+IV1:  seen=minecraft:stone count=1 amount=2 slot=0 matched=false output=0 changed=277 lamp=dark time=293 nonce=2
+IV2:  seen=minecraft:stone count=1 amount=1 slot=0 matched=false output=0 changed=277 lamp=dark time=315 nonce=3   (matcher=dirt)
+IV3:  seen=minecraft:stone count=1 amount=1 slot=0 matched=true output=15 changed=321 lamp=lit time=339 nonce=4  (matcher=stone)
+IV4:  seen=- count=0 amount=1 slot=1 matched=false output=0 changed=351 lamp=dark time=368 nonce=5
+IV5:  seen=minecraft:stone count=3 amount=2 slot=0 matched=true output=15 changed=399 lamp=lit time=415 nonce=6
+IV6:  give rftoolsutility:not_an_invchecker → rc=1 {"error":"unknown item rftoolsutility:not_an_invchecker"}
+```
+
+Counterfactuals: the redstone-block control proves the lamp and its parser work in this game; IV0
+drives the artefact's default `amount=1` → 15 and is the selftest's inverted assertion; **IV1 is the
+brief's differential** — the same single stack against `amount=2` must read 0 and darken the lamp;
+IV2/IV3 are the matcher differential (an unmatched id refuses an otherwise sufficient stack, the
+matching id restores 15); IV4 reads an empty configured slot as 0; IV5 fills the chest with 3 stone
+and proves `count >= amount` rather than a fixed one; `changed` advances with each strength change
+(252 → 277 → 321 → 399) and holds through a no-change check. `SELFTEST_AT=invchecker` inverts IV0's
+exact output and fails as designed; `CONTROL=1` runs the same script on the unmodded Nightly.
+
+### Deviations and content adaptations
+
+- **The matcher's ghost slot and four data fields are command-driven, not a GUI.**
+  `/rftoolsutility invchecker-set <pos> <amount> <slot> <damage> <matcher> <mdamage> <tag> <facing>`
+  replaces `GuiInvChecker` (`-` means no matcher and no tag). A `word` argument cannot carry a colon,
+  so the harness writes `stone`/`dirt` and the glue qualifies them to `minecraft:…`. A user notices:
+  no GUI.
+- **The input side is a saved advisory.** The jar's 24 `logic_facing` slab rotations cannot be
+  content states, so `invchecker-set` writes one of four horizontal sides, as its siblings do.
+- **The item carries the checker's state** (`block_drops` + `minecraft:block_entity_data`, the same
+  path as the other machines); no dedicated phase. The tag gate is unit-tested (`check_output_honors_
+  the_tag_gate`) but has no dedicated in-game phase — the lamp phases exercise amount, slot and
+  matcher, and no 26.3 item tag in this pack is a robust fixture for a *positive* tag assertion.
+- **No new upstream defect adopted.** No comparator/TOP/Jade, no sounds, no GUI — the standing
+  machines-tier gaps. `digit` stays blocked (`no-redstone-output:DigitTileEntity`).
+
+### Coverage after slice 17
+
+| family | status |
+|---|---|
+| `rftoolsutility:invchecker` (block, item, recipe, advancement, loot, texture, `signal` state) | tested — IV: placed and read back; content regenerated by `assemble_content.py` |
+| the neighbour `ITEMS` capability read on the input side | tested — IV0–IV5 (a vanilla chest's live slot, 27 slots, no provider of ours); gate evidence above |
+| `amount`/`slot`/matcher/damage-mode/tag fields and the 15/0 mapping | tested — IV0–IV5 (`count>=amount`, 1-vs-2 differential, matcher, empty slot, larger stack); unit rules |
+| the ten-tick cadence | tested in code (`invchecker_due`/`invchecker_countdown`, 9 skipped ticks) |
+| the item carrying the checker's state | carried (`block_drops` + `minecraft:block_entity_data`); no dedicated phase |
+| a positive in-game item-tag gate | not ported as its own leg (no robust 26.3 tag fixture; the pure rule is tested) |
+| a `rftoolsbase:machine_base` recipe craft | blocked(`rftoolsbase:machine_base`) — the parent port's item; the e2e gives the block |
+| the GUI (`GuiInvChecker`) | not ported (no menu; `invchecker-set` is its equivalent) |
+| `rftoolsutility:digit` and its 0..F display | blocked(`no-redstone-output:DigitTileEntity`) — a client renderer only |
+| `redstone_transmitter/receiver`, `redstone_information`, `wire` | not ported — next logic gaps |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices, rust-port
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 229,209 B | `ea0e6171d339385206350b8111a6ad47b832bc3b806a5a03fc1c6f37aa61192e` | 289 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice17-build-1.log`, `slice17-build-2.log`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.16 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`);
+`fits --build 0a875da` → `0a875da  made for`; `fits --build 0b14f8a` → `0b14f8a  fits`;
+`verify-sdk-package.py rftoolsutility` → **1/1** (161 passed, 0 clippy warnings, package matches the
+tree, R9, skills gate; `slice17-package-gate-final.log`). The manifest, README, crate doc and
+content were edited **before** the final build; the later `notes.md`/`VALIDATION.md`/`CONTENT.md`
+edits and the harness-only e2e fixes are not packed, and the gate still reports `package matches the
+tree`. The launcher's `native-build` compiled the mod (`Compiling rftoolsutility (1 of 1)`,
+`native-0a875da-595f6569515b`) after the stale 0.2.15/0.2.16 tags were removed. All Rust ladder steps
+printed `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no `BUILD_LOCAL=1` was
+set, and no lease was backgrounded.
+
 ## Next slice
 
-The next logic-family gap is `invchecker` (`rftoolsutility:invchecker`, `InvCheckerTileEntity`,
-`IncCheckerData`), the inventory-check sibling. The first gate proved it is expressible: read the
-neighbour's live item slots with `level.capability(host, &ITEMS, pos, side)` (SDK `hooks/notes.rs:598`,
-proven by `parts/capabilities.rs:295`), and replace the matcher ghost slot and the amount/slot/damage/
-tag `@GuiValue`s with a `/rftoolsutility invchecker-set` command, as every logic sibling's GUI is
-replaced. Read `checkOutput`/`isItemMatching` and `IncCheckerData.createDefault()` (amount=1, slot=0,
-DMG_IGNORE, tag=null) from the artefact at `f799314` first. The concrete in-game assertion: place a
-vanilla chest on the input side with a known stack in the configured slot, assert the artefact's
-declared 15 when `count >= amount` and 0 when below it (a stack of 1 against amount=2 is the
-zero-input differential), with a redstone-block lamp control and `SELFTEST_AT=invchecker` `EXIT:1`.
-If the neighbour-capability read turns out to need a mod provider the pin cannot supply for a vanilla
-chest, stop with `blocked(<symbol>)` and the grep evidence; the `redstone_transmitter/receiver`
-family is the following gap.
+The next logic-family gap on the same line is the **`redstone_transmitter/receiver`** pair
+(`rftoolsutility:redstone_transmitter`, `rftoolsutility:redstone_receiver`,
+`RedstoneTransmitterTileEntity`/`RedstoneReceiverTileEntity`, `RedstoneChannelTileEntity`), the
+wireless-channel siblings. It fits **machines**: two block entities, a channel setting and a 0..15
+signal, with the proven `LevelRef::signal` + `BlockPart::block_signal` surface. **Gate first:**
+read the artefact at `f799314` and check the world-saved `RedstoneChannels` table the transmitter
+writes (`channels.getOrCreateChannel`/`setDirty`/`save` in `RedstoneTransmitterTileEntity.update()`)
+against this pin's world-file surface; if the pin cannot persist that table, stop with
+`blocked(<symbol>)` and the grep evidence rather than inventing an inert channel. If it is
+expressible, replace the channel GUI with `/rftoolsutility redstone-set` as every logic sibling's
+GUI is replaced, and make the concrete in-game assertion: a redstone block feeds a transmitter on
+channel N, a receiver on the same channel emits the artefact's declared strength to a vanilla lamp
+beside it, a receiver on another channel stays dark, and `SELFTEST_AT=redstone` ends `EXIT:1`.
+Redistribute the modified brief from the orchestrator; this report proposes it, it does not dispatch it.

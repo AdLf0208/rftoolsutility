@@ -12,12 +12,16 @@
 //! blocks: a ten-tick block check, a rising-edge-driven 64-step pattern, a rising-edge-reloaded
 //! delay that emits a one-tick 15 pulse every `delay` ticks, and a rising-edge pulse counter that
 //! latches 15 when its count reaches the limit, all emitting a real 15/0 redstone signal.
-//! [`AnalogPart`] and [`LogicPart`] are the last two redstone-output siblings: the analog compares
+//! [`AnalogPart`] and [`LogicPart`] are two redstone-output siblings: the analog compares
 //! two side inputs and emits the artefact's own multiply-and-offset arithmetic clamped to 0..15,
 //! and the logic gate combines three side signals into one 15/0 output through an eight-cell truth
-//! table (`-1` keeps the previous output). (The display-only `digit` is not ported: upstream's whole
-//! behaviour is a client renderer, with no redstone output for a fail-capable lamp assertion.) The
-//! `/rftoolsutility …` commands serve the harness, because upstream's controls are its GUIs.
+//! table (`-1` keeps the previous output). [`InvCheckerPart`] checks the live item slots of the
+//! neighbour on its input side every ten ticks and emits 15 when the configured slot holds at
+//! least the configured count of a matching item; its matcher, damage mode, tag and input side are
+//! written by `/rftoolsutility invchecker-set` in place of `GuiInvChecker`. (The display-only
+//! `digit` is not ported: upstream's whole behaviour is a client renderer, with no redstone output
+//! for a fail-capable lamp assertion.) The `/rftoolsutility …` commands serve the harness, because
+//! upstream's controls are its GUIs.
 //!
 //! The numbers — the capacity, the fill level, what a bucket click does, the craft loop, the
 //! spawn cost — are in [`runtime`], a plain module with no `mod_api` types, so `cargo test`
@@ -27,7 +31,7 @@ use mod_api::{
     BlockEntityTickReply, BlockEntityTicksEvent, BlockPart, BlockSignalEvent, Command,
     CommandArgumentValue, CommandSource, Compound, CraftingGrid, CraftingRecipeCodec,
     CraftingRecipeKind, Direction, Flow, FluidResource, FluidStack, Hand, Hooks, Host,
-    HostBlockStates, HostSide, HostTransaction, ITEM_FLUIDS, Identifier, InteractionResult,
+    HostBlockStates, HostSide, HostTransaction, ITEM_FLUIDS, ITEMS, Identifier, InteractionResult,
     IsSignalSourceEvent, ItemKey, ItemPart, ItemPlace, ItemStack, LevelHost, LevelRef,
     ModContainer, ModEnergyBuffer, ModFluidTanks, NeighbourUpdate, OnBlockPlacedByEvent, PlayerRef,
     RecipeInput, RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent,
@@ -40,18 +44,19 @@ pub mod runtime;
 use runtime::{
     AVERAGE_YIELD, AnalogData, BEAMER_CAPACITY, BEAMER_RECEIVE, BOOST_RF, BUCKET, BUFFER_IN,
     BUFFER_IN_SLOTS, BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY, CRAFTER_RECEIVE,
-    CRAFTER_SLOTS, Click, CounterData, CounterState, CraftMode, CrafterTier, GHOST_INPUT,
-    GHOST_RESULT, HIGH_YIELD, LOW_YIELD, LogicInputs, LogicTable, MATTER_STORAGE,
-    MAX_BEAM_DISTANCE, MatterSource, MobRecipe, RECEIVER_CAPACITY, RECEIVER_RECEIVE, RF_PER_TICK,
-    SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE, SensorKind, SequencerData,
-    SequencerMode, SequencerState, Speed, TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank,
-    TimerData, TimerState, add_matter, analog_branch, analog_neighbours, analog_output,
-    analyzer_due, analyzer_status, beam_due, beam_reach, beam_send, bucket_click, carried, clamped,
-    counter_signal, counter_tick as run_counter_tick, fill_level, in_beam, logic_cell,
-    logic_neighbours, logic_output, placements, plan, receiver_ready, recipe_for, result_range,
-    rising_edge, sensor_due, sensor_front, sensor_sees, sensor_signal,
-    sequencer_tick as run_sequencer_tick, spawn_at, spawn_cycle, spend, start_cost, start_time,
-    steps, timer_signal, timer_tick as run_timer_tick,
+    CRAFTER_SLOTS, CheckStack, Click, CounterData, CounterState, CraftMode, CrafterTier,
+    DamageMode, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, InvCheckerData, LOW_YIELD, LogicInputs,
+    LogicTable, MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe, RECEIVER_CAPACITY,
+    RECEIVER_RECEIVE, RF_PER_TICK, SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE,
+    SensorKind, SequencerData, SequencerMode, SequencerState, Speed, TRANSMITTER_CAPACITY,
+    TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter, analog_branch, analog_neighbours,
+    analog_output, analyzer_due, analyzer_status, beam_due, beam_reach, beam_send, bucket_click,
+    carried, check_output, clamped, counter_signal, counter_tick as run_counter_tick, fill_level,
+    in_beam, invchecker_countdown, invchecker_due, invchecker_signal, logic_cell, logic_neighbours,
+    logic_output, placements, plan, receiver_ready, recipe_for, result_range, rising_edge,
+    sensor_due, sensor_front, sensor_sees, sensor_signal, sequencer_tick as run_sequencer_tick,
+    spawn_at, spawn_cycle, spend, start_cost, start_time, steps, timer_signal,
+    timer_tick as run_timer_tick,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -376,6 +381,40 @@ const KEY_LOGIC_INPUT: &str = "logicInput";
 const KEY_LOGIC_RIGHT: &str = "logicRight";
 /// A logic gate's item, resolved once in `register` for `block_drops`.
 static LOGIC_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// The inventory checker (slice 17) — `InvCheckerTileEntity`, `IncCheckerData`
+// ---------------------------------------------------------------------------
+
+/// `LogicBlockModule.INVCHECKER`: the inventory-check sibling on the same logic row. Its four
+/// matcher fields are `@GuiValue`s upstream only writes from `GuiInvChecker`, so this port writes
+/// them with `/rftoolsutility invchecker-set` (the same stand-in every logic sibling uses).
+const INVCHECKER: &str = "rftoolsutility:invchecker";
+const INVCHECKER_TYPE: &str = "invchecker";
+const INVCHECKER_TYPE_ID: &str = "rftoolsutility:invchecker";
+/// `IncCheckerData`'s artefact codec names, kept in the saved compound.
+const KEY_INV_AMOUNT: &str = "amount";
+const KEY_INV_SLOT: &str = "slot";
+const KEY_INV_DAMAGE: &str = "useDamage";
+const KEY_INV_TAG: &str = "tag";
+/// The ghost matcher slot's stand-in: an item id and its damage component. The GUI's ghost slot
+/// is a `@GuiValue`-driven container slot the pin cannot express as a content state.
+const KEY_INV_MATCH: &str = "matchItem";
+const KEY_INV_MATCH_DAMAGE: &str = "matchDamage";
+/// The saved input side and `tickServer`'s `checkCounter`.
+const KEY_INV_FACING: &str = "invFacing";
+const KEY_INV_COUNTER: &str = "checkCounter";
+/// Harness-only observations: the neighbour slot the check saw, whether its item passed the tag
+/// gate, whether `checkOutput` was satisfied, the neighbour's slot count and the game time of the
+/// last strength change. They let the leg assert the artefact's count/threshold from the reply.
+const KEY_INV_SEEN_ID: &str = "invSeen";
+const KEY_INV_SEEN_COUNT: &str = "invSeenCount";
+const KEY_INV_SLOTS: &str = "invSlots";
+const KEY_INV_TAG_OK: &str = "invTagOk";
+const KEY_INV_MATCHED: &str = "invMatched";
+const KEY_INV_CHANGED_AT: &str = "invChangedAt";
+/// An inventory checker's item, resolved once in `register` for `block_drops`.
+static INVCHECKER_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -2734,6 +2773,199 @@ impl BlockEntityPart for LogicPart {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The inventory checker's glue (slice 17) — `InvCheckerTileEntity.checkOutput`
+// ---------------------------------------------------------------------------
+
+/// `IncCheckerData` out of the saved compound. A freshly placed block entity has an empty
+/// compound, so the artefact's `createDefault()` `(1, 0, DMG_IGNORE, null)` supplies the fields.
+fn inv_data(nbt: &Compound) -> InvCheckerData {
+    InvCheckerData {
+        amount: read_int_or(nbt, KEY_INV_AMOUNT, 1),
+        slot: read_int_or(nbt, KEY_INV_SLOT, 0),
+        use_damage: read_text(nbt, KEY_INV_DAMAGE)
+            .and_then(|value| DamageMode::parse(&value))
+            .unwrap_or(DamageMode::Ignore),
+        tag: read_text(nbt, KEY_INV_TAG).filter(|value| !value.is_empty()),
+    }
+}
+
+/// Write the four data fields back under their artefact codec names.
+fn write_inv_data(nbt: &mut Compound, data: &InvCheckerData) {
+    write_int(nbt, KEY_INV_AMOUNT, data.amount);
+    write_int(nbt, KEY_INV_SLOT, data.slot);
+    write_text(nbt, KEY_INV_DAMAGE, data.use_damage.as_str());
+    write_text(nbt, KEY_INV_TAG, data.tag.as_deref().unwrap_or(""));
+}
+
+/// The ghost matcher slot's stand-in (the GUI is replaced by `invchecker-set`).
+fn inv_matcher(nbt: &Compound) -> Option<CheckStack> {
+    let id = read_text(nbt, KEY_INV_MATCH)?;
+    (!id.is_empty()).then(|| CheckStack {
+        id,
+        damage: read_int_or(nbt, KEY_INV_MATCH_DAMAGE, 0) as u32,
+        count: 1,
+    })
+}
+
+fn write_inv_matcher(nbt: &mut Compound, matcher: Option<&CheckStack>) {
+    match matcher {
+        Some(matcher) => {
+            write_text(nbt, KEY_INV_MATCH, &matcher.id);
+            write_int(nbt, KEY_INV_MATCH_DAMAGE, matcher.damage as i32);
+        }
+        None => {
+            write_text(nbt, KEY_INV_MATCH, "");
+            write_int(nbt, KEY_INV_MATCH_DAMAGE, 0);
+        }
+    }
+}
+
+/// `/rftoolsutility invchecker <pos> [nonce]`: the harness reads the neighbour slot, the
+/// configured threshold and matcher, whether `checkOutput` passed, the exact 15/0 strength, and
+/// the game time of the last change. `lamp` is a live read of the adjacent vanilla lamp.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the readout carries the neighbour slot, the matcher, game-time evidence and the lamp"
+)]
+fn inv_line(
+    pos: [i32; 3],
+    seen: &str,
+    count: i32,
+    amount: i32,
+    slot: i32,
+    damage: &str,
+    tag: &str,
+    slots: usize,
+    matched: bool,
+    output: i32,
+    changed: i32,
+    facing: &str,
+    time: i32,
+    lamp: &str,
+    nonce: Option<&str>,
+) -> String {
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: invchecker at {pos:?}: seen={seen} count={count} amount={amount} slot={slot} damage={damage} tag={tag} slots={slots} matched={matched} output={output} changed={changed} facing={facing} time={time} lamp={lamp}{suffix}"
+    )
+}
+
+/// `InvCheckerTileEntity.tickServer`/`checkOutput`: on the artefact's ten-tick cadence, read the
+/// live slots of the input-side neighbour through the game's `ITEMS` capability (no provider of
+/// ours needed), apply the matcher and the count/threshold/tag rules, and drive 15 or 0 into the
+/// block's `signal` state. Every tick records what it saw so the harness can assert from the reply.
+fn inv_block_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let data = inv_data(&event.entity.nbt);
+    let matcher = inv_matcher(&event.entity.nbt);
+    let facing = read_text(&event.entity.nbt, KEY_INV_FACING).unwrap_or_else(|| "north".to_owned());
+    let counter = read_int_or(&event.entity.nbt, KEY_INV_COUNTER, 0);
+    let due = invchecker_due(counter);
+    write_int(
+        &mut event.entity.nbt,
+        KEY_INV_COUNTER,
+        invchecker_countdown(counter),
+    );
+    write_inv_data(&mut event.entity.nbt, &data);
+    write_text(&mut event.entity.nbt, KEY_INV_FACING, &facing);
+    write_inv_matcher(&mut event.entity.nbt, matcher.as_ref());
+
+    let Some(level) = ticking_level(&*host) else {
+        return;
+    };
+    let Some(neighbours) = logic_neighbours(pos, &facing) else {
+        return;
+    };
+    let intos = logic_into_directions(&facing);
+    // `getInputSide()` is neighbour I; the side passed to the capability is that neighbour's
+    // face back toward the checker, which is the same direction `LevelRef::signal` takes.
+    let neighbour = neighbours[0];
+    let mut slots: Vec<Option<CheckStack>> = Vec::new();
+    if let Some(handler) = level.capability(host, &ITEMS, neighbour, Some(intos[0])) {
+        for index in 0..handler.size(host) {
+            let stack = handler.resource(host, index).map(|resource| CheckStack {
+                id: resource.item().id(&*host),
+                damage: resource.as_stack().damage_component().unwrap_or(0),
+                count: handler.amount(host, index) as i32,
+            });
+            slots.push(stack);
+        }
+    }
+
+    let seen = usize::try_from(data.slot)
+        .ok()
+        .and_then(|slot| slots.get(slot))
+        .and_then(Option::as_ref);
+    let (seen_id, seen_count) =
+        seen.map_or(("-".to_owned(), 0), |stack| (stack.id.clone(), stack.count));
+    let tag_matches = match (data.tag.as_deref(), seen.map(|stack| stack.id.as_str())) {
+        (Some(tag), Some(id)) => host
+            .registry_entry("minecraft:item", id)
+            .and_then(|entry| host.registry_entry_in_tag(&entry, tag))
+            .unwrap_or(false),
+        _ => false,
+    };
+    let matched = check_output(&slots, matcher.as_ref(), &data, tag_matches);
+    write_text(&mut event.entity.nbt, KEY_INV_SEEN_ID, &seen_id);
+    write_int(&mut event.entity.nbt, KEY_INV_SEEN_COUNT, seen_count);
+    write_int(&mut event.entity.nbt, KEY_INV_SLOTS, slots.len() as i32);
+    write_int(
+        &mut event.entity.nbt,
+        KEY_INV_TAG_OK,
+        i32::from(tag_matches),
+    );
+    write_int(&mut event.entity.nbt, KEY_INV_MATCHED, i32::from(matched));
+
+    if due {
+        let output = invchecker_signal(matched);
+        let prior = cached_signal(&*host, level, pos);
+        if output != prior {
+            write_int(
+                &mut event.entity.nbt,
+                KEY_INV_CHANGED_AT,
+                level.game_time(&*host).unwrap_or(0) as i32,
+            );
+            host.set_block_property(pos, KEY_SIGNAL, if output == SENSOR_ON { "1" } else { "0" });
+            if let Some(state) = level.block_state(&*host, pos) {
+                let _ = level.update_neighbors(host, pos, state, NeighbourUpdate::Neighbours);
+            }
+        }
+    }
+}
+
+/// The inventory checker's one Part: a block entity with a ten-tick check, and the two redstone
+/// methods that make its cached 15/0 a real signal (`LogicSupport.getRedstoneOutput` /
+/// `isSignalSource`), identical to its logic siblings.
+struct InvCheckerPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for InvCheckerPart {
+    fn is_signal_source(&self, _level: &dyn LevelHost, event: &mut IsSignalSourceEvent) {
+        event.source = true;
+    }
+
+    fn block_signal(&self, level: &dyn LevelHost, event: &mut BlockSignalEvent) {
+        let Some(name) = level.state_string(event.state) else {
+            return;
+        };
+        if sensor_state_property(&name, KEY_SIGNAL) == Some("1") {
+            event.signal = SENSOR_ON;
+        }
+    }
+}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for InvCheckerPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        inv_block_tick(host, event);
+    }
+}
+
 /// `/rftoolsutility analyzer <pos> [nonce]`: the harness's readout of the passive analyzer block.
 /// It finds the adjacent dialed transmitter and prints the receiver-check status the transmitter
 /// keeps (`green=ok` → 15, `yellow=unknown` → 7, `red=warn` → 0). The artefact has no redstone
@@ -3410,6 +3642,19 @@ impl Hooks for Mod {
                 "rftoolsutility: the logic part was refused: {error}"
             ));
         }
+
+        // Slice 17: the inventory checker's block entity, ten-tick neighbour-item check and
+        // redstone Part, on the same iron-block template and `signal` state as its five siblings.
+        let _ = INVCHECKER_ITEM.set(r.item_key(INVCHECKER));
+        let invchecker_kind = r
+            .block_entity_type(INVCHECKER_TYPE)
+            .blocks(&[INVCHECKER])
+            .build();
+        if let Err(error) = r.block_entity_part(&invchecker_kind, InvCheckerPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the invchecker part was refused: {error}"
+            ));
+        }
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -3583,6 +3828,12 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(INVCHECKER) {
+            if let Some(item) = INVCHECKER_ITEM.get() {
+                carry_machine(level, event, *item, INVCHECKER_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -3725,6 +3976,16 @@ impl Hooks for Mod {
             "rftoolsutility logic-set <pos:block_pos> <l0:integer> <l1:integer> <l2:integer> <l3:integer> <l4:integer> <l5:integer> <l6:integer> <l7:integer> <facing:word>",
             2,
         ));
+        // Slice 17: the inventory checker's GUI-equivalent controls — a readout of the neighbour
+        // slot and the count/threshold check, and a way to write the four `IncCheckerData` fields,
+        // the ghost matcher and the input side that `GuiInvChecker` would set.
+        event.commands.push(Command::new(
+            "rftoolsutility invchecker <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility invchecker-set <pos:block_pos> <amount:integer> <slot:integer> <damage:word> <matcher:word> <mdamage:integer> <tag:word> <facing:word>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -3770,6 +4031,8 @@ impl Hooks for Mod {
                     | "analog-set"
                     | "logic"
                     | "logic-set"
+                    | "invchecker"
+                    | "invchecker-set"
                     | "recipes"
             ]
         );
@@ -4749,6 +5012,142 @@ impl Hooks for Mod {
                     &format!(
                         "Logic at {pos:?}: table {:?}, input to the {facing}.",
                         cells
+                    ),
+                );
+            }
+            ["rftoolsutility", "invchecker"] => {
+                let Some(entity) = machine_at(&*host, level, pos, INVCHECKER) else {
+                    feedback(host, "No inventory checker there.");
+                    return Flow::Cancel;
+                };
+                let Some(nbt) = entity.data(&*host) else {
+                    feedback(host, "No inventory checker there.");
+                    return Flow::Cancel;
+                };
+                let data = inv_data(&nbt);
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                let seen = read_text(&nbt, KEY_INV_SEEN_ID).unwrap_or_else(|| "-".to_owned());
+                let count = read_int_or(&nbt, KEY_INV_SEEN_COUNT, 0);
+                let slots = read_int_or(&nbt, KEY_INV_SLOTS, 0) as usize;
+                let matched = read_int_or(&nbt, KEY_INV_MATCHED, 0) != 0;
+                let changed = read_int_or(&nbt, KEY_INV_CHANGED_AT, -1);
+                let facing = read_text(&nbt, KEY_INV_FACING).unwrap_or_else(|| "north".to_owned());
+                let output = cached_signal(&*host, level, pos);
+                let time = level.game_time(&*host).unwrap_or(0) as i32;
+                let lamp = [
+                    [pos[0], pos[1], pos[2] - 1],
+                    [pos[0], pos[1], pos[2] + 1],
+                    [pos[0] - 1, pos[1], pos[2]],
+                    [pos[0] + 1, pos[1], pos[2]],
+                ]
+                .iter()
+                .any(|&around| {
+                    level
+                        .block_state(&*host, around)
+                        .and_then(|state| host.block_state_string(state))
+                        .is_some_and(|name| {
+                            name.contains("redstone_lamp")
+                                && sensor_state_property(&name, "lit") == Some("true")
+                        })
+                });
+                feedback(
+                    host,
+                    &inv_line(
+                        pos,
+                        &seen,
+                        count,
+                        data.amount,
+                        data.slot,
+                        data.use_damage.as_str(),
+                        data.tag.as_deref().unwrap_or("-"),
+                        slots,
+                        matched,
+                        output,
+                        changed,
+                        &facing,
+                        time,
+                        if lamp { "lit" } else { "dark" },
+                        nonce,
+                    ),
+                );
+            }
+            ["rftoolsutility", "invchecker-set"] => {
+                let Some(entity) = machine_at(&*host, level, pos, INVCHECKER) else {
+                    feedback(host, "No inventory checker there.");
+                    return Flow::Cancel;
+                };
+                let usage = "Usage: /rftoolsutility invchecker-set <pos> <amount> <slot> <damage> <matcher> <mdamage> <tag> <facing>";
+                let int = |name: &str| match invocation.argument(name) {
+                    Some(CommandArgumentValue::Integer(value)) => Some(*value),
+                    _ => None,
+                };
+                let word = |name: &str| match invocation.argument(name) {
+                    Some(CommandArgumentValue::String(value)) => Some(value.clone()),
+                    _ => None,
+                };
+                let (Some(amount), Some(slot), Some(mdamage)) =
+                    (int("amount"), int("slot"), int("mdamage"))
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                let (Some(damage), Some(matcher), Some(tag), Some(facing)) =
+                    (word("damage"), word("matcher"), word("tag"), word("facing"))
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                let Some(use_damage) = DamageMode::parse(&damage) else {
+                    feedback(host, "unknown damage mode (Match|Ignore).");
+                    return Flow::Cancel;
+                };
+                if logic_neighbours(pos, &facing).is_none() {
+                    feedback(host, "unknown invchecker facing (north|south|east|west).");
+                    return Flow::Cancel;
+                }
+                let none = |value: &str| value.is_empty() || value == "-";
+                // A `word` argument cannot carry a colon, so the harness writes `stone` rather
+                // than `minecraft:stone`; qualify unqualified vanilla names here.
+                let qualify = |value: &str| {
+                    if value.contains(':') {
+                        value.to_owned()
+                    } else {
+                        format!("minecraft:{value}")
+                    }
+                };
+                let data = InvCheckerData {
+                    amount,
+                    slot,
+                    use_damage,
+                    tag: (!none(&tag)).then(|| qualify(&tag)),
+                };
+                let matcher = (!none(&matcher)).then(|| CheckStack {
+                    id: qualify(&matcher),
+                    damage: mdamage as u32,
+                    count: 1,
+                });
+                let Some(mut nbt) = entity.data(&*host) else {
+                    feedback(host, "No inventory checker there.");
+                    return Flow::Cancel;
+                };
+                write_inv_data(&mut nbt, &data);
+                write_inv_matcher(&mut nbt, matcher.as_ref());
+                write_text(&mut nbt, KEY_INV_FACING, &facing);
+                // A fresh data record should check at once, not wait out the old countdown.
+                write_int(&mut nbt, KEY_INV_COUNTER, 0);
+                if entity.replace_data(host, nbt).is_err() {
+                    feedback(host, "No inventory checker there.");
+                    return Flow::Cancel;
+                }
+                feedback(
+                    host,
+                    &format!(
+                        "Inventory checker at {pos:?}: amount={amount} slot={slot} damage={damage} matcher={} tag={} input to the {facing}.",
+                        matcher.as_ref().map_or("-".to_owned(), |m| m.id.clone()),
+                        data.tag.as_deref().unwrap_or("-")
                     ),
                 );
             }
@@ -6032,5 +6431,65 @@ mod tests {
         write_logic_table(&mut nbt, &table);
         assert_eq!(logic_table(&nbt), table);
         assert_eq!(logic_table(&Compound::new()), LogicTable::default());
+    }
+
+    #[test]
+    fn an_invcheckers_four_fields_round_trip_through_the_saved_compound() {
+        let data = InvCheckerData {
+            amount: 3,
+            slot: 4,
+            use_damage: DamageMode::Match,
+            tag: Some("minecraft:planks".to_owned()),
+        };
+        let mut nbt = Compound::new();
+        write_inv_data(&mut nbt, &data);
+        assert_eq!(inv_data(&nbt), data);
+        assert_eq!(inv_data(&Compound::new()), InvCheckerData::default());
+    }
+
+    #[test]
+    fn the_invchecker_ghost_matcher_round_trip() {
+        assert_eq!(inv_matcher(&Compound::new()), None);
+        let mut nbt = Compound::new();
+        write_inv_matcher(&mut nbt, None);
+        assert_eq!(inv_matcher(&nbt), None);
+        let matcher = CheckStack {
+            id: "minecraft:stone".to_owned(),
+            damage: 9,
+            count: 1,
+        };
+        write_inv_matcher(&mut nbt, Some(&matcher));
+        assert_eq!(inv_matcher(&nbt), Some(matcher));
+    }
+
+    #[test]
+    fn the_invchecker_countdown_resets_to_the_artefact_interval() {
+        let ticks = runtime::INVCHECKER_TICKS;
+        assert_eq!(invchecker_countdown(1), ticks);
+        assert_eq!(invchecker_countdown(ticks), ticks - 1);
+    }
+
+    #[test]
+    fn the_invchecker_readout_is_the_line_the_harness_parses() {
+        assert_eq!(
+            inv_line(
+                [201, 101, 0],
+                "minecraft:stone",
+                1,
+                2,
+                0,
+                "Ignore",
+                "-",
+                27,
+                false,
+                0,
+                -1,
+                "north",
+                312,
+                "dark",
+                Some("7")
+            ),
+            "/rftoolsutility: invchecker at [201, 101, 0]: seen=minecraft:stone count=1 amount=2 slot=0 damage=Ignore tag=- slots=27 matched=false output=0 changed=-1 facing=north time=312 lamp=dark nonce=7"
+        );
     }
 }

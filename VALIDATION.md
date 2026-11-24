@@ -705,3 +705,43 @@ tree`. R9 holds (SDK path dep only, no `[workspace]`, no packed lock); no local 
 named `Block`/`Item` (the new types are `LogicInputs`/`LogicTable`), so neither `fits` run false-failed;
 `E2E_TMP` and all path exports came from `launcher-game.sh env`, never `/tmp`. All eight slice-16 logs
 plus the 80 earlier logs are strict-green.
+
+## Slice 17 — the inventory checker (0.2.16, forwarded to AdLf-PC)
+
+All Rust ladder steps went through `build-slot.sh run --job W1-rftoolsutility --port
+ports/rftoolsutility --step test|lint|build|check`, each printing `build-slot: forwarding … to the
+remote runner` (hostname `AdLf-PC`); `BUILD_LOCAL=1` was never set. The launcher native build and
+the game legs ran locally in `--step native`/`--step e2e` leases. No lease was backgrounded.
+
+| # | check | command | result |
+|---|---|---|---|
+| 1 | red, runtime | eight count/matcher/cadence rules stubbed `todo!()` behind their tests, `cargo test --offline` | **FAILED. 149 passed; 8 failed**, each at `not yet implemented` (`slice17-red.log`) |
+| 2 | green | `cargo test --offline` | **161 passed; 0 failed** (`slice17-green.log`, copied to `sdk-test.log` regenerated for 0.2.16 after the final build) |
+| 3 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`slice17-lint.log`, copied to `sdk-clippy.log`) |
+| 4 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **229,209 B**, sha `ea0e6171…aa61192e`, 289 entries, no `Cargo.lock` (`slice17-build-1.log`, `-2.log`) |
+| 5 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.16 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`slice17-check-fits.log`) |
+| 6 | fits the pin | `fits … --build 0a875da` | `0a875da  made for`, **FITS_EXIT:0** |
+| 7 | fits another build | `fits … --build 0b14f8a` | `0b14f8a  fits`, **FITS_OTHER_EXIT:0** |
+| 8 | gate | `verify-sdk-package.py rftoolsutility` | **1/1** (161 passed, 0 clippy warnings, package matches the tree, R9, skills gate; `slice17-package-gate-final.log`) |
+| 9 | native build | `launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-595f6569515b` (`slice17-native-build.log`); the stale 0.2.15/0.2.16 tags were removed first |
+| 10 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e-invchecker.sh` | **PASS**, `EXIT:0` — IV–IV6 (`e2e-slice17-invchecker.log`) |
+| 11 | in game, c/f | `SELFTEST=1 SELFTEST_AT=invchecker` | **FAIL: SELFTEST invchecker: the satisfied check reads 15, expected it inverted**, `EXIT:1` (`e2e-slice17-invchecker-selftest.log`) |
+| 12 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: ctl place rftoolsutility:invchecker … was refused three times**, `EXIT:1` (`e2e-slice17-invchecker-control.log`) |
+| 13 | no regression | the same game, `e2e-{sensor,sequencer,timer,counter,analog,logic}.sh` | each **PASS**, `EXIT:0` (`e2e-slice17-{sensor,sequencer,timer,counter,analog,logic}.log`) |
+| 14 | log gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=97 ok=97 missing-exit=0 bad-exit=0`, `EXIT:0` (`slice17-e2e-gate.log`) |
+
+**Gate:** `level.capability(host, &ITEMS, pos, side)` reaches a vanilla chest's live slots with no
+provider of ours — SDK `hooks/notes.rs:598` and the test
+`a_mod_reads_a_vanilla_chests_items_from_the_game_with_no_provider_for_it`
+(`parts/capabilities.rs:294–308`; `block_providers(&ITEMS, …).is_none()` yet `size`/`resource` read the
+game's own slots). **Traps handled:** the first harness run failed IV2 because a `word` command
+argument cannot carry `minecraft:dirt`; the glue now qualifies unqualified names, and the harness
+writes `dirt`/`stone` (the e2e script is not packed, so no rebuild was needed). `ctl container` puts
+an add in the first free slot, and `setblock` of the same block id keeps its block entity data, so
+IV5 clears the chest to air before re-seeding it with 3 stone. The manifest, README, crate doc and
+content were edited **before** the final build; the later notes edits and harness fixes are not
+packed, and the gate still reports `package matches the tree`. R9 holds (SDK path dep only, no
+`[workspace]`, no packed lock); no local type or variant is named `Block`/`Item` (the new types are
+`DamageMode`/`InvCheckerData`/`CheckStack`), so neither `fits` run false-failed; `E2E_TMP` and all
+path exports came from `launcher-game.sh env`, never `/tmp`. All nine slice-17 logs plus the 88
+earlier logs are strict-green.

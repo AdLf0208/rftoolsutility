@@ -167,3 +167,26 @@ and the blockstate below keys the front-facing slab model on those two values.
 
 The carried recipe needs `rftoolsbase:machine_base`, the parent port's item, so the e2e gives the
 block, as every machine slice has.
+
+## Slice 17 — the inventory checker (`rftoolsutility:invchecker`)
+
+The inventory checker's four slab models (`models/block/invchecker_0…3.json`), item model, top
+texture (`textures/block/logic/machineinvchecker.png`), recipe, advancement and loot table are carried
+from the RFTools Utility jar byte for byte (the loot table's `copy_components` function is removed by
+the same `upgrade_loot` pass as the other logic blocks). Its model's `rftoolsbase:` machine-base
+textures are re-pointed into this namespace. Its jar blockstate is all 24 `logic_facing` slab
+rotations, which a content block cannot express, so the native code caches the 15/0 output in a
+two-value `signal` state and the blockstate below keys the front-facing slab model on those values.
+
+| File | What |
+|---|---|
+| `assets/rftoolsutility/blockstates/invchecker.json` | 2 `signal=0/1` variants (the jar's 24 `logic_facing` rotations are not expressible as content states), both pointing at `block/invchecker_0` |
+| `assets/rftoolsutility/items/invchecker.json` | the 26.3 item definition (`minecraft:model` → `rftoolsutility:item/invchecker`) |
+| `data/rftoolsutility/horizon/block/invchecker.json` | the block: `minecraft:iron_block` template, hardness 2.0 / blast 2.0, correct tool, metal sound, and the declared 2-value `signal` state (default 0) |
+| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json` | the inventory checker added to the tab |
+| `data/c/tags/item/chests.json` | the `c:chests` convention tag its recipe names, with `minecraft:chest` (the prepared 26.3 root ships no `c:` tags) |
+| `data/minecraft/tags/block/{mineable/pickaxe,needs_iron_tool}.json` | the inventory checker added to both (upstream's `ironPickaxeTags()`) |
+| `assets/rftoolsutility/lang/en_us.json` | the two jar lang lines (`block.rftoolsutility.invchecker`, `message.rftoolsutility.invchecker.header`) |
+
+The recipe's other ingredients are plain ids (comparator, redstone) and `rftoolsbase:machine_base`,
+the parent port's item, so the e2e gives the block, as every machine slice has.

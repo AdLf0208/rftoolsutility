@@ -15,6 +15,7 @@
     "rftoolsutility:timer",
     "rftoolsutility:counter",
     "rftoolsutility:analog",
-    "rftoolsutility:logic"
+    "rftoolsutility:logic",
+    "rftoolsutility:invchecker"
   ]
 }
