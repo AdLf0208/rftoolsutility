@@ -1292,6 +1292,84 @@ pub fn timer_tick(data: &TimerData, state: &mut TimerState, powered: bool) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The counter (slice 14) — `CounterData`, `CounterTileEntity`
+// ---------------------------------------------------------------------------
+
+/// `CounterData(int counter, int current)` — the maximum to count to and the running count.
+/// `createDefault()` is `(1, 0)`: with the default limit of one, every pulse fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CounterData {
+    pub counter: i32,
+    pub current: i32,
+}
+
+impl Default for CounterData {
+    fn default() -> Self {
+        // `CounterData.createDefault()`.
+        Self {
+            counter: 1,
+            current: 0,
+        }
+    }
+}
+
+impl CounterData {
+    /// `CounterTileEntity.setCounter`: a *changed* limit also resets the running count. Setting
+    /// the same value again leaves the current count alone.
+    pub fn with_counter(self, counter: i32) -> Self {
+        if counter == self.counter {
+            self
+        } else {
+            Self {
+                counter,
+                current: 0,
+            }
+        }
+    }
+}
+
+/// `CounterTileEntity`'s two live saved fields: `prevIn` (edge latch) and the cached `rs` output
+/// the redstone hook reads through `LogicSupport`. Both travel in the saved compound.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CounterState {
+    pub prev_in: bool,
+    pub output: bool,
+}
+
+/// The redstone strength `support.setRedstoneState(this, newout)` writes: 15/0, as every logic
+/// sibling. The counter's output is a **level latch** — it stays 15 until the next rising edge.
+#[must_use]
+pub fn counter_signal(output: bool) -> i32 {
+    if output { SENSOR_ON } else { SENSOR_OFF }
+}
+
+/// One `CounterTileEntity.update()` (called from `checkRedstone`): latch a rising edge, bump the
+/// running count, fire a 15 when it reaches the limit and wrap it to 0. Returns whether this edge
+/// reached the limit, so the harness can stamp the exact fire tick. With no pulse the method does
+/// not call `setRedstoneState`, so the output level is left as it was — the manual's "another
+/// redstone pulse will turn off the signal and reset Current to 0".
+pub fn counter_tick(data: &mut CounterData, state: &mut CounterState, powered: bool) -> bool {
+    let pulse = rising_edge(powered, state.prev_in);
+    state.prev_in = powered;
+    if !pulse {
+        // The artefact calls `setRedstoneState` only inside `if (pulse)`, so the latched output
+        // level survives a no-pulse tick (the manual's "another pulse turns the signal off").
+        return false;
+    }
+    let mut current = data.current + 1;
+    let mut fired = false;
+    if current >= data.counter {
+        current = 0;
+        state.output = true;
+        fired = true;
+    } else {
+        state.output = false;
+    }
+    data.current = current;
+    fired
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2856,5 +2934,106 @@ mod tests {
             state.output,
             "the pulse comes delay - 1 ticks after the input ends"
         );
+    }
+
+    #[test]
+    fn a_fresh_counter_defaults_to_a_limit_of_one_and_an_empty_count() {
+        let data = CounterData::default();
+        assert_eq!(data.counter, 1);
+        assert_eq!(data.current, 0);
+        assert_eq!(counter_signal(false), SENSOR_OFF);
+        assert_eq!(counter_signal(true), SENSOR_ON);
+    }
+
+    #[test]
+    fn a_counter_only_counts_a_rising_edge_not_a_held_input() {
+        let mut data = CounterData {
+            counter: 3,
+            current: 0,
+        };
+        let mut state = CounterState::default();
+        counter_tick(&mut data, &mut state, true); // edge 1
+        assert_eq!(data.current, 1);
+        assert!(!state.output);
+        for _ in 0..5 {
+            assert!(!counter_tick(&mut data, &mut state, true)); // held: no more edges
+        }
+        assert_eq!(data.current, 1, "a held high input is counted only once");
+    }
+
+    #[test]
+    fn a_counter_fires_only_on_the_limit_th_pulse_and_wraps_to_zero() {
+        let mut data = CounterData {
+            counter: 3,
+            current: 0,
+        };
+        let mut state = CounterState::default();
+        // three clean edges: high, low, high, low, high
+        counter_tick(&mut data, &mut state, true);
+        assert_eq!(data.current, 1);
+        assert!(!state.output);
+        counter_tick(&mut data, &mut state, false);
+        counter_tick(&mut data, &mut state, true);
+        assert_eq!(data.current, 2);
+        assert!(!state.output);
+        counter_tick(&mut data, &mut state, false);
+        assert!(
+            counter_tick(&mut data, &mut state, true),
+            "pulse 3 reaches the limit"
+        );
+        assert!(state.output, "the limit-th pulse latches 15");
+        assert_eq!(data.current, 0, "the running count wraps to zero on a fire");
+    }
+
+    #[test]
+    fn a_counters_next_pulse_clears_the_latched_output() {
+        let mut data = CounterData {
+            counter: 3,
+            current: 0,
+        };
+        let mut state = CounterState::default();
+        for _ in 0..3 {
+            counter_tick(&mut data, &mut state, true);
+            counter_tick(&mut data, &mut state, false);
+        }
+        assert!(state.output, "the third pulse lit the output");
+        // the next pulse starts a new count and turns the signal off
+        assert!(!counter_tick(&mut data, &mut state, true));
+        assert!(
+            !state.output,
+            "the next rising edge clears the latched signal"
+        );
+        assert_eq!(data.current, 1, "and the new count has started");
+    }
+
+    #[test]
+    fn a_counter_with_no_pulse_leaves_the_output_untouched() {
+        let mut data = CounterData {
+            counter: 2,
+            current: 0,
+        };
+        let mut state = CounterState {
+            output: true,
+            ..CounterState::default()
+        };
+        assert!(!counter_tick(&mut data, &mut state, false));
+        assert!(state.output, "no pulse means no setRedstoneState call");
+        assert_eq!(data.current, 0);
+    }
+
+    #[test]
+    fn a_counter_limit_change_resets_the_count_and_output() {
+        let data = CounterData {
+            counter: 3,
+            current: 2,
+        };
+        let changed = data.with_counter(5);
+        assert_eq!(changed.counter, 5);
+        assert_eq!(changed.current, 0, "setCounter resets Current");
+        let same = changed.with_counter(5);
+        assert_eq!(same.current, 0);
+        // a setCounter to the same value keeps a live count
+        let live = changed.with_counter(5);
+        assert_eq!(live.with_counter(5).current, 0);
     }
 }

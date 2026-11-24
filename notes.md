@@ -1,8 +1,10 @@
-# RFTools Utility — port notes (slices 1–13: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer and the timer)
+# RFTools Utility — port notes (slices 1–14: the tank, the crafter tiers, the spawner, the beamer, the teleporter family, the analyzer, the sensor, the sequencer, the timer and the counter)
 
-> **Current state (2026-11-24): slice 13, package 0.2.12 at pin
+> **Current state (2026-11-24): slice 14, package 0.2.13 at pin
 > `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / mixins `e59da909…`.** Read
-> **`## Slice 13 — the timer (2026-11-24)`** first: the delay/edge rules, the one-tick pulse and
+> **`## Slice 14 — the counter (2026-11-24)`** first: the artefact's count/reset rules, the latched
+> output and the game-time-stamped lamp leg. Then
+> **`## Slice 13 — the timer (2026-11-24)`**: the delay/edge rules, the one-tick pulse and
 > the game-time-stamped lamp leg. Then
 > **`## Slice 12 — the sequencer (2026-11-24)`**: the rising-edge rule, the seven modes and
 > the vanilla-lever-driven lamp leg (including the self-feedback trap). Then
@@ -207,9 +209,9 @@ this slice does not implement. Recorded so slice 2 does not carry it:
 - **Screens:** `screen`, `screen_controller`, `screen_hitblock`, `tablet_screen`,
   `tablet_redstone`, `screen_link`, `storage_control_module` and the 30 screen
   modules.
-- **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`,
-  `digit`, `logic`, `invchecker`, `redstone_transmitter/receiver`,
-  `redstone_information`.
+- **Logic:** `wire`, ~~`sensor`~~ (slice 11), ~~`sequencer`~~ (slice 12), ~~`timer`~~ (slice 13),
+  ~~`counter`~~ (slice 14), `analog`, `digit`, `logic`, `invchecker`,
+  `redstone_transmitter/receiver`, `redstone_information`.
 - **Environmental controller** and its 23 modules; ~~the **spawner** with its 100
   mob recipes~~ — **the spawner is done in slice 4** (the block, its 200,000 FE buffer, the
   mob setting from the recipe table and the spawn tick, with the jar's **70** mob recipes
@@ -2787,15 +2789,203 @@ launcher's `native-build` compiled the mod (`Compiling rftoolsutility (1 of 1)`,
 `build-slot: forwarding … to the remote runner` (hostname `AdLf-PC`), no `BUILD_LOCAL=1` was set,
 and no lease was backgrounded.
 
+## Slice 14 — the counter (2026-11-24)
+
+**Chosen from the port's own `## Next slice`** (the line immediately above this section), verbatim:
+
+> The next logic-family gap on the same line is the **counter** (`rftoolsutility:counter`,
+> `CounterTileEntity`), the sibling of the timer: a redstone-pulse counter with a configurable max
+> whose output fires when the count is reached and whose GUI sets the limit.
+
+and the shared gap line `## Gaps (the rest of the mod)`:
+
+> **Logic:** `wire`, `sensor`, `sequencer`, `timer`, `counter`, `analog`, `digit`, `logic`,
+> `invchecker`, `redstone_transmitter/receiver`, `redstone_information`.
+
+It fits the ledger's **machines** tier exactly: one block entity, a limit + running count, a
+rising-edge input on the input-side neighbour and the real `block_signal` surface slices 11–13
+proved in game — no renderer, no entity AI, no new client half. **Pin**
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a` / `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, API
+`0.2`, game 26.3. **Version 0.2.13.** Class **content**, tier **machines** (ledger). MIT, ours on
+main → an **Update** of the entry (never a first `Add`).
+
+### The artefact's count and reset rules (read first, not inferred from the name)
+
+Read from the jar and the upstream `1.21_neo` clone at the artefact's own commit
+`f799314007d68042df8504e83cd549360f2627c7` (analysis only; the clone at `/tmp/opencode` was already
+present at that commit and was not re-cloned):
+
+- `CounterData(int counter, int current)`; `createDefault() = (1, 0)` — with the default limit of
+  one, every pulse fires. Both fields are written only by `GuiCounter`'s `integerfield`s, so this
+  port writes the limit with `/rftoolsutility counter-set` (deviation below).
+- `CounterTileEntity.update()` (called from `checkRedstone`): `pulse = (powerLevel > 0) && !prevIn`;
+  `prevIn = powerLevel > 0`. **Only inside `if (pulse)`** does it `current++`; `current >= counter`
+  wraps `current` to 0 and sets `newout = 15`, otherwise `newout = 0`; then
+  `support.setRedstoneState(this, newout)`. With no pulse it never calls `setRedstoneState`, so the
+  output is a **level latch**: 15 from the limit-th pulse until the *next* rising edge sets it to 0
+  (and starts a new count). The jar's manual agrees: "Once Current is equal to Counter, it emits a
+  redstone signal. Another redstone pulse will turn off the signal and reset Counter [Current] to 0."
+- `setCounter`: a *changed* limit also resets `current` to 0 and the output to 0.
+- `loadAdditional`/`saveAdditional` keep `rs` and `prevIn`; both travel on the item via
+  `block_entity_data`, as every machine's saved compound does.
+- The input is the input-side neighbour's own emitted signal. The pin expresses that with
+  `LevelRef::signal(host, neighbour, into)` (`SignalGetter.getSignal(pos, dir)`), **not**
+  `getBestNeighborSignal`: the latter includes the block's own 15 (it `isSignalSource`), which made
+  the sequencer latch a phantom edge and advance by itself (slice 12's trap). **Not blocked** — no
+  GUI-only setting is unexpressible; both `Counter` and `Current` are integers written by a command.
+
+### What it does
+
+- **The block.** `rftoolsutility:counter` on `minecraft:iron_block` with a `signal` state
+  (`0`/`1`, default `0`) caching the strength for the redstone hook, exactly as its three logic
+  siblings. The jar's four slab models, front texture, item model, recipe, advancement, loot table
+  and lang lines are carried; its 24 `logic_facing` rotations are replaced by the two `signal`
+  variants the hook caches.
+- **The tick.** Reads the input-side neighbour's directional signal, runs the artefact's count
+  rule, persists `prevIn`/`rs`/`current` into the block entity's compound and mirrors the latched
+  15/0 into the block state, then wakes the neighbours so a vanilla lamp beside it reacts.
+- **The redstone.** `BlockPart::block_signal` reports 15 when `signal=1` (direct and indirect) and
+  `is_signal_source` marks the counter a source — a **real vanilla redstone signal**.
+- **The harness.** `/rftoolsutility counter <pos> [nonce]` prints `limit=… current=… output=<0|15>
+  pulses=… pulse=… fire=… lamp=… facing=… time=…`: `pulse`/`fire`/`time` are game-time stamps (the
+  edge, the fire that reached the limit, and the readout's own tick) and `lamp` is a **live** read
+  of the adjacent vanilla lamp's own `lit` state. `counter-set <pos> <limit> <facing>` is the GUI's
+  equivalent (a bad limit or unknown facing is refused) and resets the count, the latch and the
+  stamps. A broken counter's item carries its state (`block_entity_data`, like every machine's).
+
+### Red → green (unit, verbatim)
+
+The four new count rules were `todo!()` stubs behind their tests first (`slice14-red.log`):
+
+```
+failures:
+    runtime::tests::a_counter_fires_only_on_the_limit_th_pulse_and_wraps_to_zero
+    runtime::tests::a_counter_only_counts_a_rising_edge_not_a_held_input
+    runtime::tests::a_counter_with_no_pulse_leaves_the_output_untouched
+    runtime::tests::a_counters_next_pulse_clears_the_latched_output
+
+test result: FAILED. 2 passed; 4 failed; 0 ignored; 0 measured; 123 filtered out; finished in 0.00s
+```
+
+Each new failure was `panicked at src/runtime.rs:1358:5: not yet implemented`. Two further rules
+(the `(1, 0)` default and `setCounter`'s reset) passed from the start; the glue formatter
+(`the_counter_readout_is_the_line_the_harness_parses`) was added with the formatter that produces
+the line. Green: **130 passed; 0 failed** (`sdk-test.log`, regenerated for 0.2.13 after the final
+build) — 71 runtime and 59 glue tests. `cargo fmt --check` clean, `cargo clippy --all-targets
+--offline -- -D warnings` 0 warnings (`slice14-clippy.log`).
+
+### In game (evidence under `../_shared/evidence/rftoolsutility-e2e/`)
+
+`tools/e2e-counter.sh` — a focused, fail-capable leg reusing the launcher-built game; one lease per
+leg, every log ends with its exit. The assertion is a **vanilla redstone lamp** beside the counter,
+driven by a **vanilla lever** on its north input side, with the delay/limit read from the replies'
+own game-time stamps (never wall time).
+
+| log | verdict |
+|---|---|
+| `e2e-slice14-counter.log` | **PASS**, `EXIT:0` — AN–AN7 |
+| `e2e-slice14-counter-selftest.log` | **FAIL: SELFTEST counter: the limit-th pulse lit the lamp, expected it to stay dark**, `EXIT:1` |
+| `e2e-slice14-counter-control.log` | **FAIL: ctl place rftoolsutility:counter … was refused three times** (unmodded Nightly), `EXIT:1` |
+| `e2e-slice14-teleporter.log`, `-analyzer.log`, `-sensor.log`, `-sequencer.log`, `-timer.log` | each **PASS**, `EXIT:0` — the earlier families, no regression |
+
+`check-e2e-logs.py rftoolsutility-e2e --strict` → `logs=73 ok=73 missing-exit=0 bad-exit=0`
+(`slice14-e2e-gate.log`).
+
+The phases, each asserting a parsed value (verbatim from the green transcript):
+
+```
+AN-control: lamp with a vanilla redstone block: minecraft:redstone_lamp[lit=true] / after removing it: [lit=false]
+AN0:  /rftoolsutility: counter at [201, 101, 0]: limit=4 current=0 output=0 pulses=0 pulse=-1 fire=-1 lamp=dark facing=north time=268 nonce=1
+AN2:  limit=4 current=1 output=0 pulses=1 pulse=319 fire=-1 lamp=dark ... nonce=3
+AN3:  limit=4 current=2 output=0 pulses=2 pulse=346 fire=-1 lamp=dark ... nonce=4
+AN4:  limit=4 current=3 output=0 pulses=3 pulse=371 fire=-1 lamp=dark ... nonce=5
+AN5:  limit=4 current=0 output=15 pulses=4 pulse=396 fire=396 lamp=lit ... nonce=6
+AN5b: limit=4 current=0 output=15 pulses=4 pulse=396 fire=396 lamp=lit ... nonce=7  (latch persists)
+AN6:  limit=4 current=1 output=0 pulses=5 pulse=466 fire=396 lamp=dark ... nonce=8  (next edge clears)
+AN7:  give rftoolsutility:not_a_counter → rc=1 {"error":"unknown item rftoolsutility:not_a_counter"}
+```
+
+Counterfactuals: the redstone-block control proves the lamp and its parser work; AN1 is a no-pulse
+window (pulses/fire unchanged); AN2–AN4 are the limit−1 pulses (lamp dark); AN5's `fire == pulse`
+assertion ties the fire to the limit-th edge tick; AN6 is the next edge clearing the latch (the
+manual's "another pulse turns off the signal"); `SELFTEST_AT=counter` inverts AN5's lamp assertion
+and fails as designed, so the lamp case can fail. `CONTROL=1` runs the same script on the unmodded
+Nightly, where the counter item does not exist.
+
+### Measured traps this slice cost (harness and engine)
+
+1. **A latched fire stamp goes stale on the clearing edge.** The first leg failed AN6: the readout
+   said `output=0` (correct) but `lamp=lit`, because the `lamp` field was captured at the fire and
+   only rewritten on another fire — the clearing pulse produces no fire. Fixed by making `lamp` a
+   **live read** of the adjacent lamp in the readout command; the fire instant remains provable by
+   the `fire`/`pulse` game-time stamps. No product behaviour changed (the e2e script and the
+   readout are not part of the machine's tick rule).
+2. **A `SELFEST`/`SELFTEST` typo made the first counterfactual vacuous.** The inverted assertion
+   spelled the variable `SELFEST`, so `SELFTEST=1` never reached it and the leg printed PASS.
+   Found by reading the counterfactual log rather than trusting the branch; corrected and re-run to
+   a real `EXIT:1` at the named assertion.
+3. **A borrow-checker error** (`E0502`) in the pulse increment: reading `KEY_COUNTER_PULSES` from
+   `event.entity.nbt` inside a `write_int(&mut event.entity.nbt, …)` call. Fixed by reading the
+   count into a local first. Clippy also flagged `counter_line`'s 9 args; added a scoped
+   `#[expect(clippy::too_many_arguments, reason = …)]`.
+
+### Deviations and content adaptations
+
+- **The limit is command-driven, not a GUI.** The jar exposes `Counter`/`Current` only through
+  `GuiCounter`'s integer fields; this port has zero menu machinery, so `/rftoolsutility counter-set`
+  writes the same `CounterData` limit and resets the count. A user notices: no GUI.
+- **The input side is a saved advisory.** The jar's 24 `logic_facing` slab rotations cannot be a
+  content block's states, so `/rftoolsutility counter-set` writes one of four horizontal sides, as
+  its three logic siblings do. A user cannot orient the block by placement.
+- **`fire`/`pulse`/`time` and the pulse counter are harness-only stamps.** Upstream saves no such
+  fields; they live in the block entity's compound and travel on the item, and do not change the
+  artefact's behaviour. They exist so the lamp claim is made on game-time ticks, not wall time.
+- **No new upstream defect adopted.** The rising-edge rule, the count wrap and the latched 15/0
+  are the artefact's own (the manual confirms the clearing edge). No comparator/TOP/Jade, no
+  sounds, no infusing bonus, no GUI — the standing machines-tier gaps.
+- The carried recipe needs `rftoolsbase:machine_base`, so the e2e gives the block, as every machine
+  slice has.
+
+### Coverage after slice 14
+
+| family | status |
+|---|---|
+| `rftoolsutility:counter` (block, item, recipe, advancement, loot, texture, `signal` state) | tested — AN: placed and read back; content regenerated by `assemble_content.py` |
+| the rising edge, count increment and limit wrap | tested — AN2–AN5 (1→2→3→fire at 4 with the count reset); unit rules for held input, no-pulse and the wrap |
+| the latched 15/0 output and the clearing edge | tested — AN-control, AN0/AN2–AN4 dark vs AN5/AN5b lit vs AN6 dark; `SELFTEST_AT=counter` inverts AN5 |
+| the input side (four horizontal facings, unknown refused) | tested in code (`counter_front`, `counter-set`'s refusal); AN uses north |
+| the item carrying the counter's state | carried (`block_drops` + `minecraft:block_entity_data`, the same path as the other machines); no dedicated phase |
+| a `rftoolsbase:machine_base` recipe craft | blocked(`rftoolsbase:machine_base`) — the parent port's item; the e2e gives the block |
+| the GUI (limit/current fields) and the item tooltip | not ported (no menu; `counter-set` is its equivalent) |
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices, rust-review, rust-port
+
+### Artifact
+
+| File | Size | SHA-256 | Entries |
+|---|---:|---|---:|
+| `rftoolsutility.hmod` (port root) | 197,421 B | `b82e87029d1f98349c125339021d923dabf467a52719911e3dda20941f885e41` | 252 |
+
+Two `cargo horizon-mod build`s with `rm -f Cargo.lock` before each were `cmp`-identical
+(`slice14-builds-final.log`), **no packed `Cargo.lock`**. `check` green
+(`rftoolsutility 0.2.13 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`);
+`fits --build 0a875da` → `0a875da  made for`; `fits --build 0b14f8a` → `0b14f8a  fits`;
+`verify-sdk-package.py rftoolsutility` → **1/1** (package matches the tree, R9, skills gate;
+130 passed, 0 clippy warnings). The manifest, README, crate doc and content were edited **before**
+the final build; the later `notes.md`/`VALIDATION.md`/`CONTENT.md` edits are not packed, and the gate
+still reports `package matches the tree`. The launcher's `native-build` compiled the mod
+(`Compiling rftoolsutility (1 of 1)`, `native-0a875da-66a414be7c67`) after the stale 0.2.12 tag was
+removed. All Rust ladder steps printed `build-slot: forwarding … to the remote runner` (hostname
+`AdLf-PC`), no `BUILD_LOCAL=1` was set, and no lease was backgrounded.
+
 ## Next slice
 
-The next logic-family gap on the same line is the **counter** (`rftoolsutility:counter`,
-`CounterTileEntity`), the sibling of the timer: a redstone-pulse counter with a configurable max
-whose output fires when the count is reached and whose GUI sets the limit. Before dispatching, read
-its `tickServer`/`CounterData` from the artefact first and check the same `LevelRef::signal` input
-surface the sensor, sequencer and timer proved. The concrete assertion: set a known limit by
-command, pulse the vanilla lever on the input side that many times and assert the adjacent lamp
-lights only on the limit-th pulse (with the output reset by a second edge or a command as the
-artefact declares), the redstone-block control, a no-pulse differential and `SELFTEST_AT=counter`
-`EXIT:1`. If the artefact needs a GUI-only setting that cannot be a command, stop with
-`blocked(<symbol>)` rather than inventing one.
+The next logic-family gap on the same line is `analog` / `digit` (`rftoolsutility:analog`,
+`rftoolsutility:digit`, `AnalogTileEntity`, `DigitTileEntity`) — the remaining redstone-output
+logic siblings that fit the **machines** tier without a renderer. Before dispatching, read their
+`tickServer`/data records from the artefact at commit `f799314` first and check the same
+`LevelRef::signal` + `BlockPart::block_signal` surface slices 11–14 proved. The concrete assertion
+for `analog`: a known input-side redstone level written by a command must produce the artefact's
+declared output strength on a vanilla lamp (with a redstone-block control, a zero-input
+differential and `SELFTEST_AT=analog` `EXIT:1`). If either family needs a GUI-only setting or a
+renderer the pin cannot express, stop with `blocked(<symbol>)` rather than inventing one.

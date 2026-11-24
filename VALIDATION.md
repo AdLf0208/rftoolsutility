@@ -595,3 +595,39 @@ the final build; the later harness-only edits are not packed, and the gate still
 `package matches the tree`. R9 holds (SDK path dep only, no `[workspace]`, no packed lock); no local
 type or variant is named `Block`/`Item`, so neither `fits` run false-failed; `E2E_TMP` and all four
 path exports came from `launcher-game.sh env`, never `/tmp`.
+
+## Slice 14 — the counter (0.2.13, forwarded to AdLf-PC)
+
+All Rust ladder steps went through `build-slot.sh run --job W1-rftoolsutility --port
+ports/rftoolsutility --step test|lint|build|check`, each printing `build-slot: forwarding … to the
+remote runner` (hostname `AdLf-PC`); `BUILD_LOCAL=1` was never set. The launcher native build and
+the game legs ran locally in `--step native`/`--step e2e` leases. No lease was backgrounded.
+
+| # | check | command | result |
+|---|---|---|---|
+| 1 | red, runtime | four count rules stubbed `todo!()` behind their tests, focused `cargo test --offline counter` | **FAILED. 2 passed; 4 failed; 123 filtered out**, each at `src/runtime.rs:1358:5: not yet implemented` (`slice14-red.log`) |
+| 2 | green | `cargo test --offline` | **130 passed; 0 failed** (`sdk-test.log`, regenerated for 0.2.13 after the final build) |
+| 3 | fmt + clippy | `cargo fmt --check`, `cargo clippy --all-targets --offline -- -D warnings` | clean, 0 warnings (`slice14-clippy.log`); a scoped `#[expect(clippy::too_many_arguments, reason = …)]` on the 9-field readout formatter |
+| 4 | package ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice | `cmp` identical; **197,421 B**, sha `b82e8702…f885e41`, 252 entries, no `Cargo.lock` (`slice14-builds-final.log`) |
+| 5 | registry check | `cargo horizon-mod check rftoolsutility.hmod` | `rftoolsutility 0.2.13 (native-mod, format native-1/0a875da…/e59da909…, for 26.3)`, **CHECK_EXIT:0** (`slice14-check-fits-final.log`) |
+| 6 | fits the pin | `fits … --build 0a875da` | `0a875da  made for`, **FITS_EXIT:0** |
+| 7 | fits another build | `fits … --build 0b14f8a` | `0b14f8a  fits`, **FITS_OTHER_EXIT:0** |
+| 8 | gate | `verify-sdk-package.py rftoolsutility` | **1/1** (package matches the tree, R9, skills gate, 130 passed, 0 clippy warnings; `slice14-package-gate-final.log`) |
+| 9 | native build | `launcher-game.sh build rftoolsutility` | `Compiling rftoolsutility (1 of 1)`, `native-0a875da-66a414be7c67` (`slice14-native-build-final.log`); the stale 0.2.12 tag was removed first |
+| 10 | in game, PASS | `build-slot.sh run --step e2e -- bash ports/rftoolsutility/tools/e2e-counter.sh` | **PASS**, `EXIT:0` — AN–AN7 (`e2e-slice14-counter.log`): a lever edge at tick 396 fires at tick 396 on limit 4, lamp lit only then and latched until the next edge clears it, all from the replies' game-time stamps |
+| 11 | in game, c/f | `SELFTEST=1 SELFTEST_AT=counter` | **FAIL: SELFTEST counter: the limit-th pulse lit the lamp, expected it to stay dark**, `EXIT:1` (`e2e-slice14-counter-selftest.log`) |
+| 12 | in game, control | `CONTROL=1` (the unmodded Nightly) | **FAIL: ctl place rftoolsutility:counter … was refused three times**, `EXIT:1` (`e2e-slice14-counter-control.log`) |
+| 13 | no regression | the same game, `e2e-teleporter.sh`, `e2e-analyzer.sh`, `e2e-sensor.sh`, `e2e-sequencer.sh`, `e2e-timer.sh` | each **PASS**, `EXIT:0` (`e2e-slice14-{teleporter,analyzer,sensor,sequencer,timer}.log`) |
+| 14 | log gate | `check-e2e-logs.py rftoolsutility-e2e --strict` | `logs=73 ok=73 missing-exit=0 bad-exit=0`, `EXIT:0` (`slice14-e2e-gate.log`) |
+
+**Traps handled:** the first leg failed AN6 because the readout's `lamp` field was a fire-instant
+capture that went stale when the *clearing* edge produced no fire — the field is now a live read of
+the adjacent lamp, with `fire`/`pulse` game-time stamps still pinning the fire instant. The first
+counterfactual printed PASS because the inverted assertion misspelled `SELFTEST` as `SELFEST`;
+reading the log rather than trusting the branch caught it, and the corrected leg now fails at the
+named assertion with `EXIT:1`. A borrow-checker `E0502` in the pulse increment was fixed by reading
+the count into a local first. The manifest, README, crate doc and content were edited **before**
+the final build; the later `notes.md`/`VALIDATION.md`/`CONTENT.md` edits are not packed, and the gate
+still reports `package matches the tree`. R9 holds (SDK path dep only, no `[workspace]`, no packed
+lock); no local type or variant is named `Block`/`Item`, so neither `fits` run false-failed;
+`E2E_TMP` and all four path exports came from `launcher-game.sh env`, never `/tmp`.

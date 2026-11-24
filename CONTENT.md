@@ -1,4 +1,4 @@
-# RFTools Utility slices 1–8 — the carried content
+# RFTools Utility slices 1–14 — the carried content
 
 The `assets/` and `data/` at the package root are generated from the pack jars by
 [`tools/assemble_content.py`](tools/assemble_content.py); rerun it to rebuild
@@ -36,6 +36,8 @@ of the RFTools Utility jar, re-spelled only where 26.3 differs.
 | `data/rftoolsutility/recipe/spawner.json` | redstone/rotten flesh/ender pearl/blaze rod/bone around a machine frame |
 | `data/rftoolsutility/advancement/recipes/misc/spawner.json` | the recipe unlock |
 | `data/rftoolsutility/loot_table/blocks/spawner.json` | the block's drop |
+| `assets/rftoolsutility/models/block/counter_0.json` … `counter_3.json`, `models/item/counter.json`, `textures/block/logic/machinecountertop.png` | the counter's four slab models, item model and front face (`CounterTileEntity.createBlock` on McJtyLib's `STANDARD_IRON`) |
+| `data/rftoolsutility/recipe/counter.json`, `advancement/recipes/misc/counter.json`, `loot_table/blocks/counter.json` | clock / machine base / redstone torch recipe, its unlock and the block's drop |
 | `data/rftoolsutility/recipe/minecraft_*.json` (**70**) | the jar's mob recipes, **byte for byte** — their type is the port's own crafting kind; the spawner reads their `entity`, `power` and `item1..3.amount`, and the matter beamer matches its material against their `item1..3.object` (see below) |
 | `data/rftoolsutility/tags/item/living/{living,highyield,averageyield,lowyield}.json` | the jar's own yield tags, **byte for byte**: a recipe's empty (`living?`) `object` takes its factor from them (1.5 / 1.0 / 0.5) |
 | `assets/rftoolsutility/blockstates/matter_beamer.json` | the jar's two variants, `lit=false` → `block/matter_beamer_off`, `lit=true` → `block/matter_beamer_on` |
@@ -83,10 +85,13 @@ of the RFTools Utility jar, re-spelled only where 26.3 differs.
 | `data/rftoolsutility/horizon/block/tank.json` | the block: `minecraft:iron_block` template, hardness 2.0 / blast 2.0, correct tool, metal sound, full cube, and the declared `level` state (9 values, default 0) |
 | `data/rftoolsutility/horizon/block/{crafter1,crafter2,crafter3}.json` | the blocks: `minecraft:white_glazed_terracotta` template (a full cube whose four-way `facing` placement rule is measured on a content block), hardness 2.0 / blast 2.0, correct tool, metal sound |
 | `data/rftoolsutility/horizon/block/spawner.json` | the block: `minecraft:white_glazed_terracotta` template (the crafter's measured four-way `facing`), the same iron properties |
+| `assets/rftoolsutility/blockstates/{sensor,sequencer,timer,counter}.json` | the four logic blocks' 24 `logic_facing` jar rotations are replaced by the two `signal` variants the native redstone hook caches |
+| `assets/rftoolsutility/items/{sensor,sequencer,timer,counter}.json` | the 26.3 item definitions for the four logic blocks |
+| `data/rftoolsutility/horizon/block/{sensor,sequencer,timer,counter}.json` | the four logic blocks: iron-block template, iron properties and the declared `signal` state (0/1, default 0) |
 | `data/rftoolsutility/horizon/block/matter_beamer.json` | the block: `minecraft:iron_block` template (upstream's `RotationType.NONE`), the same iron properties, and the declared `lit` state (`false`/`true`, default `false`) the jar's blockstate keys its two models on |
-| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json` | `itemGroup.rftoolsutility`, the tank, the three crafter tiers, the spawner and the matter beamer |
+| `data/rftoolsutility/horizon/creative_tab/rftoolsutility.json` | `itemGroup.rftoolsutility`, the tank, the three crafter tiers, the spawner, the matter beamer and the four logic blocks |
 | `data/c/tags/item/{ingots/iron,glass_blocks,bones,rods/blaze,ender_pearls}.json` | the convention tags the recipes name (the prepared 26.3 root ships none) |
-| `data/minecraft/tags/block/{mineable/pickaxe,needs_iron_tool}.json` | the tank, the three crafter tiers, the spawner and the matter beamer (upstream's `ironPickaxeTags()`) |
+| `data/minecraft/tags/block/{mineable/pickaxe,needs_iron_tool}.json` | the tank, the three crafter tiers, the spawner, the matter beamer and the four logic blocks (upstream's `ironPickaxeTags()`) |
 
 ## What the content cannot do alone
 

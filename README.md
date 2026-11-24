@@ -1,15 +1,16 @@
-# RFTools Utility for Horizon — slices 1–13: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer and the timer
+# RFTools Utility for Horizon — slices 1–14: the tank, the crafter tiers, the spawner, the matter beamer, the teleporter family, the sensor, the sequencer, the timer and the counter
 
 A clean-room rewrite of [RFTools Utility](https://github.com/McJtyMods/RFToolsUtility)
 1.21-7.0.13 for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft
 Java 26.3). MIT; the original copyright notice travels with the port (see
 [`LICENSE`](LICENSE) and [`LICENSE-NOTICE.md`](LICENSE-NOTICE.md)).
 
-**Status: slices 1–13, the tank, the crafter tiers, the spawner's matter gate, the matter
+**Status: slices 1–14, the tank, the crafter tiers, the spawner's matter gate, the matter
 beamer, the matter transmitter / receiver / booster, the destination analyzer, the sensor,
-the sequencer and the timer.**
+the sequencer, the timer and the counter.**
 One flat SDK package (`rftoolsutility.hmod`, mod API 0.2) carries the blocks, the items, the
-models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 13 — the timer",
+models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 14 — the counter",
+§ "Slice 13 — the timer",
 § "Slice 12 — the sequencer",
 § "Slice 11 — the sensor",
 § "Slice 10 — the destination analyzer", § "Slice 9 — the teleporter family",
@@ -115,6 +116,15 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
   stamps of the last edge and fire, and the input side; the in-game leg uses those stamps to
   assert a pulse exactly `delay - 1` game ticks after an edge. A broken timer's item carries
   its state, as every machine's does.
+- `rftoolsutility:counter` — a **pulse counter** (`CounterTileEntity`). A rising edge on the
+  input side bumps its running count; when it reaches the command-set limit the count wraps to 0
+  and the block **latches 15 until the next pulse** turns it off (the jar's manual: "another
+  redstone pulse will turn off the signal and reset Current to 0"). The GUI's `Counter`/`Current`
+  fields are written by `/rftoolsutility counter-set <pos> <limit> <facing>`; the readout
+  `/rftoolsutility counter <pos> [nonce]` prints `limit=… current=… output=<0|15> pulses=… pulse=…
+  fire=… lamp=… facing=… time=…`, so a leg can assert that a vanilla lamp lights only on the
+  limit-th lever pulse from the replies' own game-time stamps (`fire` is the game tick of the limit
+  edge, `pulse` the last edge's tick). A broken counter's item carries its state.
 - Commands (the harness, as upstream has no commands): `/rftoolsutility info
   <pos> [nonce]` and `tank <pos> <fluid> <mb>` for the tank; `/rftoolsutility
   crafter <pos> [nonce]`, `recipe <pos> <index> <id>`, `buffer <pos> <slot> <item>
@@ -136,10 +146,14 @@ models and textures, and the behaviour — see [`notes.md`](notes.md) § "Slice 
    <pauses> <facing>`; its readout prints `delay=… pauses=… output=… timer=… pulse=… fired=…
    facing=… time=…` (the last three are game-time stamps, so a leg can count ticks).
 
+   The counter's commands are `/rftoolsutility counter <pos> [nonce]` and `counter-set <pos>
+   <limit> <facing>`; its readout prints `limit=… current=… output=… pulses=… pulse=… fire=…
+   lamp=… facing=… time=…` (`pulse`/`fire`/`time` are game-time stamps).
+
 ## What does not (yet)
 
 The dialing device, destination GUI, screens and their 30 modules, the rest of the logic
-blocks (the sensor, sequencer and timer are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
+blocks (the sensor, sequencer, timer and counter are ported), the environmental controller and its modules, the tank's GUI and filter slot, the
 fluid quad inside its window, the crafter's GUI, the spawner's GUI, the syringe that sets the
 mob, six-way facing, the item tooltips, the wrench item (a command links the beamer instead),
 the infusing power discount and the analyzer's vanilla redstone output (the artefact has none —

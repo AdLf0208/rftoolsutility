@@ -169,6 +169,18 @@ CARRIED_ASSETS = [
     "data/rftoolsutility/advancement/recipes/misc/timer.json",
     "data/rftoolsutility/recipe/timer.json",
     "data/rftoolsutility/loot_table/blocks/timer.json",
+    # Slice 14: the counter, the timer's sibling on the logic row. Its four slab models, front
+    # texture, item model, recipe, advancement and loot table are the jar's own; the 24
+    # `logic_facing` rotations are replaced below by the `signal` variants the redstone hook caches.
+    "assets/rftoolsutility/models/block/counter_0.json",
+    "assets/rftoolsutility/models/block/counter_1.json",
+    "assets/rftoolsutility/models/block/counter_2.json",
+    "assets/rftoolsutility/models/block/counter_3.json",
+    "assets/rftoolsutility/models/item/counter.json",
+    "assets/rftoolsutility/textures/block/logic/machinecountertop.png",
+    "data/rftoolsutility/advancement/recipes/misc/counter.json",
+    "data/rftoolsutility/recipe/counter.json",
+    "data/rftoolsutility/loot_table/blocks/counter.json",
 ]
 # Slice 8: the jar's `living/*` item tags, byte for byte. A spawner recipe's empty `object` is
 # upstream's "living?" form, and these tags are the yield a living item carries
@@ -225,6 +237,11 @@ TELEPORTER_MODELS = [
     "assets/rftoolsutility/models/block/timer_1.json",
     "assets/rftoolsutility/models/block/timer_2.json",
     "assets/rftoolsutility/models/block/timer_3.json",
+    # Slice 14: the four counter slab models name the same `rftoolsbase:` base textures.
+    "assets/rftoolsutility/models/block/counter_0.json",
+    "assets/rftoolsutility/models/block/counter_1.json",
+    "assets/rftoolsutility/models/block/counter_2.json",
+    "assets/rftoolsutility/models/block/counter_3.json",
 ]
 # The teleporter family's three blocks (McJtyLib `STANDARD_IRON`; the booster is
 # `.strength(2, 6)`). The transmitter and receiver carry a block entity; the booster is a plain
@@ -280,6 +297,7 @@ TAB = {
         f"{MOD}:sensor",
         f"{MOD}:sequencer",
         f"{MOD}:timer",
+        f"{MOD}:counter",
     ],
 }
 
@@ -417,6 +435,26 @@ TIMER_BLOCK = {
     "item": True,
 }
 
+# `CounterTileEntity.createBlock` uses the same McJtyLib `STANDARD_IRON` builder as its three
+# logic siblings, so the full-cube iron-block template and the generated `signal` state are
+# identical. The jar's 24 `logic_facing` slab rotations and the limit GUI are replaced by the
+# saved input side and `/rftoolsutility counter-set`.
+COUNTER_BLOCK = {
+    "template": "minecraft:iron_block",
+    "properties": {
+        "hardness": 2.0,
+        "explosion_resistance": 2.0,
+        "requires_tool": True,
+        "sounds": "minecraft:iron_block",
+        "occludes": True,
+    },
+    "state_properties": {
+        "signal": {"type": "enum", "values": ["0", "1"]}
+    },
+    "default_state": {"signal": "0"},
+    "item": True,
+}
+
 # The jar's recipes name `c:` convention tags the prepared 26.3 root does not
 # ship (it ships `minecraft` tags only), and an unknown tag is an empty
 # ingredient. These are the smallest honest memberships, the same ones this
@@ -452,6 +490,8 @@ LANG_KEYS = [
     "message.rftoolsutility.sequencer.header",
     "block.rftoolsutility.timer",
     "message.rftoolsutility.timer.header",
+    "block.rftoolsutility.counter",
+    "message.rftoolsutility.counter.header",
     "message.rftoolsutility.shiftmessage",
     "message.rftoolsutility.tank.header",
     "message.rftoolsutility.tank.contents",
@@ -697,6 +737,16 @@ def main() -> None:
         assets / "blockstates" / "timer.json",
         {"variants": {f"signal={value}": {"model": f"{MOD}:block/timer_0"} for value in ("0", "1")}},
     )
+    # Slice 14: the counter's 24 jar rotations are replaced by the cached `signal` variants, as
+    # its three logic siblings are; the front-facing slab model shows on both strengths.
+    dump(
+        assets / "items" / "counter.json",
+        {"model": {"type": "minecraft:model", "model": f"{MOD}:item/counter"}},
+    )
+    dump(
+        assets / "blockstates" / "counter.json",
+        {"variants": {f"signal={value}": {"model": f"{MOD}:block/counter_0"} for value in ("0", "1")}},
+    )
     dump(assets / "lang" / "en_us.json", {key: lang[key] for key in LANG_KEYS})
 
     dump(data_dir / "horizon" / "block" / "tank.json", BLOCK)
@@ -709,6 +759,7 @@ def main() -> None:
     dump(data_dir / "horizon" / "block" / "sensor.json", SENSOR_BLOCK)
     dump(data_dir / "horizon" / "block" / "sequencer.json", SEQUENCER_BLOCK)
     dump(data_dir / "horizon" / "block" / "timer.json", TIMER_BLOCK)
+    dump(data_dir / "horizon" / "block" / "counter.json", COUNTER_BLOCK)
     dump(data_dir / "horizon" / "creative_tab" / f"{MOD}.json", TAB)
     for tag, values in CONVENTION_TAGS.items():
         dump(CONTENT / "data" / "c" / "tags" / "item" / f"{tag}.json", {"values": values})
@@ -727,6 +778,7 @@ def main() -> None:
                 f"{MOD}:sensor",
                 f"{MOD}:sequencer",
                 f"{MOD}:timer",
+                f"{MOD}:counter",
             ]
         },
     )
@@ -745,6 +797,7 @@ def main() -> None:
                 f"{MOD}:sensor",
                 f"{MOD}:sequencer",
                 f"{MOD}:timer",
+                f"{MOD}:counter",
             ]
         },
     )

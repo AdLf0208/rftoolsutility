@@ -12,6 +12,7 @@
     "rftoolsutility:destination_analyzer",
     "rftoolsutility:sensor",
     "rftoolsutility:sequencer",
-    "rftoolsutility:timer"
+    "rftoolsutility:timer",
+    "rftoolsutility:counter"
   ]
 }

@@ -8,9 +8,10 @@
 //! a tick that runs taught 3x3 recipes from its buffer. [`SpawnerPart`] is the spawner:
 //! 200,000 FE and a tick that spawns the mob its own recipe names, for that recipe's RF cost;
 //! [`SpawnerRecipeKind`] is the `rftoolsutility:spawner` recipe kind its 70 carried mob recipes
-//! need. [`SensorPart`], [`SequencerPart`] and [`TimerPart`] are the three logic blocks: a ten-tick
-//! block check, a rising-edge-driven 64-step pattern and a rising-edge-reloaded delay that emits
-//! a one-tick 15 pulse every `delay` ticks, all emitting a real 15/0 redstone signal. The
+//! need. [`SensorPart`], [`SequencerPart`], [`TimerPart`] and [`CounterPart`] are the four logic
+//! blocks: a ten-tick block check, a rising-edge-driven 64-step pattern, a rising-edge-reloaded
+//! delay that emits a one-tick 15 pulse every `delay` ticks, and a rising-edge pulse counter that
+//! latches 15 when its count reaches the limit, all emitting a real 15/0 redstone signal. The
 //! `/rftoolsutility …` commands serve the harness, because upstream's controls are its GUIs.
 //!
 //! The numbers — the capacity, the fill level, what a bucket click does, the craft loop, the
@@ -34,15 +35,16 @@ pub mod runtime;
 use runtime::{
     AVERAGE_YIELD, BEAMER_CAPACITY, BEAMER_RECEIVE, BOOST_RF, BUCKET, BUFFER_IN, BUFFER_IN_SLOTS,
     BUFFER_OUT, BUFFER_OUT_SLOTS, CAPACITY, CRAFTER_CAPACITY, CRAFTER_RECEIVE, CRAFTER_SLOTS,
-    Click, CraftMode, CrafterTier, GHOST_INPUT, GHOST_RESULT, HIGH_YIELD, LOW_YIELD,
-    MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe, RECEIVER_CAPACITY,
-    RECEIVER_RECEIVE, RF_PER_TICK, SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY, SPAWNER_RECEIVE,
-    SensorKind, SequencerData, SequencerMode, SequencerState, Speed, TRANSMITTER_CAPACITY,
-    TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter, analyzer_due, analyzer_status,
-    beam_due, beam_reach, beam_send, bucket_click, carried, clamped, fill_level, in_beam,
-    placements, plan, receiver_ready, recipe_for, result_range, rising_edge, sensor_due,
-    sensor_front, sensor_sees, sensor_signal, sequencer_tick as run_sequencer_tick, spawn_at,
-    spawn_cycle, spend, start_cost, start_time, steps, timer_signal, timer_tick as run_timer_tick,
+    Click, CounterData, CounterState, CraftMode, CrafterTier, GHOST_INPUT, GHOST_RESULT,
+    HIGH_YIELD, LOW_YIELD, MATTER_STORAGE, MAX_BEAM_DISTANCE, MatterSource, MobRecipe,
+    RECEIVER_CAPACITY, RECEIVER_RECEIVE, RF_PER_TICK, SENSOR_OFF, SENSOR_ON, SPAWNER_CAPACITY,
+    SPAWNER_RECEIVE, SensorKind, SequencerData, SequencerMode, SequencerState, Speed,
+    TRANSMITTER_CAPACITY, TRANSMITTER_RECEIVE, Tank, TimerData, TimerState, add_matter,
+    analyzer_due, analyzer_status, beam_due, beam_reach, beam_send, bucket_click, carried, clamped,
+    counter_signal, counter_tick as run_counter_tick, fill_level, in_beam, placements, plan,
+    receiver_ready, recipe_for, result_range, rising_edge, sensor_due, sensor_front, sensor_sees,
+    sensor_signal, sequencer_tick as run_sequencer_tick, spawn_at, spawn_cycle, spend, start_cost,
+    start_time, steps, timer_signal, timer_tick as run_timer_tick,
 };
 
 /// The tank block and its item (`TankModule.TANK`).
@@ -275,6 +277,37 @@ const KEY_TIMER_FIRED_LOCK: &str = "timerFiredLock";
 const KEY_TIMER_LAMP: &str = "timerLampLit";
 /// A timer's item, resolved once in `register` for `block_drops`.
 static TIMER_ITEM: OnceLock<ItemKey> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// The counter (slice 14) — `CounterTileEntity`, `CounterData`
+// ---------------------------------------------------------------------------
+
+/// `LogicBlockModule.COUNTER`: the timer's sibling. Its `counter` (limit) and `current` are written
+/// only by the jar's GUI (`GuiCounter`'s `integerfield`s), so this port writes the limit with
+/// `/rftoolsutility counter-set`; the tick rule is the artefact's own. The input is a rising edge on
+/// the input-side neighbour, read directionally as the sensor/sequencer/timer read theirs.
+const COUNTER: &str = "rftoolsutility:counter";
+const COUNTER_TYPE: &str = "counter";
+const COUNTER_TYPE_ID: &str = "rftoolsutility:counter";
+/// `CounterData`'s two fields and the two live fields `CounterTileEntity` saves (`rs`, `prevIn`).
+const KEY_COUNTER_LIMIT: &str = "counter";
+const KEY_COUNTER_CURRENT: &str = "current";
+const KEY_COUNTER_PREV: &str = "prevIn";
+const KEY_COUNTER_RS: &str = "rs";
+const KEY_COUNTER_FACING: &str = "counterFacing";
+/// Harness-only stamps: the game time of the last rising edge and of the fire that reached the
+/// limit, plus a latch so `fire` is the *first* fire after a `counter-set`. The lamp stamp is the
+/// adjacent vanilla lamp's own `lit` state at the fire instant — a game-time observation the leg
+/// asserts instead of wall time or an absence of errors.
+const KEY_COUNTER_PULSE_AT: &str = "counterPulseAt";
+const KEY_COUNTER_FIRE_AT: &str = "counterFireAt";
+const KEY_COUNTER_FIRED_LOCK: &str = "counterFiredLock";
+const KEY_COUNTER_LAMP: &str = "counterLampLit";
+/// The number of rising edges since the last `counter-set`, so the leg can assert "only on the
+/// limit-th pulse" from the reply itself.
+const KEY_COUNTER_PULSES: &str = "counterPulses";
+/// A counter's item, resolved once in `register` for `block_drops`.
+static COUNTER_ITEM: OnceLock<ItemKey> = OnceLock::new();
 
 /// One recipe the crafter was taught (`CrafterData.recipes[i]`): the engine recipe it names
 /// and, per grid cell, the item ids that cell accepts. Upstream keeps the ghost grid and asks
@@ -2142,6 +2175,168 @@ impl BlockEntityPart for TimerPart {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The counter's glue (slice 14)
+// ---------------------------------------------------------------------------
+
+/// `CounterData` out of the saved compound; a freshly placed block entity's compound is empty, so
+/// the artefact's `createDefault()` (limit 1, current 0) supplies what a GUI would have written.
+fn counter_data(nbt: &Compound) -> CounterData {
+    let defaults = CounterData::default();
+    CounterData {
+        counter: read_int_or(nbt, KEY_COUNTER_LIMIT, defaults.counter),
+        current: read_int_or(nbt, KEY_COUNTER_CURRENT, defaults.current),
+    }
+}
+
+/// The two live fields `CounterTileEntity` saves beside its data (`prevIn`, `rs`).
+fn counter_state(nbt: &Compound) -> CounterState {
+    CounterState {
+        prev_in: read_flag(nbt, KEY_COUNTER_PREV),
+        output: read_flag(nbt, KEY_COUNTER_RS),
+    }
+}
+
+/// Write the data and the live fields back. The engine persists the compound when the tick answers
+/// `Changed` (the default), as the sequencer's and the timer's ticks do.
+fn write_counter(nbt: &mut Compound, data: &CounterData, state: &CounterState) {
+    write_int(nbt, KEY_COUNTER_LIMIT, data.counter);
+    write_int(nbt, KEY_COUNTER_CURRENT, data.current);
+    write_flag(nbt, KEY_COUNTER_PREV, state.prev_in);
+    write_flag(nbt, KEY_COUNTER_RS, state.output);
+}
+
+/// The four saved input-side spellings (the jar's 24 `logic_facing` slab rotations cannot be a
+/// content block's states, so the side is a saved advisory).
+fn counter_front(facing: &str) -> bool {
+    sensor_front([0, 0, 0], facing).is_some()
+}
+
+/// `/rftoolsutility counter <pos> [nonce]`: the harness reads the **parsed** limit, running count,
+/// latched 15/0 output, the number of pulses and the game-time stamp of the fire, so it can say
+/// "the lamp lit only on the limit-th pulse" from the reply alone.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the readout carries every parsed field plus game-time stamps for the harness"
+)]
+fn counter_line(
+    pos: [i32; 3],
+    data: &CounterData,
+    state: &CounterState,
+    pulses: i32,
+    pulse: i32,
+    fire: i32,
+    facing: &str,
+    time: i32,
+    lamp: &str,
+    nonce: Option<&str>,
+) -> String {
+    let suffix = nonce.map_or(String::new(), |nonce| format!(" nonce={nonce}"));
+    format!(
+        "/rftoolsutility: counter at {pos:?}: limit={} current={} output={} pulses={pulses} pulse={pulse} fire={fire} lamp={lamp} facing={facing} time={time}{suffix}",
+        data.counter,
+        data.current,
+        counter_signal(state.output),
+    )
+}
+
+/// `CounterTileEntity.update()` (from `checkRedstone`): latch a rising edge of the input-side
+/// neighbour's own signal, bump the count, fire a level 15 when it reaches the limit (wrapping the
+/// count to 0), and mirror the cached 15/0 into the block's `signal` property so a vanilla lamp
+/// beside it sees the result. The neighbour is read **directionally** (`SignalGetter.getSignal`),
+/// never with `getBestNeighborSignal`, which would see this block's own 15 as a phantom edge
+/// (sequencer, slice 12). The fire/lamp/pulse stamps are harness-only evidence, saved in the
+/// compound and asserted from the readout.
+fn counter_block_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let pos = event.pos;
+    let mut data = counter_data(&event.entity.nbt);
+    let mut state = counter_state(&event.entity.nbt);
+    let Some(level) = ticking_level(&*host) else {
+        return;
+    };
+    let facing =
+        read_text(&event.entity.nbt, KEY_COUNTER_FACING).unwrap_or_else(|| "north".to_owned());
+    let (front, into) = match facing.as_str() {
+        "north" => ([pos[0], pos[1], pos[2] - 1], Direction::South),
+        "south" => ([pos[0], pos[1], pos[2] + 1], Direction::North),
+        "west" => ([pos[0] - 1, pos[1], pos[2]], Direction::East),
+        "east" => ([pos[0] + 1, pos[1], pos[2]], Direction::West),
+        _ => ([pos[0], pos[1], pos[2] - 1], Direction::South),
+    };
+    let powered = level.signal(&*host, front, into).unwrap_or(0) > 0;
+    let was_prev = state.prev_in;
+    let time = level.game_time(&*host).unwrap_or(0) as i32;
+    let fired = run_counter_tick(&mut data, &mut state, powered);
+    write_counter(&mut event.entity.nbt, &data, &state);
+    if rising_edge(powered, was_prev) {
+        let pulses = read_int_or(&event.entity.nbt, KEY_COUNTER_PULSES, 0) + 1;
+        write_int(&mut event.entity.nbt, KEY_COUNTER_PULSE_AT, time);
+        write_int(&mut event.entity.nbt, KEY_COUNTER_PULSES, pulses);
+    }
+    let wanted = counter_signal(state.output);
+    if wanted != cached_signal(&*host, level, pos) {
+        host.set_block_property(pos, KEY_SIGNAL, if state.output { "1" } else { "0" });
+        if let Some(block_state) = level.block_state(&*host, pos) {
+            let _ = level.update_neighbors(host, pos, block_state, NeighbourUpdate::Neighbours);
+        }
+    }
+    // Stamp the *first* fire after a counter-set once, with the adjacent lamp's own `lit` state at
+    // that instant. Unlike the timer's one-tick pulse, the counter's output is a level latch, but a
+    // game-time stamp is still the fail-capable observation the leg asserts (no polling race).
+    if fired && !read_flag(&event.entity.nbt, KEY_COUNTER_FIRED_LOCK) {
+        write_int(&mut event.entity.nbt, KEY_COUNTER_FIRE_AT, time);
+        write_flag(&mut event.entity.nbt, KEY_COUNTER_FIRED_LOCK, true);
+        let lit = [
+            [pos[0], pos[1], pos[2] - 1],
+            [pos[0], pos[1], pos[2] + 1],
+            [pos[0] - 1, pos[1], pos[2]],
+            [pos[0] + 1, pos[1], pos[2]],
+        ]
+        .iter()
+        .any(|&around| {
+            level
+                .block_state(&*host, around)
+                .and_then(|s| host.block_state_string(s))
+                .is_some_and(|name| {
+                    name.contains("redstone_lamp")
+                        && sensor_state_property(&name, "lit") == Some("true")
+                })
+        });
+        write_flag(&mut event.entity.nbt, KEY_COUNTER_LAMP, lit);
+    }
+}
+
+/// The counter's one Part: a block entity with a tick, and the two redstone methods that make its
+/// cached 15/0 a real vanilla signal (`LogicSupport.getRedstoneOutput`/`isSignalSource`).
+struct CounterPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for CounterPart {
+    fn is_signal_source(&self, _level: &dyn LevelHost, event: &mut IsSignalSourceEvent) {
+        event.source = true;
+    }
+
+    fn block_signal(&self, level: &dyn LevelHost, event: &mut BlockSignalEvent) {
+        let Some(name) = level.state_string(event.state) else {
+            return;
+        };
+        if sensor_state_property(&name, KEY_SIGNAL) == Some("1") {
+            event.signal = SENSOR_ON;
+        }
+    }
+}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for CounterPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        counter_block_tick(host, event);
+    }
+}
+
 /// `/rftoolsutility analyzer <pos> [nonce]`: the harness's readout of the passive analyzer block.
 /// It finds the adjacent dialed transmitter and prints the receiver-check status the transmitter
 /// keeps (`green=ok` → 15, `yellow=unknown` → 7, `red=warn` → 0). The artefact has no redstone
@@ -2788,6 +2983,16 @@ impl Hooks for Mod {
                 "rftoolsutility: the timer part was refused: {error}"
             ));
         }
+
+        // Slice 14: the counter's block entity, rising-edge count and redstone Part, on the same
+        // iron-block template and `signal` state as its three logic siblings.
+        let _ = COUNTER_ITEM.set(r.item_key(COUNTER));
+        let counter_kind = r.block_entity_type(COUNTER_TYPE).blocks(&[COUNTER]).build();
+        if let Err(error) = r.block_entity_part(&counter_kind, CounterPart) {
+            cx.refuse(&format!(
+                "rftoolsutility: the counter part was refused: {error}"
+            ));
+        }
     }
 
     /// `UseItemOnBlockEvent` at the block phase: the tank's container click, taken before the
@@ -2943,6 +3148,12 @@ impl Hooks for Mod {
             }
             return Flow::Continue;
         }
+        if block == Some(COUNTER) {
+            if let Some(item) = COUNTER_ITEM.get() {
+                carry_machine(level, event, *item, COUNTER_TYPE_ID);
+            }
+            return Flow::Continue;
+        }
         if block != Some(TANK) {
             return Flow::Continue;
         }
@@ -3058,6 +3269,15 @@ impl Hooks for Mod {
             "rftoolsutility timer-set <pos:block_pos> <delay:integer> <pauses:word> <facing:word>",
             2,
         ));
+        // Slice 14: the counter's GUI equivalent — a readout of its parsed count/limit/latched
+        // output and a way to write the limit (and reset the count) the GUI would set.
+        event.commands.push(Command::new(
+            "rftoolsutility counter <pos:block_pos> [nonce:word]",
+        ));
+        event.commands.push(Command::op(
+            "rftoolsutility counter-set <pos:block_pos> <limit:integer> <facing:word>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("rftoolsutility recipes [nonce:word]"));
@@ -3097,6 +3317,8 @@ impl Hooks for Mod {
                     | "sequencer-set"
                     | "timer"
                     | "timer-set"
+                    | "counter"
+                    | "counter-set"
                     | "recipes"
             ]
         );
@@ -3732,6 +3954,109 @@ impl Hooks for Mod {
                     host,
                     &format!(
                         "Timer at {pos:?}: delay {delay} ticks, pauses={pauses}, input to the {facing}."
+                    ),
+                );
+            }
+            ["rftoolsutility", "counter"] => {
+                let Some(entity) = machine_at(&*host, level, pos, COUNTER) else {
+                    feedback(host, "No counter there.");
+                    return Flow::Cancel;
+                };
+                let Some(nbt) = entity.data(&*host) else {
+                    feedback(host, "No counter there.");
+                    return Flow::Cancel;
+                };
+                let data = counter_data(&nbt);
+                let state = counter_state(&nbt);
+                let pulses = read_int_or(&nbt, KEY_COUNTER_PULSES, 0);
+                let pulse = read_int_or(&nbt, KEY_COUNTER_PULSE_AT, -1);
+                let fire = read_int_or(&nbt, KEY_COUNTER_FIRE_AT, -1);
+                let facing =
+                    read_text(&nbt, KEY_COUNTER_FACING).unwrap_or_else(|| "north".to_owned());
+                // A live read of the adjacent vanilla lamp, not the fire-instant stamp: the
+                // counter's output is a level latch, so the lamp also goes dark on the *next*
+                // pulse that clears it. Reading it here keeps `lamp=` honest in every phase.
+                let lamp = if [
+                    [pos[0], pos[1], pos[2] - 1],
+                    [pos[0], pos[1], pos[2] + 1],
+                    [pos[0] - 1, pos[1], pos[2]],
+                    [pos[0] + 1, pos[1], pos[2]],
+                ]
+                .iter()
+                .any(|&around| {
+                    level
+                        .block_state(&*host, around)
+                        .and_then(|s| host.block_state_string(s))
+                        .is_some_and(|name| {
+                            name.contains("redstone_lamp")
+                                && sensor_state_property(&name, "lit") == Some("true")
+                        })
+                }) {
+                    "lit"
+                } else {
+                    "dark"
+                };
+                let time = level.game_time(&*host).unwrap_or(0) as i32;
+                let nonce = match invocation.argument("nonce") {
+                    Some(CommandArgumentValue::String(word)) => Some(word.as_str()),
+                    _ => None,
+                };
+                feedback(
+                    host,
+                    &counter_line(
+                        pos, &data, &state, pulses, pulse, fire, &facing, time, lamp, nonce,
+                    ),
+                );
+            }
+            ["rftoolsutility", "counter-set"] => {
+                let Some(entity) = machine_at(&*host, level, pos, COUNTER) else {
+                    feedback(host, "No counter there.");
+                    return Flow::Cancel;
+                };
+                let usage = "Usage: /rftoolsutility counter-set <pos> <limit> <facing>";
+                let limit = match invocation.argument("limit") {
+                    Some(CommandArgumentValue::Integer(value)) if *value >= 1 => *value,
+                    _ => {
+                        feedback(host, "the limit must be a positive integer.");
+                        return Flow::Cancel;
+                    }
+                };
+                let Some(CommandArgumentValue::String(facing)) = invocation.argument("facing")
+                else {
+                    feedback(host, usage);
+                    return Flow::Cancel;
+                };
+                if !counter_front(facing) {
+                    feedback(host, "unknown counter facing (north|south|east|west).");
+                    return Flow::Cancel;
+                }
+                // `setCounter` with a changed value resets the running count; with no menu the
+                // harness also clears the latched output and its stamps so each phase starts clean
+                // (recorded as a deviation in notes.md).
+                let data = CounterData {
+                    counter: limit,
+                    current: 0,
+                };
+                let state = CounterState::default();
+                let Some(mut nbt) = entity.data(&*host) else {
+                    feedback(host, "No counter there.");
+                    return Flow::Cancel;
+                };
+                write_counter(&mut nbt, &data, &state);
+                write_int(&mut nbt, KEY_COUNTER_PULSE_AT, -1);
+                write_int(&mut nbt, KEY_COUNTER_FIRE_AT, -1);
+                write_flag(&mut nbt, KEY_COUNTER_FIRED_LOCK, false);
+                write_flag(&mut nbt, KEY_COUNTER_LAMP, false);
+                write_int(&mut nbt, KEY_COUNTER_PULSES, 0);
+                write_text(&mut nbt, KEY_COUNTER_FACING, facing);
+                if entity.replace_data(host, nbt).is_err() {
+                    feedback(host, "No counter there.");
+                    return Flow::Cancel;
+                }
+                feedback(
+                    host,
+                    &format!(
+                        "Counter at {pos:?}: limit {limit}, input to the {facing}, count reset to 0."
                     ),
                 );
             }
@@ -4891,5 +5216,36 @@ mod tests {
             ),
             "/rftoolsutility: timer at [201, 101, 0]: delay=6 pauses=false output=0 timer=3 pulse=12 fired=-1 facing=north time=18 lamp=lit nonce=1"
         );
+    }
+
+    // -- the counter's harness readout (slice 14) -----------------------------
+
+    #[test]
+    fn the_counter_readout_is_the_line_the_harness_parses() {
+        let data = CounterData {
+            counter: 4,
+            current: 0,
+        };
+        let state = CounterState {
+            prev_in: false,
+            output: true,
+        };
+        assert_eq!(
+            counter_line(
+                [201, 101, 0],
+                &data,
+                &state,
+                4,
+                312,
+                312,
+                "north",
+                320,
+                "lit",
+                Some("1")
+            ),
+            "/rftoolsutility: counter at [201, 101, 0]: limit=4 current=0 output=15 pulses=4 pulse=312 fire=312 lamp=lit facing=north time=320 nonce=1"
+        );
+        assert!(counter_front("north"));
+        assert!(!counter_front("up"));
     }
 }
